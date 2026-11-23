@@ -14,6 +14,10 @@ describe('partitionBuildFiles', () => {
     });
   });
 
+  it('accepts an upper-case extension, as the core does', () => {
+    expect(partitionBuildFiles(['/o/A.JS', '/o/A.JS.map']).scripts).toEqual(['/o/A.JS']);
+  });
+
   it('accepts .mjs and .cjs bundles', () => {
     const files = ['/o/a.mjs', '/o/a.mjs.map', '/o/b.cjs', '/o/b.cjs.map'];
     expect(partitionBuildFiles(files).scripts).toEqual(['/o/a.mjs', '/o/b.cjs']);
@@ -58,6 +62,12 @@ describe('mapPointerOf', () => {
 
   it('uses a pointer as written when it is not valid percent-encoding', () => {
     expect(mapPointerOf('/o/a.js', 'x\n//# sourceMappingURL=100%.js.map')).toBe('/o/100%.js.map');
+  });
+
+  it('reads a stylesheet pointer from its /*# */ comment, not the // form', () => {
+    expect(mapPointerOf('/o/a.css', 'a{}\n/*# sourceMappingURL=a.css.map */')).toBe('/o/a.css.map');
+    expect(mapPointerOf('/o/a.css', 'a{}\n//# sourceMappingURL=a.css.map')).toBeUndefined();
+    expect(mapPointerOf('/o/a.js', 'x\n/*# sourceMappingURL=a.js.map */')).toBeUndefined();
   });
 
   it('has no pointer for a bundle without a comment, or with an inline map', () => {
@@ -114,13 +124,38 @@ describe('pairByPointer', () => {
 
   it('does not read files that are not scripts', async () => {
     const read = vi.fn(async () => '');
-    await pairByPointer(['/o/a.json', '/o/a.js.map', '/o/a.css'], read);
+    await pairByPointer(['/o/a.json', '/o/a.js.map', '/o/a.txt'], read);
     expect(read).not.toHaveBeenCalled();
   });
 
-  it('keeps stylesheet maps apart', async () => {
-    const parts = await pairByPointer(['/o/a.css.map'], reader({}));
+  it("keeps this build's stylesheet maps apart (a stylesheet points at them): deleted, never sent", async () => {
+    const css = (map: string): string => `a{}\n/*# sourceMappingURL=${map} */\n`;
+    const parts = await pairByPointer(
+      ['/o/a.css', '/o/x1.map'],
+      reader({ '/o/a.css': css('x1.map') }),
+    );
+    expect(parts.stylesheetMaps).toEqual(['/o/x1.map']);
+    expect(parts.maps).toEqual([]);
+  });
+
+  it("leaves a stylesheet or declaration map nothing points at alone: it is not this build's", async () => {
+    const parts = await pairByPointer(
+      ['/o/a.css', '/o/a.css.map', '/o/foreign.css.map', '/o/types.d.ts.map'],
+      reader({ '/o/a.css': 'a{}\n/*# sourceMappingURL=a.css.map */' }),
+    );
     expect(parts.stylesheetMaps).toEqual(['/o/a.css.map']);
+  });
+
+  it('ignores a stylesheet pointer to a missing or non-map file, or an inline map', async () => {
+    const parts = await pairByPointer(
+      ['/o/a.css', '/o/b.css', '/o/c.css', '/o/c.txt'],
+      reader({
+        '/o/a.css': 'a{}/*# sourceMappingURL=gone.css.map */',
+        '/o/b.css': 'a{}/*# sourceMappingURL=c.txt */',
+        '/o/c.css': 'a{}/*# sourceMappingURL=data:application/json;base64,e30= */',
+      }),
+    );
+    expect(parts.stylesheetMaps).toEqual([]);
   });
 
   it('sorts its output', async () => {

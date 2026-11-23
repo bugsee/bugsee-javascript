@@ -74,7 +74,42 @@ interface Spec {
   /** Extra source for the `withBugsee` options object and the Next config. */
   options?: string;
   nextConfig?: string;
+  /** Pre-seed FOREIGN source-map files (stylesheet and declaration maps nothing in this build produced). */
+  seedForeign?: boolean;
 }
+
+/** Where the foreign files are written, relative to the dist dir, and what they contain. */
+const FOREIGN = [
+  ['static', 'foreign.css.map'],
+  ['static', 'foreign.d.ts.map'],
+  ['server', 'foreign.css.map'],
+  ['server', 'foreign.d.ts.map'],
+] as const;
+const FOREIGN_BODY = '{"version":3,"sources":["foreign.css"],"names":[],"mappings":""}';
+
+/** Next config source that writes the foreign files from BOTH bundlers' paths, before Bugsee's step runs. */
+const SEED_HOOK = `
+  compiler: { runAfterProductionCompile: async ({ distDir }) => seed(distDir) },`;
+const SEED_WEBPACK = `
+  webpack(config, { isServer }) {
+    config.plugins.push({ apply(compiler) {
+      compiler.hooks.afterEmit.tap('seed', () => {
+        const out = compiler.options.output.path;
+        seed(isServer ? join(out, '..', '..') : out);
+      });
+    } });
+    return config;
+  },`;
+const SEED_PRELUDE = `
+import { mkdirSync as mk, writeFileSync as wr } from 'node:fs';
+import { join } from 'node:path';
+function seed(dist) {
+  for (const [dir, name] of ${JSON.stringify(FOREIGN)}) {
+    mk(join(dist, dir), { recursive: true });
+    wr(join(dist, dir, name), ${JSON.stringify(FOREIGN_BODY)});
+  }
+}
+`;
 
 interface Built {
   dir: string;
@@ -103,8 +138,9 @@ async function build(spec: Spec): Promise<Built> {
   // Plain JavaScript on purpose: a `.ts` file makes Next install TypeScript into the project.
   writeFileSync(
     join(dir, 'app', 'layout.jsx'),
-    'export default function Layout({ children }) { return <html><body>{children}</body></html>; }\n',
+    "import './style.css';\nexport default function Layout({ children }) { return <html><body>{children}</body></html>; }\n",
   );
+  writeFileSync(join(dir, 'app', 'style.css'), 'body { margin: 0; color: rebeccapurple; }\n');
   writeFileSync(
     join(dir, 'app', 'page.jsx'),
     `'use client';
@@ -132,9 +168,9 @@ export default function Page() {
   );
   writeFileSync(
     join(dir, 'next.config.mjs'),
-    `import { withBugsee } from '@bugsee/nextjs/config';
+    `import { withBugsee } from '@bugsee/nextjs/config';${spec.seedForeign ? SEED_PRELUDE : ''}
 export default withBugsee(
-  { ${spec.next === 'next' ? 'eslint: { ignoreDuringBuilds: true },' : ''} ${spec.nextConfig ?? ''} },
+  { ${spec.next === 'next' ? 'eslint: { ignoreDuringBuilds: true },' : ''} ${spec.nextConfig ?? ''}${spec.seedForeign ? SEED_HOOK + (spec.args.includes('--webpack') ? SEED_WEBPACK : '') : ''} },
   { appToken: 'e2e-token', endpoint: ${JSON.stringify(endpoint)}, appVersion: '9.8.7', appBuild: '42',
     vcs: false, registerBuild: false, failOnError: true, ${spec.options ?? ''} },
 );
@@ -363,5 +399,40 @@ describe('withBugsee — Subresource Integrity', () => {
     for (const bundle of clientBundles(built.dir)) {
       expect(debugIdOf(bundle), bundle).toBeUndefined();
     }
+  });
+});
+
+describe.each([
+  { name: 'foreign-webpack', next: 'next16', args: ['--webpack'] },
+  { name: 'foreign-turbopack', next: 'next16', args: [] },
+] as Spec[])('withBugsee — files this build did not produce ($name)', (spec) => {
+  let built: Built;
+  beforeAll(async () => {
+    built = await build({ ...spec, seedForeign: true });
+  });
+
+  it('builds', () => {
+    expect(built.status, built.log.split('\n').slice(-40).join('\n')).toBe(0);
+  });
+
+  it('never deletes a stylesheet or declaration map it did not produce', () => {
+    for (const [dir, name] of FOREIGN) {
+      const file = join(built.dir, '.next', dir, name);
+      expect(existsSync(file), `${dir}/${name} was deleted`).toBe(true);
+      expect(readFileSync(file, 'utf8')).toBe(FOREIGN_BODY);
+    }
+  });
+
+  it('still uploaded and deleted its own maps', () => {
+    expect(built.uploads.length).toBeGreaterThan(0);
+    const { unique } = split(join(built.dir, '.next', 'static'));
+    expect(unique.length).toBeGreaterThan(2);
+    for (const bundle of unique) {
+      expect(debugIdOf(bundle), bundle).toBeDefined();
+    }
+    const own = maps(join(built.dir, '.next', 'static')).filter(
+      (m) => !m.includes('foreign.') && split(join(built.dir, '.next', 'static')).referenced.has(m),
+    );
+    expect(own).toEqual([]);
   });
 });

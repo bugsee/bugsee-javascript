@@ -31,7 +31,13 @@ interface CompilationLike {
     };
   };
   getAssets(): ReadonlyArray<{ name: string }>;
-  getAsset(name: string): { source: { buffer(): Buffer } } | undefined;
+  getAsset(name: string):
+    | {
+        source: { buffer(): Buffer };
+        /** `related.sourceMap` is how SourceMapDevToolPlugin records which asset is a bundle's map. */
+        info?: { related?: { sourceMap?: string | string[] | null } };
+      }
+    | undefined;
   updateAsset(name: string, source: unknown): void;
 }
 
@@ -62,6 +68,18 @@ export interface WebpackPluginDeps {
 }
 
 const PLUGIN = 'bugsee-next';
+/** A script asset, query and upper-case extension included (what the core's own plugin counts). */
+const SCRIPT_ASSET = /\.[cm]?js(\?|$)/i;
+
+/** What the in-build stamp of one compilation established. */
+interface InBuildStamp {
+  preStamped: boolean;
+  /** The bundles it stamped and their maps, by real asset name, for the on-disk re-check. */
+  stampedBundles?: string[];
+  stampedMaps?: Record<string, string>;
+  /** The stamp was refused in a way that makes stamping after emit unsafe too. */
+  abandoned?: boolean;
+}
 /** Stands in for each leading `../` of an asset name inside the staging directory. */
 const UP = '__bugsee_up__';
 
@@ -74,29 +92,56 @@ async function fileExists(path: string): Promise<boolean> {
 }
 
 /**
- * A compilation's assets as an {@link AssetStore}. Asset names that start with `../` (Next's server output sits
- * one level above the compilation's output path) are staged under a stand-in directory, consistently for a bundle
- * and its map, so their relative layout survives and nothing can escape the staging directory.
+ * An asset name without its `?query`: webpack drops `?...` when it writes a file and keeps `#` (measured on real
+ * builds by the core's own asset store, which this follows).
+ */
+const withoutQuery = (name: string): string => name.replace(/\?.*$/, '');
+
+/** A compilation's asset table as the core's {@link AssetStore}, plus the way back to real asset names. */
+export interface NextAssetStore extends AssetStore {
+  /** The real asset name behind a name this store presented. */
+  real(name: string): string;
+}
+
+/**
+ * A compilation's assets as an {@link AssetStore}. Names are presented query-free, and a name that starts with
+ * `../` (Next's server output sits one level above the compilation's output path) is staged under a stand-in
+ * directory, consistently for a bundle and its map, so their relative layout survives and nothing can escape the
+ * staging directory. Two assets that would collide once cleaned keep their real names.
  */
 export function nextAssetStore(
   compilation: CompilationLike,
   RawSource: new (content: Buffer) => unknown,
-): AssetStore {
-  const staged = (name: string): string =>
-    name.replace(/^(?:\.\.\/)+/, (up) => `${UP}/`.repeat(up.length / 3));
+): NextAssetStore {
+  const up = (name: string): string =>
+    name.replace(/^(?:\.\.\/)+/, (dots) => `${UP}/`.repeat(dots.length / 3));
   const actual = new Map<string, string>();
+  const refresh = (): void => {
+    actual.clear();
+    const names = compilation.getAssets().map((asset) => asset.name);
+    const counts = new Map<string, number>();
+    for (const name of names) {
+      counts.set(up(withoutQuery(name)), (counts.get(up(withoutQuery(name))) ?? 0) + 1);
+    }
+    for (const name of names) {
+      const clean = up(withoutQuery(name));
+      actual.set(counts.get(clean) === 1 ? clean : up(name), name);
+    }
+  };
+  const real = (name: string): string => actual.get(name) ?? name;
   return {
     names: () => {
-      actual.clear();
-      for (const { name } of compilation.getAssets()) {
-        actual.set(staged(name), name);
-      }
+      refresh();
       return [...actual.keys()];
     },
-    read: (name) =>
-      compilation.getAsset(actual.get(name) ?? name)?.source.buffer() ?? Buffer.alloc(0),
-    update: (name, content) =>
-      compilation.updateAsset(actual.get(name) ?? name, new RawSource(content)),
+    read: (name) => compilation.getAsset(real(name))?.source.buffer() ?? Buffer.alloc(0),
+    update: (name, content) => compilation.updateAsset(real(name), new RawSource(content)),
+    mapOf: (name) => {
+      const related = compilation.getAsset(real(name))?.info?.related?.sourceMap;
+      const map = Array.isArray(related) ? related[0] : related;
+      return map === undefined || map === null ? undefined : up(withoutQuery(map));
+    },
+    real,
   };
 }
 
@@ -127,28 +172,55 @@ export function createNextWebpackPlugin(
       const stage = api?.Compilation?.PROCESS_ASSETS_STAGE_DEV_TOOLING;
       const RawSource = api?.sources?.RawSource;
       // Reset per compilation: in watch mode a stamp from the previous build cannot vouch for this one.
-      let preStamped = false;
+      let state: InBuildStamp = { preStamped: false };
       if (stage !== undefined && RawSource !== undefined) {
         compiler.hooks.thisCompilation.tap(PLUGIN, (compilation) => {
-          preStamped = false;
+          state = { preStamped: false };
           // One stage past the source-map plugin (500): the final bytes, before the SRI plugin hashes them.
           compilation.hooks.processAssets.tapPromise(
             { name: PLUGIN, stage: stage + 1 },
             async () => {
+              const store = nextAssetStore(compilation, RawSource);
               try {
-                await stamp(nextAssetStore(compilation, RawSource), { dryRun: resolved.dryRun });
-                preStamped = true;
+                const { stamped, maps, bundles } = await stamp(store, { dryRun: resolved.dryRun });
+                const scripts = compilation
+                  .getAssets()
+                  .filter(({ name }) => SCRIPT_ASSET.test(name));
+                if (bundles === 0 && scripts.length > 0) {
+                  // Never claim a stamp that staged nothing while the build emitted scripts.
+                  context.say(
+                    `no debug-ID could be stamped inside the ${kind} build (none of its ${scripts.length} script asset(s), e.g. ${scripts[0]?.name}, matched), so stamping after emit instead.`,
+                  );
+                  return;
+                }
+                state = {
+                  preStamped: true,
+                  stampedBundles: stamped.map((name) => store.real(name)),
+                  stampedMaps: Object.fromEntries(
+                    Object.entries(maps).map(([bundle, map]) => [
+                      store.real(bundle),
+                      store.real(map),
+                    ]),
+                  ),
+                };
               } catch (error) {
                 if (resolved.failOnError) {
                   throw error;
                 }
+                // A map that cannot be stamped with its bundle (outside the output): stamping after emit would
+                // half-stamp the build, so nothing is stamped or uploaded for it.
+                const abandoned =
+                  (error as { unreachableMap?: boolean } | null)?.unreachableMap === true;
                 (
                   resolved.onError ??
                   ((e: unknown) =>
                     console.warn(
-                      `[bugsee] in-build debug-ID stamping failed; falling back to stamping after emit: ${String(e)}`,
+                      abandoned
+                        ? `[bugsee] debug-IDs were NOT stamped, and stamping after emit would half-stamp this build: ${String(e)}`
+                        : `[bugsee] in-build debug-ID stamping failed; falling back to stamping after emit: ${String(e)}`,
                     ))
                 )(error);
+                state = { preStamped: false, ...(abandoned ? { abandoned: true } : {}) };
               }
             },
           );
@@ -160,9 +232,13 @@ export function createNextWebpackPlugin(
         if (typeof outDir !== 'string' || outDir === '') {
           return;
         }
+        if (state.abandoned === true) {
+          return;
+        }
         const emitted: string[] = [];
         for (const { name } of compilation.getAssets()) {
-          const path = resolve(outDir, name);
+          // The file on disk has no `?query` (webpack drops it when it writes the file).
+          const path = resolve(outDir, withoutQuery(name));
           if (await exists(path)) {
             emitted.push(path);
           }
@@ -178,7 +254,10 @@ export function createNextWebpackPlugin(
         }
         await upload(forKind, outDir, {
           bundler: { isProduction: true, configuration: kind },
-          preStamped,
+          preStamped: state.preStamped,
+          ...(state.preStamped && state.stampedBundles !== undefined
+            ? { stampedBundles: state.stampedBundles, stampedMaps: state.stampedMaps }
+            : {}),
           files,
         });
       });

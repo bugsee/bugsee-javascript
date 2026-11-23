@@ -16,7 +16,7 @@ export interface BuildFiles {
   shared?: string[];
 }
 
-const SCRIPT = /\.[cm]?js$/;
+const SCRIPT = /\.[cm]?js$/i;
 const MAX_DEPTH = 12;
 /** Directories that are never build output, wherever they appear (a route may well be called `cache`). */
 const SKIP = new Set(['node_modules']);
@@ -58,12 +58,13 @@ export function partitionBuildFiles(files: readonly string[]): BuildFiles {
   };
 }
 
-/** A bundle's source-map pointer: the last `//# sourceMappingURL=` comment. */
+/** A bundle's source-map pointer: the last `//# sourceMappingURL=` comment (a `/*# ... *\/` comment in a stylesheet). */
 const POINTER = /\/\/[#@] sourceMappingURL=([^\s'"]+)\s*$/;
+const CSS_POINTER = /\/\*[#@] sourceMappingURL=([^\s'"*]+)\s*\*\/\s*$/;
 
 /** The path a bundle's source-map comment names, or `undefined` when it has none or the map is inline. */
 export function mapPointerOf(file: string, code: string): string | undefined {
-  const reference = POINTER.exec(code)?.[1];
+  const reference = (file.endsWith('.css') ? CSS_POINTER : POINTER).exec(code)?.[1];
   if (reference === undefined || reference.startsWith('data:')) {
     return undefined;
   }
@@ -95,6 +96,16 @@ export async function pairByPointer(
       users.set(map, (users.get(map) ?? 0) + 1);
     }
   }
+  // Stylesheet maps are never uploaded but embed the source, so they are deleted with the rest, and only THIS
+  // build's: a stylesheet map is this build's when one of its stylesheets points at it. A `.css.map` (or a
+  // `.d.ts.map`) that nothing here points at was put there by something else, and is left alone.
+  const styles = new Set<string>();
+  for (const file of files.filter((f) => f.endsWith('.css'))) {
+    const map = mapPointerOf(file, await read(file));
+    if (map?.endsWith('.map') && present.has(map)) {
+      styles.add(map);
+    }
+  }
   // A map belongs to one bundle: a debug-ID is the hash of the bundle AND its map, and a map carries one. Two
   // bundles pointing at the same map (Next 15.5's Turbopack does this for its runtime chunks, measured) cannot both
   // be keyed to it, so neither is paired: stamping one would leave the other with an id no map answers to.
@@ -102,7 +113,7 @@ export async function pairByPointer(
   return {
     scripts: paired.map(([file]) => file).sort(),
     maps: paired.map(([, map]) => map).sort(),
-    stylesheetMaps: files.filter((file) => file.endsWith('.css.map')).sort(),
+    stylesheetMaps: [...styles].sort(),
     shared: [...pointers]
       .filter(([, map]) => (users.get(map) as number) > 1)
       .map(([file]) => file)

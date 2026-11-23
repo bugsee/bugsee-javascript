@@ -14,7 +14,10 @@ class RawSource {
 type Processor = () => Promise<void>;
 
 /** A fake webpack compilation holding named assets, recording updates. */
-function fakeCompilation(assets: Record<string, string>) {
+function fakeCompilation(
+  assets: Record<string, string>,
+  related: Record<string, string | string[]> = {},
+) {
   const store = new Map<string, Buffer>(
     Object.entries(assets).map(([k, v]) => [k, Buffer.from(v)]),
   );
@@ -35,7 +38,12 @@ function fakeCompilation(assets: Record<string, string>) {
       },
       getAssets: () => [...store.keys()].map((name) => ({ name })),
       getAsset: (name: string) =>
-        store.has(name) ? { source: { buffer: () => store.get(name) as Buffer } } : undefined,
+        store.has(name)
+          ? {
+              source: { buffer: () => store.get(name) as Buffer },
+              info: related[name] === undefined ? {} : { related: { sourceMap: related[name] } },
+            }
+          : undefined,
       updateAsset: vi.fn((name: string, source: unknown) => {
         store.set(name, (source as RawSource).content);
       }),
@@ -97,7 +105,7 @@ function context(
 }
 
 const deps = (over: WebpackPluginDeps = {}): WebpackPluginDeps => ({
-  stamp: vi.fn(async () => ({ stamped: [] })),
+  stamp: vi.fn(async () => ({ stamped: [], maps: {}, bundles: 1 })),
   upload: vi.fn(async () => undefined),
   exists: vi.fn(async () => true),
   ...over,
@@ -387,5 +395,172 @@ describe('createNextWebpackPlugin', () => {
     const c = fakeCompilation({ 'a.js': 'x', 'a.js.map': 'm' });
     // Nothing exists on disk, so the real `exists` filters everything out and nothing is uploaded.
     await expect(fake.emit(c.compilation)).resolves.toBeUndefined();
+  });
+});
+
+describe('nextAssetStore: query-free names and moved maps', () => {
+  it('presents names without their ?query and maps them back to the real asset', () => {
+    const { compilation, store } = fakeCompilation({
+      'static/a.js?h1': 'a',
+      'static/a.js.map?h1': 'm',
+      'static/a#1.js': 'hash kept',
+    });
+    const assets = nextAssetStore(compilation, RawSource);
+    expect(assets.names()).toEqual(['static/a.js', 'static/a.js.map', 'static/a#1.js']);
+    expect(assets.read('static/a.js').toString()).toBe('a');
+    assets.update('static/a.js', Buffer.from('b'));
+    expect(store.get('static/a.js?h1')?.toString()).toBe('b');
+    expect(assets.real('static/a.js')).toBe('static/a.js?h1');
+    expect(assets.real('static/a#1.js')).toBe('static/a#1.js');
+    expect(assets.real('unknown.js')).toBe('unknown.js');
+  });
+
+  it('keeps the real names of two assets that would collide once cleaned', () => {
+    const { compilation } = fakeCompilation({ 'a.js?x': '1', 'a.js?y': '2' });
+    expect(nextAssetStore(compilation, RawSource).names()).toEqual(['a.js?x', 'a.js?y']);
+  });
+
+  it('names the map the compilation recorded for a bundle, staged like the bundle', () => {
+    const { compilation } = fakeCompilation(
+      {
+        '../app/page.js': 'x',
+        '../maps/page.js.map?v': 'm',
+        'a.js': 'x',
+        'a.js.map': 'm',
+        'b.js': 'x',
+      },
+      { '../app/page.js': '../maps/page.js.map?v', 'a.js': ['a.js.map', 'other'] },
+    );
+    const assets = nextAssetStore(compilation, RawSource);
+    assets.names();
+    expect(assets.mapOf?.('__bugsee_up__/app/page.js')).toBe('__bugsee_up__/maps/page.js.map');
+    expect(assets.mapOf?.('a.js')).toBe('a.js.map');
+    expect(assets.mapOf?.('b.js')).toBeUndefined();
+  });
+});
+
+describe('createNextWebpackPlugin: the new core contract', () => {
+  const asset = {
+    '../app/page.js': 'x',
+    '../app/page.js.map': 'm',
+    'static/c.js': 'x',
+    'static/c.js.map': 'm',
+  };
+
+  it('hands the on-disk re-check the stamped bundles and maps by REAL asset name', async () => {
+    const d = deps({
+      stamp: vi.fn(async () => ({
+        stamped: ['__bugsee_up__/app/page.js', 'static/c.js'],
+        maps: { '__bugsee_up__/app/page.js': '__bugsee_up__/app/page.js.map' },
+        bundles: 2,
+      })),
+    });
+    const fake = fakeCompiler();
+    createNextWebpackPlugin(context(), 'server', d).apply(fake.compiler);
+    const c = fakeCompilation(asset);
+    fake.startCompilation(c.compilation);
+    await c.run();
+    // The names are only translated if the store was listed (the stamp lists it first).
+    await fake.emit(c.compilation);
+    const [, , options] = (d.upload as ReturnType<typeof vi.fn>).mock.calls[0] as [
+      unknown,
+      unknown,
+      { stampedBundles: string[]; stampedMaps: Record<string, string> },
+    ];
+    expect(options.stampedBundles).toEqual(['__bugsee_up__/app/page.js', 'static/c.js']);
+    expect(options.stampedMaps).toEqual({
+      '__bugsee_up__/app/page.js': '__bugsee_up__/app/page.js.map',
+    });
+  });
+
+  it('translates staged names back to real names when the store was listed', async () => {
+    const d = deps({
+      stamp: vi.fn(async (store) => {
+        store.names();
+        return {
+          stamped: ['__bugsee_up__/app/page.js'],
+          maps: { '__bugsee_up__/app/page.js': '__bugsee_up__/app/page.js.map' },
+          bundles: 1,
+        };
+      }),
+    });
+    const fake = fakeCompiler();
+    createNextWebpackPlugin(context(), 'server', d).apply(fake.compiler);
+    const c = fakeCompilation(asset);
+    fake.startCompilation(c.compilation);
+    await c.run();
+    await fake.emit(c.compilation);
+    const [, , options] = (d.upload as ReturnType<typeof vi.fn>).mock.calls[0] as [
+      unknown,
+      unknown,
+      { stampedBundles: string[]; stampedMaps: Record<string, string> },
+    ];
+    expect(options.stampedBundles).toEqual(['../app/page.js']);
+    expect(options.stampedMaps).toEqual({ '../app/page.js': '../app/page.js.map' });
+  });
+
+  it('does not claim a stamp that staged nothing while the build emitted scripts: says so, stamps after emit', async () => {
+    const d = deps({ stamp: vi.fn(async () => ({ stamped: [], maps: {}, bundles: 0 })) });
+    const ctx = context();
+    const fake = fakeCompiler();
+    createNextWebpackPlugin(ctx, 'server', d).apply(fake.compiler);
+    const c = fakeCompilation(asset);
+    fake.startCompilation(c.compilation);
+    await c.run();
+    await fake.emit(c.compilation);
+    expect(ctx.say).toHaveBeenCalledWith(expect.stringContaining('no debug-ID could be stamped'));
+    expect(ctx.say).toHaveBeenCalledWith(expect.stringContaining('server build'));
+    const [, , options] = (d.upload as ReturnType<typeof vi.fn>).mock.calls[0] as [
+      unknown,
+      unknown,
+      { preStamped: boolean; stampedBundles?: string[] },
+    ];
+    expect(options.preStamped).toBe(false);
+    expect(options.stampedBundles).toBeUndefined();
+  });
+
+  it('a compilation with no scripts at all and nothing staged is not an alarm', async () => {
+    const d = deps({ stamp: vi.fn(async () => ({ stamped: [], maps: {}, bundles: 0 })) });
+    const ctx = context();
+    const fake = fakeCompiler();
+    createNextWebpackPlugin(ctx, 'server', d).apply(fake.compiler);
+    const c = fakeCompilation({ 'a.json': '{}' });
+    fake.startCompilation(c.compilation);
+    await c.run();
+    expect(ctx.say).not.toHaveBeenCalled();
+  });
+
+  it('stamps and uploads nothing when the stamp is refused because a map lies outside the output', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const refusal = Object.assign(new Error('map outside the output'), { unreachableMap: true });
+    const d = deps({
+      stamp: vi.fn(async () => {
+        throw refusal;
+      }),
+    });
+    const fake = fakeCompiler();
+    createNextWebpackPlugin(context(), 'client', d).apply(fake.compiler);
+    const c = fakeCompilation({ 'a.js': 'x', 'a.js.map': 'm' });
+    fake.startCompilation(c.compilation);
+    await c.run();
+    await fake.emit(c.compilation);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('half-stamp'));
+    expect(d.upload).not.toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it('looks for an asset whose name carries a ?query at the query-free path on disk', async () => {
+    const seen: string[] = [];
+    const d = deps({
+      exists: vi.fn(async (path: string) => {
+        seen.push(path);
+        return true;
+      }),
+    });
+    const fake = fakeCompiler({ path: '/out/.next' });
+    createNextWebpackPlugin(context(), 'client', d).apply(fake.compiler);
+    const c = fakeCompilation({ 'static/a.js?h': 'x', 'static/a.js.map?h': 'm' });
+    await fake.emit(c.compilation);
+    expect(seen).toEqual(['/out/.next/static/a.js', '/out/.next/static/a.js.map']);
   });
 });
