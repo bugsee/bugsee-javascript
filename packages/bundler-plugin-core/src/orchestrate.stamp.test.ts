@@ -1759,7 +1759,9 @@ describe('catch-up edge cases (pointer search, failed restore of a pinned bundle
   it('an own bundle that cannot be read is skipped during the pointer search', async () => {
     await mkdir(join(dir, 'maps'));
     await writeFile(join(dir, 'maps', 'x.js.map'), plain); // unkeyed, no sibling bundle
-    const run = vi.fn(async (_args: string[]): Promise<SpawnResult> => ({ code: 0, stdout: '', stderr: '' }));
+    const run = vi.fn(
+      async (_args: string[]): Promise<SpawnResult> => ({ code: 0, stdout: '', stderr: '' }),
+    );
     const errors: unknown[] = [];
     await uploadSourcemaps({
       ...base,
