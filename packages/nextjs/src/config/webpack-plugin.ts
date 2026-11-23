@@ -486,9 +486,8 @@ export function createNextWebpackPlugin(
         // The maps Bugsee itself turned on are public in `.next/static`: when the upload is not confirmed (or
         // throws), they must not be left there. Not with `deleteMaps: false`, which is an explicit "keep them".
         const unconfirmed = wouldDiscard && resolved.deleteMaps !== false;
-        let result: Awaited<ReturnType<typeof upload>>;
         try {
-          result = await upload(forKind, outDir, {
+          await upload(forKind, outDir, {
             bundler: { isProduction: true, configuration: kind },
             preStamped: state.preStamped,
             ...(onDisk !== undefined
@@ -510,7 +509,9 @@ export function createNextWebpackPlugin(
           }
           throw error;
         }
-        if (unconfirmed && result?.uploaded !== true) {
+        // Whatever is still on disk (an upload that failed, or a map that was never keyed and so was kept) goes;
+        // maps a confirmed upload deleted are already gone (removal tolerates ENOENT).
+        if (unconfirmed) {
           await discardForcedMaps();
         }
       });

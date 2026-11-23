@@ -777,11 +777,12 @@ describe('createNextWebpackPlugin: no public maps Bugsee asked for when nothing 
     expect(d.remove).toHaveBeenCalledTimes(2);
   });
 
-  it('leaves them alone when the upload runs (it deletes them itself after confirming)', async () => {
+  it('after a CONFIRMED upload it still removes a forced map that was kept on disk (an unkeyed, restored one)', async () => {
     const d = deps({ upload: vi.fn(async () => ({ uploaded: true }) as never) });
     await run('client', context({}, { forcedMaps: true }), d);
     expect(d.upload).toHaveBeenCalledTimes(1);
-    expect(d.remove).not.toHaveBeenCalled();
+    // the sweep tolerates what the upload already deleted (removeFile ignores ENOENT) and takes what is left
+    expect(d.remove).toHaveBeenCalledWith('/out/.next/static/a.js.map');
   });
 
   it('deletes them when the upload ran but was NOT confirmed (contained failure), and when it throws', async () => {

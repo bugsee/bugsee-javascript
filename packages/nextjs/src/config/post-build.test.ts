@@ -270,9 +270,23 @@ describe('runPostBuild: containment', () => {
       expect(strict.remove).toHaveBeenCalledTimes(2);
     });
 
-    it('stay when the upload was confirmed, on a dry run, with deleteMaps: false, or when the app asked for them', async () => {
+    it('a confirmed upload still sweeps a forced map that was kept (unkeyed), and a failing SERVER collect cannot skip the sweep', async () => {
+      const confirmed = setup(async () => ({ uploaded: true }));
+      await runPostBuild(confirmed.ctx, metadata, confirmed.d);
+      expect(confirmed.remove).toHaveBeenCalledWith('/d/c.js.map');
+
+      const lenient = setup(async () => undefined, { onError: vi.fn() });
+      lenient.d.collect = vi.fn(async (dir: string) => {
+        if (dir === '/app/.next/server') throw new Error('EACCES');
+        return client;
+      });
+      await runPostBuild(lenient.ctx, metadata, lenient.d);
+      expect(lenient.d.upload).not.toHaveBeenCalled();
+      expect(lenient.remove).toHaveBeenCalledTimes(2);
+    });
+
+    it('stay on a dry run, with deleteMaps: false, or when the app asked for them', async () => {
       for (const [upload, overrides, extra] of [
-        [async () => ({ uploaded: true }), {}, {}],
         [async () => undefined, { dryRun: true }, {}],
         [async () => undefined, { deleteMaps: false }, {}],
         [async () => undefined, {}, { forcedMaps: false }],

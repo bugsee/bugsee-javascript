@@ -71,35 +71,9 @@ async function postBuild(
   }
 
   const client = await collect(join(distDir, 'static'));
-  const server = context.serverSourceMaps ? await collect(join(distDir, 'server')) : undefined;
-  // Only when maps were EXPECTED: an app that turned them off (or a dry run, which never forces them on) chose that.
-  if (client.scripts.length === 0 && context.browserMaps !== false) {
-    context.say(
-      'the browser build emitted no source maps, so nothing was uploaded for it. Set `productionBrowserSourceMaps: true` (withBugsee does this unless you set it to false).',
-    );
-  }
-
-  const shared = (client.shared?.length ?? 0) + (server?.shared?.length ?? 0);
-  if (shared > 0) {
-    context.say(
-      `${shared} bundle(s) share one source map with another bundle (Next 15's Turbopack does this for its runtime chunks), so they were left unstamped: a map carries one debug-ID. The shared map itself was neither uploaded nor deleted: if it is in \`.next/static\` it is publicly served (it holds Turbopack's runtime source, not yours).`,
-    );
-  }
-
-  const bundler = { isProduction: true, configuration: 'production' };
-  const runFor = async (
-    dir: string,
-    files: BuildFiles,
-    options: Partial<ResolvedPluginOptions>,
-  ): Promise<boolean> => {
-    if (files.scripts.length === 0) {
-      return false;
-    }
-    const result = await upload({ ...resolved, ...options }, dir, { bundler, files });
-    return result?.uploaded === true;
-  };
-  // The browser maps Bugsee itself turned on are public in `.next/static`: when their upload is not confirmed (or
-  // throws), they must not stay there. Not on a dry run, and not with `deleteMaps: false` (an explicit "keep").
+  // The browser maps Bugsee itself turned on are public in `.next/static`: whatever is still there once the run is
+  // over (an upload that failed or threw, a map that was never keyed so was kept) must not stay. Maps a confirmed
+  // upload already deleted are simply gone. Not on a dry run, and not with `deleteMaps: false` (an explicit "keep").
   const discardForced = async (): Promise<void> => {
     if (context.forcedMaps !== true || resolved.dryRun || resolved.deleteMaps === false) {
       return;
@@ -119,21 +93,45 @@ async function postBuild(
       }
     }
   };
-  // Browser first (it registers the build once); the server and edge output follows its own deletion policy.
-  let confirmed = false;
+  // The same cleanup covers a failing server collect, the client upload and the server run.
   try {
-    confirmed = await runFor(join(distDir, 'static'), client, {});
-  } finally {
-    if (!confirmed) {
-      await discardForced();
+    const server = context.serverSourceMaps ? await collect(join(distDir, 'server')) : undefined;
+    // Only when maps were EXPECTED: an app that turned them off (or a dry run, which never forces them on) chose that.
+    if (client.scripts.length === 0 && context.browserMaps !== false) {
+      context.say(
+        'the browser build emitted no source maps, so nothing was uploaded for it. Set `productionBrowserSourceMaps: true` (withBugsee does this unless you set it to false).',
+      );
     }
-  }
-  if (server !== undefined) {
-    await runFor(join(distDir, 'server'), server, {
-      deleteMaps: context.deleteServerMaps,
-      // The build is registered once. When the browser run had nothing to upload (the app turned browser maps off),
-      // the server run registers it instead, so the build record is not lost.
-      ...(client.scripts.length === 0 ? {} : { registerBuild: false }),
-    });
+
+    const shared = (client.shared?.length ?? 0) + (server?.shared?.length ?? 0);
+    if (shared > 0) {
+      context.say(
+        `${shared} bundle(s) share one source map with another bundle (Next 15's Turbopack does this for its runtime chunks), so they were left unstamped: a map carries one debug-ID. The shared map itself was neither uploaded nor deleted: if it is in \`.next/static\` it is publicly served (it holds Turbopack's runtime source, not yours).`,
+      );
+    }
+
+    const bundler = { isProduction: true, configuration: 'production' };
+    const runFor = async (
+      dir: string,
+      files: BuildFiles,
+      options: Partial<ResolvedPluginOptions>,
+    ): Promise<void> => {
+      if (files.scripts.length === 0) {
+        return;
+      }
+      await upload({ ...resolved, ...options }, dir, { bundler, files });
+    };
+    // Browser first (it registers the build once); the server and edge output follows its own deletion policy.
+    await runFor(join(distDir, 'static'), client, {});
+    if (server !== undefined) {
+      await runFor(join(distDir, 'server'), server, {
+        deleteMaps: context.deleteServerMaps,
+        // The build is registered once. When the browser run had nothing to upload (the app turned browser maps off),
+        // the server run registers it instead, so the build record is not lost.
+        ...(client.scripts.length === 0 ? {} : { registerBuild: false }),
+      });
+    }
+  } finally {
+    await discardForced();
   }
 }
