@@ -70,6 +70,10 @@ describe('mapPointerOf', () => {
     expect(mapPointerOf('/o/a.js', 'x\n/*# sourceMappingURL=a.js.map */')).toBeUndefined();
   });
 
+  it('reads the legacy /*@ */ stylesheet form too', () => {
+    expect(mapPointerOf('/o/a.css', 'a{}\n/*@ sourceMappingURL=x.css.map*/')).toBe('/o/x.css.map');
+  });
+
   it('has no pointer for a bundle without a comment, or with an inline map', () => {
     expect(mapPointerOf('/o/a.js', 'no comment')).toBeUndefined();
     expect(

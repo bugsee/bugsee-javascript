@@ -27,6 +27,7 @@ import { createServer, type Server } from 'node:http';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { type Browser, chromium } from 'playwright';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -36,10 +37,12 @@ const require_ = createRequire(import.meta.url);
 const tsxLoader = join(dirname(require_.resolve('tsx/package.json')), 'dist', 'loader.mjs');
 
 let server: Server;
+let browser: Browser;
 let endpoint: string;
 const bodies: string[] = [];
 
 beforeAll(async () => {
+  browser = await chromium.launch({ headless: true });
   rmSync(fixturesRoot, { recursive: true, force: true });
   mkdirSync(fixturesRoot, { recursive: true });
   // Every upload is answered "already have it", so it succeeds without a backend; the body is kept, so a test
@@ -59,6 +62,7 @@ beforeAll(async () => {
   endpoint = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
 });
 afterAll(async () => {
+  await browser?.close();
   await new Promise<void>((r) => server.close(() => r()));
   // BUGSEE_E2E_KEEP=1 leaves the built fixtures behind for inspection.
   if (process.env.BUGSEE_E2E_KEEP === undefined) {
@@ -146,7 +150,7 @@ async function build(spec: Spec): Promise<Built> {
     `'use client';
 import { useState } from 'react';
 import dynamic from 'next/dynamic';
-const Lazy = dynamic(() => import('./lazy/lazy.jsx'));
+const Lazy = dynamic(() => import('./lazy/lazy.jsx'), { ssr: false });
 const version = typeof __BUGSEE_APP_VERSION__ === 'undefined' ? 'none' : __BUGSEE_APP_VERSION__;
 export default function Page() {
   const [n, setN] = useState(0);
@@ -156,7 +160,7 @@ export default function Page() {
   );
   writeFileSync(
     join(dir, 'app', 'lazy', 'lazy.jsx'),
-    'export default function Lazy() { return <p>lazy</p>; }\n',
+    'export default function Lazy() { return <p id="lazy">lazy-ok</p>; }\n',
   );
   writeFileSync(
     join(dir, 'app', 'api', 'hi', 'route.js'),
@@ -265,6 +269,96 @@ async function runBuild(dir: string, paths: string[]): Promise<number[]> {
   }
 }
 
+interface Page {
+  /** What the page printed to the console as an error, plus uncaught exceptions. */
+  errors: string[];
+  /** Same-origin requests that answered 4xx/5xx (the favicon is not the app's). */
+  failed: string[];
+  /** The text of the lazily loaded component, which renders only if its chunk loaded and ran. */
+  lazy: string | null;
+  /** The text of the page after hydration. */
+  body: string;
+  /** How many bundles registered a debug-id with the runtime (`globalThis._bugseeDebugIds`). */
+  debugIds: number;
+  /** Next's error overlay / error page text, when it replaced the app. */
+  crashed: boolean;
+}
+
+/** `next start` the build and open `/` in headless Chromium: does the app, lazy chunk included, actually RUN? */
+async function openInBrowser(dir: string): Promise<Page> {
+  const port = 43000 + Math.floor(Math.random() * 2000);
+  const child: ChildProcess = spawn(
+    process.execPath,
+    [join(dir, 'node_modules', 'next', 'dist', 'bin', 'next'), 'start', '-p', String(port)],
+    {
+      cwd: dir,
+      env: { ...process.env, NEXT_TELEMETRY_DISABLED: '1', NODE_OPTIONS: `--import ${tsxLoader}` },
+      stdio: 'ignore',
+    },
+  );
+  const context = await browser.newContext();
+  try {
+    const page = await context.newPage();
+    const errors: string[] = [];
+    const failed: string[] = [];
+    page.on('console', (m) => {
+      if (m.type() === 'error' && !m.text().includes('favicon')) errors.push(m.text());
+    });
+    page.on('pageerror', (e) => errors.push(String(e)));
+    page.on('response', (r) => {
+      if (r.status() >= 400 && !r.url().includes('favicon'))
+        failed.push(`${r.status()} ${r.url()}`);
+    });
+    let loaded = false;
+    for (let attempt = 0; attempt < 60 && !loaded; attempt++) {
+      try {
+        await page.goto(`http://127.0.0.1:${port}/`, { waitUntil: 'load' });
+        loaded = true;
+      } catch {
+        await new Promise((r) => setTimeout(r, 500));
+      }
+    }
+    expect(loaded, 'next start never answered').toBe(true);
+    // Hydrate, then give the lazy chunk its chance to load and run.
+    await page
+      .locator('button')
+      .first()
+      .click({ timeout: 15_000 })
+      .catch(() => undefined);
+    await page.waitForSelector('#lazy', { timeout: 10_000 }).catch(() => undefined);
+    const body = await page.evaluate(() => document.body.innerText);
+    return {
+      errors,
+      failed,
+      lazy: await page
+        .locator('#lazy')
+        .textContent({ timeout: 1000 })
+        .catch(() => null),
+      body,
+      debugIds: await page.evaluate(
+        () =>
+          Object.keys((globalThis as { _bugseeDebugIds?: object })._bugseeDebugIds ?? {}).length,
+      ),
+      crashed: /Application error|This page couldn.t load|Unhandled Runtime Error/.test(body),
+    };
+  } finally {
+    await context.close();
+    child.kill('SIGKILL');
+  }
+}
+
+/** The assertions every build that was stamped must satisfy once it is OPEN in a browser. */
+function expectRuns(page: Page, options: { stamped: boolean }): void {
+  expect(page.failed, 'a request failed (a stale chunk URL 404s)').toEqual([]);
+  expect(page.errors).toEqual([]);
+  expect(page.crashed, page.body).toBe(false);
+  expect(page.lazy, 'the lazy chunk did not load and run').toBe('lazy-ok');
+  expect(page.body).toContain('v9.8.7');
+  if (options.stamped) {
+    expect(page.debugIds, 'no bundle registered a debug-id').toBeGreaterThan(0);
+  }
+}
+
 const MATRIX: Spec[] = [
   { name: 'next15-webpack', next: 'next', args: [] },
   { name: 'next15-turbopack', next: 'next', args: ['--turbopack'] },
@@ -351,6 +445,10 @@ describe.each(MATRIX)('withBugsee — real `next build` ($name)', (spec) => {
   it('produces a build that still runs', async () => {
     expect(await runBuild(built.dir, ['/', '/api/hi', '/edge'])).toEqual([200, 200, 200]);
   });
+
+  it('runs in a real browser: the lazy chunk loads and executes, debug-ids register, no errors', async () => {
+    expectRuns(await openInBrowser(built.dir), { stamped: true });
+  });
 });
 
 describe('withBugsee — Subresource Integrity', () => {
@@ -382,6 +480,8 @@ describe('withBugsee — Subresource Integrity', () => {
       expect(debugIdOf(file), `${src} was not stamped`).toBeDefined();
     }
     expect(built.uploads.length).toBeGreaterThan(0);
+    // The browser enforces the hashes: the stamped, SRI-pinned page must still run, lazy chunk included.
+    expectRuns(await openInBrowser(built.dir), { stamped: true });
   });
 
   it('turbopack: leaves an SRI build exactly as Next wrote it, and says why', async () => {
@@ -399,6 +499,7 @@ describe('withBugsee — Subresource Integrity', () => {
     for (const bundle of clientBundles(built.dir)) {
       expect(debugIdOf(bundle), bundle).toBeUndefined();
     }
+    expectRuns(await openInBrowser(built.dir), { stamped: false });
   });
 });
 

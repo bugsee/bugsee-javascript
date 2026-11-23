@@ -98,17 +98,25 @@ describe('withBugsee: composition', () => {
   it('bakes the identity into compiler.define, the app’s own constants winning, never into defineServer', () => {
     const out = apply(
       {
-        compiler: { define: { __BUGSEE_APP_VERSION__: '"mine"', OTHER: '1' }, removeConsole: true },
+        compiler: { define: { __BUGSEE_APP_VERSION__: 'mine', OTHER: '1' }, removeConsole: true },
       },
       deps(),
     );
     expect(out.compiler.define).toEqual({
-      __BUGSEE_APP_VERSION__: '"mine"',
-      __BUGSEE_APP_BUILD__: '"7"',
+      __BUGSEE_APP_VERSION__: 'mine',
+      __BUGSEE_APP_BUILD__: '7',
       OTHER: '1',
     });
     expect(out.compiler.defineServer).toBeUndefined();
     expect(out.compiler.removeConsole).toBe(true);
+  });
+
+  it('hands Next the RAW value: Next JSON-encodes every define itself (a JSON string would arrive quoted)', () => {
+    const out = apply(
+      {},
+      deps(context({ identityDefines: { __BUGSEE_APP_VERSION__: '"a\\"b"', RAW: 'not json' } })),
+    );
+    expect(out.compiler.define).toEqual({ __BUGSEE_APP_VERSION__: 'a"b', RAW: 'not json' });
   });
 
   it('adds no define when no identity was found', () => {
@@ -278,7 +286,7 @@ describe('withBugsee: Turbopack', () => {
     expect(runPostBuild).toHaveBeenCalledWith(d.ctx, metadata);
     // The rest of `compiler`, and the baked identity, survive next to the hook.
     expect(out.compiler.removeConsole).toBe(true);
-    expect(out.compiler.define.__BUGSEE_APP_VERSION__).toBe('"1.0.0"');
+    expect(out.compiler.define.__BUGSEE_APP_VERSION__).toBe('1.0.0');
   });
 
   it('works when the app has no hook of its own', async () => {

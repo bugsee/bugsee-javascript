@@ -64,6 +64,16 @@ export function versionAtLeast(version: string, min: readonly [number, number, n
   return true;
 }
 
+/** A JSON string literal as the string it denotes; anything else as written. */
+function unquote(value: string): string {
+  try {
+    const parsed: unknown = JSON.parse(value);
+    return typeof parsed === 'string' ? parsed : value;
+  } catch {
+    return value;
+  }
+}
+
 /** The `version` of the `next` installed for `projectDir`. */
 function installedNextVersion(projectDir: string): string | undefined {
   try {
@@ -105,7 +115,13 @@ function extendConfig<C extends NextConfigObject>(
     (nextVersion === undefined || versionAtLeast(nextVersion, MIN_COMPILER_DEFINE))
   ) {
     const compiler: NextConfigObject = { ...(config.compiler ?? {}) };
-    compiler.define = { ...identity, ...(config.compiler?.define ?? {}) };
+    // The core hands over JSON string literals (`"1.2.3"`, what a bundler's DefinePlugin takes). Next JSON-encodes
+    // every `compiler.define` value itself (define-env.js serializeDefineEnv), so a JSON string would reach the
+    // bundle quoted twice: the raw value is what it wants (measured: `v"9.8.7"` in a real build).
+    const raw = Object.fromEntries(
+      Object.entries(identity).map(([key, value]) => [key, unquote(value)]),
+    );
+    compiler.define = { ...raw, ...(config.compiler?.define ?? {}) };
     next.compiler = compiler;
   }
 

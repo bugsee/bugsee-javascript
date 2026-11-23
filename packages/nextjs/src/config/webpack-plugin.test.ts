@@ -7,8 +7,14 @@ import {
   type WebpackPluginDeps,
 } from './webpack-plugin';
 
+/**
+ * webpack-sources' RawSource, as far as it matters here: a STRING source is text webpack can still rewrite after
+ * the stamp (RealContentHashPlugin renames `[contenthash]` references in string sources only), a Buffer source is
+ * opaque to it. A stamp that hands a Buffer to `updateAsset` leaves lazy-chunk URLs pointing at files that were
+ * renamed afterwards (measured on real Next builds: ChunkLoadError), so the fake refuses one.
+ */
 class RawSource {
-  constructor(readonly content: Buffer) {}
+  constructor(readonly content: string | Buffer) {}
 }
 
 type Processor = () => Promise<void>;
@@ -45,7 +51,11 @@ function fakeCompilation(
             }
           : undefined,
       updateAsset: vi.fn((name: string, source: unknown) => {
-        store.set(name, (source as RawSource).content);
+        const { content } = source as RawSource;
+        if (typeof content !== 'string') {
+          throw new Error(`${name}: a Buffer source cannot be rewritten by RealContentHashPlugin`);
+        }
+        store.set(name, Buffer.from(content, 'utf8'));
       }),
     },
   };
@@ -395,6 +405,36 @@ describe('createNextWebpackPlugin', () => {
     const c = fakeCompilation({ 'a.js': 'x', 'a.js.map': 'm' });
     // Nothing exists on disk, so the real `exists` filters everything out and nothing is uploaded.
     await expect(fake.emit(c.compilation)).resolves.toBeUndefined();
+  });
+});
+
+describe('nextAssetStore: sources webpack can still rewrite', () => {
+  it('updates an asset with a STRING source, never a Buffer', () => {
+    const { compilation, store } = fakeCompilation({ 'static/a.js': 'old' });
+    const assets = nextAssetStore(compilation, RawSource);
+    assets.names();
+    assets.update('static/a.js', Buffer.from('new \u00e9 text', 'utf8'));
+    expect(compilation.updateAsset).toHaveBeenCalledTimes(1);
+    const [, source] = compilation.updateAsset.mock.calls[0] as [string, RawSource];
+    expect(source.content).toBe('new \u00e9 text');
+    expect(store.get('static/a.js')?.toString('utf8')).toBe('new \u00e9 text');
+  });
+
+  it('does not offer an asset whose bytes are not valid UTF-8 (a string source would corrupt it)', () => {
+    const { compilation, store } = fakeCompilation({ 'a.js': 'ok', 'b.js': 'x' });
+    store.set('b.js', Buffer.from([0xff, 0xfe, 0x00, 0x80]));
+    expect(nextAssetStore(compilation, RawSource).names()).toEqual(['a.js']);
+  });
+
+  it('a bundle whose map cannot be offered refuses the whole stamp instead of half-stamping', async () => {
+    const { compilation, store } = fakeCompilation(
+      { 'a.js': 'x', 'a.js.map': 'm' },
+      { 'a.js': 'a.js.map' },
+    );
+    store.set('a.js.map', Buffer.from([0xff, 0xfe]));
+    const assets = nextAssetStore(compilation, RawSource);
+    const { stampAssets } = await import('@bugsee/bundler-plugin-core');
+    await expect(stampAssets(assets, { dryRun: true })).rejects.toThrow();
   });
 });
 

@@ -56,7 +56,7 @@ export interface CompilerLike {
 
 interface WebpackApi {
   Compilation?: { PROCESS_ASSETS_STAGE_DEV_TOOLING?: number };
-  sources?: { RawSource?: new (content: Buffer) => unknown };
+  sources?: { RawSource?: new (content: string) => unknown };
 }
 
 /** Seams for tests. */
@@ -97,6 +97,17 @@ async function fileExists(path: string): Promise<boolean> {
  */
 const withoutQuery = (name: string): string => name.replace(/\?.*$/, '');
 
+const strictUtf8 = new TextDecoder('utf-8', { fatal: true });
+/** Whether `bytes` are valid UTF-8 text (an asset with no content counts as text). */
+function isText(bytes: Buffer | undefined): boolean {
+  try {
+    strictUtf8.decode(bytes);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** A compilation's asset table as the core's {@link AssetStore}, plus the way back to real asset names. */
 export interface NextAssetStore extends AssetStore {
   /** The real asset name behind a name this store presented. */
@@ -111,7 +122,7 @@ export interface NextAssetStore extends AssetStore {
  */
 export function nextAssetStore(
   compilation: CompilationLike,
-  RawSource: new (content: Buffer) => unknown,
+  RawSource: new (content: string) => unknown,
 ): NextAssetStore {
   const up = (name: string): string =>
     name.replace(/^(?:\.\.\/)+/, (dots) => `${UP}/`.repeat(dots.length / 3));
@@ -125,7 +136,14 @@ export function nextAssetStore(
     }
     for (const name of names) {
       const clean = up(withoutQuery(name));
-      actual.set(counts.get(clean) === 1 ? clean : up(name), name);
+      // A string source cannot carry bytes that are not UTF-8 without corrupting them, so such an asset is not
+      // offered for stamping at all (a map that is not text refuses the whole stamp).
+      if (isText(compilation.getAsset(name)?.source.buffer())) {
+        actual.set(counts.get(clean) === 1 ? clean : up(name), name);
+      } else if (/\.map(\?|$)/.test(name)) {
+        // A map left out would leave its bundle stamped with an id the map never got.
+        throw new Error(`${name} is not valid UTF-8, so it cannot be stamped as text`);
+      }
     }
   };
   const real = (name: string): string => actual.get(name) ?? name;
@@ -135,7 +153,11 @@ export function nextAssetStore(
       return [...actual.keys()];
     },
     read: (name) => compilation.getAsset(real(name))?.source.buffer() ?? Buffer.alloc(0),
-    update: (name, content) => compilation.updateAsset(real(name), new RawSource(content)),
+    // A STRING source on purpose: the stamp runs before webpack's RealContentHashPlugin renames `[contenthash]`
+    // chunks, and that plugin rewrites the hashed names inside string sources only. A Buffer would keep the
+    // pre-rename chunk URLs (measured on real Next builds: every lazy chunk 404s, ChunkLoadError).
+    update: (name, content) =>
+      compilation.updateAsset(real(name), new RawSource(content.toString('utf8'))),
     mapOf: (name) => {
       const related = compilation.getAsset(real(name))?.info?.related?.sourceMap;
       const map = Array.isArray(related) ? related[0] : related;
