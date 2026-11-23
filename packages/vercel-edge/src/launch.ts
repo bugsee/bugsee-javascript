@@ -45,7 +45,7 @@ import {
 } from '@bugsee/core';
 import { BugseeOption, type RuntimeType } from '@bugsee/protocol';
 import { describeValue, reportGuarded } from '@bugsee/util';
-import { EDGE_APP_VERSION_HINT, edgeAppIdentity, warnToConsole } from './app-identity';
+import { createEdgeAppIdentity, EDGE_APP_VERSION_HINT, warnToConsole } from './app-identity';
 import { createEdgeUnhandledRejectionProvider, type EdgeGlobalEvents } from './detection';
 import { buildEdgeEnvironment } from './environment';
 import {
@@ -133,6 +133,12 @@ export interface BugseeEdgeLaunchOptions {
   appId?: string;
   appVersion?: string;
   appBuild?: string;
+  /**
+   * The host's bindings object (Cloudflare's per-deployment `env`), read for the app identity when
+   * `process.env` is empty: `BUGSEE_APP_VERSION` / `BUGSEE_APP_BUILD`, and a `CF_VERSION_METADATA` binding
+   * (its `tag` is the version, its `id` the build). Only those keys are read, once, at launch.
+   */
+  bindings?: Record<string, unknown>;
 
   /** Capture console output as logs. Default true. */
   captureLogs?: boolean;
@@ -285,7 +291,7 @@ export function launchEdge(appToken: string, options: BugseeEdgeLaunchOptions = 
 
   const appIdentity = resolveAppIdentity(
     { version: options.appVersion, build: options.appBuild },
-    [bundledAppIdentity, edgeAppIdentity],
+    [bundledAppIdentity, createEdgeAppIdentity(options.bindings)],
     warnToConsole,
     EDGE_APP_VERSION_HINT,
   );

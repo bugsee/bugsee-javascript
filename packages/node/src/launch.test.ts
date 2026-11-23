@@ -3983,6 +3983,7 @@ describe('app identity detection', () => {
 
   afterEach(() => {
     vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
     vi.restoreAllMocks();
   });
 
@@ -4027,11 +4028,35 @@ describe('app identity detection', () => {
     expect(launchIdentity({ appRoot: dir }).internals?.appVersion).toBe('3.3.3');
   });
 
+  it('falls back to the entry script’s package.json when the working directory has none', () => {
+    vi.stubEnv('BUGSEE_APP_VERSION', '');
+    const dir = mkdtempSync(join(tmpdir(), 'bugsee-entry-'));
+    writeFileSync(join(dir, 'package.json'), '{"version":"6.6.6"}');
+    vi.spyOn(process, 'cwd').mockImplementation(() => {
+      throw new Error('gone');
+    });
+    vi.spyOn(process, 'argv', 'get').mockReturnValue(['node', join(dir, 'main.js')]);
+    expect(launchIdentity().internals?.appVersion).toBe('6.6.6');
+  });
+
+  it('prefers Bun.main over argv[1] for the entry script', () => {
+    vi.stubEnv('BUGSEE_APP_VERSION', '');
+    const dir = mkdtempSync(join(tmpdir(), 'bugsee-bun-'));
+    writeFileSync(join(dir, 'package.json'), '{"version":"5.5.5"}');
+    vi.spyOn(process, 'cwd').mockImplementation(() => {
+      throw new Error('gone');
+    });
+    vi.spyOn(process, 'argv', 'get').mockReturnValue(['bun', '/nowhere/x.js']);
+    vi.stubGlobal('Bun', { main: join(dir, 'server.ts') });
+    expect(launchIdentity().internals?.appVersion).toBe('5.5.5');
+  });
+
   it('a repeat launch() is ignored before identity is resolved: no second package.json read or warning', () => {
     vi.stubEnv('BUGSEE_APP_VERSION', '');
     const cwd = vi.spyOn(process, 'cwd').mockImplementation(() => {
       throw new Error('gone');
     });
+    vi.spyOn(process, 'argv', 'get').mockReturnValue(['node']);
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const carrier = {};
     const identitySource = vi.fn(() => undefined);
@@ -4063,6 +4088,7 @@ describe('app identity detection', () => {
     vi.spyOn(process, 'cwd').mockImplementation(() => {
       throw new Error('gone');
     });
+    vi.spyOn(process, 'argv', 'get').mockReturnValue(['node']); // no entry script to fall back to
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const { internals } = launchIdentity({ appRoot: '' });
     expect(internals?.appVersion).toBeUndefined();

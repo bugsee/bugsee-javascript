@@ -221,3 +221,77 @@ describe('createNodeAppIdentitySource build', () => {
     expect(createNodeAppIdentitySource({ env: {}, cwd: () => undefined })()).toEqual({});
   });
 });
+
+describe('createNodeAppIdentitySource entry-point fallback', () => {
+  it('reads the entry script’s package.json when the working directory has none', () => {
+    const readFile = files({ '/srv/app/package.json': '{"version":"4.2.0"}' });
+    const source = createNodeAppIdentitySource({
+      env: {},
+      cwd: () => '/',
+      entryPoint: () => '/srv/app/dist/main.js',
+      readFile,
+    });
+    expect(source()).toEqual({ version: '4.2.0' });
+  });
+
+  it('prefers the working directory’s manifest over the entry script’s', () => {
+    const source = createNodeAppIdentitySource({
+      env: {},
+      cwd: () => '/work',
+      entryPoint: () => '/srv/app/main.js',
+      readFile: files({
+        '/work/package.json': '{"version":"1.0.0"}',
+        '/srv/app/package.json': '{"version":"9.9.9"}',
+      }),
+    });
+    expect(source()?.version).toBe('1.0.0');
+  });
+
+  it('does not consult the entry point when appRoot is given', () => {
+    const entryPoint = vi.fn(() => '/srv/app/main.js');
+    const source = createNodeAppIdentitySource({
+      env: {},
+      appRoot: '/root',
+      entryPoint,
+      readFile: files({ '/srv/app/package.json': '{"version":"9.9.9"}' }),
+    });
+    expect(source()?.version).toBeUndefined();
+    expect(entryPoint).not.toHaveBeenCalled();
+  });
+
+  it('never adopts a tool’s or dependency’s manifest found under node_modules via the entry script', () => {
+    const source = createNodeAppIdentitySource({
+      env: {},
+      cwd: () => '/',
+      entryPoint: () => '/proj/node_modules/tsx/dist/cli.mjs',
+      readFile: files({ '/proj/node_modules/tsx/package.json': '{"version":"4.19.0"}' }),
+    });
+    expect(source()?.version).toBeUndefined();
+    const windows = createNodeAppIdentitySource({
+      env: {},
+      cwd: () => '/',
+      entryPoint: () => '/proj/node_modules/.bin/vitest',
+      readFile: files({ '/proj/node_modules/.bin/package.json': '{"version":"1.1.1"}' }),
+    });
+    expect(windows()?.version).toBeUndefined();
+  });
+
+  it('survives a missing or throwing entry point', () => {
+    const none = createNodeAppIdentitySource({
+      env: {},
+      cwd: () => '/',
+      entryPoint: () => undefined,
+      readFile: files({}),
+    });
+    expect(none()?.version).toBeUndefined();
+    const throwing = createNodeAppIdentitySource({
+      env: {},
+      cwd: () => '/',
+      entryPoint: () => {
+        throw new Error('boom');
+      },
+      readFile: files({}),
+    });
+    expect(throwing()?.version).toBeUndefined();
+  });
+});

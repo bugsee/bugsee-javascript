@@ -293,6 +293,7 @@ export const RELAUNCH_KEPT_OPTIONS: readonly string[] = [
   'appId',
   'appVersion',
   'appBuild',
+  'bindings', // edge env bindings (version/build source): dropped on relaunch, the version would fall back to 0.0.0
   'appIdentitySource',
   'platformType',
   'sdkVersion',

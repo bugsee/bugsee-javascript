@@ -26,6 +26,12 @@ export interface NodeAppIdentitySourceOptions {
   readFile?: (path: string) => string;
   /** Directory to start looking for `package.json` in. Default the working directory. */
   appRoot?: string;
+  /**
+   * The running entry script (a file path). Consulted only when no `appRoot` is given AND the working
+   * directory's search found no version (a container `WORKDIR /`, a service manager's cwd): its directory is
+   * then searched the same way. Default none; the launch passes `process.argv[1]` / `Bun.main`.
+   */
+  entryPoint?: () => string | undefined;
 }
 
 const defaultCwd = (): string | undefined => {
@@ -70,14 +76,26 @@ export const createNodeAppIdentitySource = (
   let searched: { value: string | undefined } | undefined;
   const fromPackageJson = (): string | undefined => {
     if (searched === undefined) {
-      const start =
-        options.appRoot !== undefined && options.appRoot !== '' ? options.appRoot : cwd();
-      searched = {
-        value:
-          start === undefined
-            ? undefined
-            : findNearestPackageVersion(start, { readFile, dirname, join }),
-      };
+      const explicitRoot =
+        options.appRoot !== undefined && options.appRoot !== '' ? options.appRoot : undefined;
+      const find = (start: string | undefined): string | undefined =>
+        start === undefined
+          ? undefined
+          : findNearestPackageVersion(start, { readFile, dirname, join });
+      let value = find(explicitRoot ?? cwd());
+      if (value === undefined && explicitRoot === undefined && options.entryPoint !== undefined) {
+        try {
+          const entry = options.entryPoint();
+          // An entry under node_modules is a TOOL's script (tsx/vitest/npx resolve argv[1] there), never the app:
+          // walking up from it would stamp the report with the tool's version.
+          const underModules = entry !== undefined && /(^|[\\/])node_modules([\\/]|$)/.test(entry);
+          value =
+            entry === undefined || entry === '' || underModules ? undefined : find(dirname(entry));
+        } catch {
+          value = undefined; // an entry point that cannot be read is simply unknown
+        }
+      }
+      searched = { value };
     }
     return searched.value;
   };
