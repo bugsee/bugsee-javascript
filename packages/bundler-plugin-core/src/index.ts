@@ -11,6 +11,12 @@ export {
 } from './app-identity';
 export { deriveBuildUuid } from './build-id';
 export {
+  BUILD_PLUGIN_ENV_FILE,
+  type EnvFileResult,
+  loadBuildPluginEnv,
+  mergeBuildPluginEnv,
+} from './env-file';
+export {
   defaultDeleteMapFiles,
   type RunFn,
   type UploadSourcemapsOptions,
@@ -52,6 +58,12 @@ export {
   type SpawnResult,
   spawnProcess,
 } from './run-cli';
+export {
+  findIntegrityMismatches,
+  findSriProtectedScripts,
+  resealIntegrity,
+  type SriProtectedScript,
+} from './sri';
 export {
   isWorkingTreeDirty,
   type ResolveVcsMetadataOptions,

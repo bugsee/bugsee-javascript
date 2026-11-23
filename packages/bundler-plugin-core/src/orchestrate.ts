@@ -4,7 +4,12 @@
 import { readdir, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { type RunBugseeCliOptions, runBugseeCli, type SpawnResult } from './run-cli';
-import { findIntegrityMismatches, findSriProtectedScripts, type SriProtectedScript } from './sri';
+import {
+  findIntegrityMismatches,
+  findSriProtectedScripts,
+  resealIntegrity,
+  type SriProtectedScript,
+} from './sri';
 import {
   MAX_WALK_DEPTH,
   NEVER_WALK,
@@ -77,8 +82,22 @@ export interface UploadSourcemapsOptions {
    * refusal, which exists only to protect a page from that rewrite. Runs {@link verifySri} instead.
    */
   preStamped?: boolean;
-  /** Injectable integrity check for the pre-stamped path (default {@link findIntegrityMismatches}). */
+  /** Injectable integrity check for the pre-stamped and re-seal paths (default {@link findIntegrityMismatches}). */
   verifySri?: (dir: string) => Promise<SriProtectedScript[]>;
+  /**
+   * Stamp a build that pins its script hashes, then RE-WRITE the hashes to match, instead of refusing.
+   *
+   * For a build whose only copies of those hashes are in HTML pages (and the server modules that embed
+   * them) — Angular's esbuild application builder. `sourcemaps inject` runs with `--allow-sri`, the stale
+   * digests are replaced in {@link resealDirs}, and the result is verified; a page that still does not
+   * verify is reported (or thrown under `failOnError`), never silent. NOT for `webpack-subresource-integrity`,
+   * which also embeds hashes in its runtime chunk. Ignored on a dry run (nothing is written).
+   */
+  resealSri?: boolean;
+  /** Directories whose HTML / `.mjs` carry a copy of the hashes. Default: `[outDir]`. */
+  resealDirs?: readonly string[];
+  /** Injectable re-sealer (default {@link resealIntegrity}). */
+  reseal?: typeof resealIntegrity;
   /**
    * FAIL the build when `bugsee-cli` fails. Default `false`.
    *
@@ -185,6 +204,9 @@ export async function uploadSourcemaps(
   const files = options.files;
   const deleteMaps = options.deleteMaps ?? true;
   const dryFlag = dryRun ? ['--dry-run'] : [];
+  // `inject` refuses a hashed build unless told the hashes are re-written afterwards, which resealSri does.
+  const resealing = options.resealSri === true;
+  const allowSriFlag = resealing ? ['--allow-sri'] : [];
   const cliOptions: RunBugseeCliOptions = { token: appToken, endpoint };
   const onError = options.onError ?? defaultUploadErrorHandler;
 
@@ -244,7 +266,7 @@ export async function uploadSourcemaps(
       //    survivable; shipping a page that does not load is not. Checked BEFORE anything is written,
       //    so a refusal leaves the build exactly as the bundler emitted it.
       const pinned = await (options.findSri ?? findSriProtectedScripts)(outDir);
-      if (pinned.length > 0) {
+      if (pinned.length > 0 && !resealing) {
         const [first] = pinned as [SriProtectedScript, ...SriProtectedScript[]];
         throw new Error(
           `refusing to stamp debug-IDs: this build uses Subresource Integrity — ${first.html} pins a ` +
@@ -267,12 +289,12 @@ export async function uploadSourcemaps(
 
       // 1. Inject debug-IDs (rewrites the built .js + .map in place).
       if (files === undefined) {
-        await run(['sourcemaps', 'inject', outDir, ...dryFlag], cliOptions);
+        await run(['sourcemaps', 'inject', outDir, ...dryFlag, ...allowSriFlag], cliOptions);
       } else {
         // A script and its map may land in different batches: harmless, the debug-id is derived from the
         // bundle's content, so each side stamps the same id (measured with 250 entries, none mismatched).
         for (const batch of inBatches([...files.scripts, ...files.maps])) {
-          await run(['sourcemaps', 'inject', ...batch, ...dryFlag], cliOptions);
+          await run(['sourcemaps', 'inject', ...batch, ...dryFlag, ...allowSriFlag], cliOptions);
         }
       }
 
@@ -287,6 +309,28 @@ export async function uploadSourcemaps(
         if (issues.length > 0) {
           const failure = new Error(
             `the debug-ID stamp did not verify, so ${restored.length} file(s) were restored to the bundler's original bytes (${formatIssues(issues)})`,
+          );
+          if (options.failOnError === true) {
+            throw failure;
+          }
+          onError(failure);
+        }
+      }
+
+      // 1c. Re-seal: the bundles changed after the build hashed them, so write the new hashes where the old ones
+      //     are, then check. After 1b, so the bytes sealed are the bytes that stayed on disk (a restored file
+      //     still matches its original hash and is left alone). Not on a dry run: nothing was written.
+      if (resealing && !dryRun) {
+        await (options.reseal ?? resealIntegrity)(pinned, options.resealDirs ?? [outDir]);
+        const broken = await (options.verifySri ?? findIntegrityMismatches)(outDir);
+        if (broken.length > 0) {
+          const [first] = broken as [SriProtectedScript, ...SriProtectedScript[]];
+          const failure = new Error(
+            `${first.script} still does not match the integrity hash ${first.html} pins` +
+              (broken.length > 1 ? ` (and ${broken.length - 1} more)` : '') +
+              ` after the hashes were re-written, so the browser will refuse to run it. Something other than the ` +
+              `pages carries a copy of that hash (a runtime table of chunk hashes, for instance), which this step ` +
+              `does not rewrite. Turn Subresource Integrity off for this build, or do not stamp it.`,
           );
           if (options.failOnError === true) {
             throw failure;

@@ -277,6 +277,10 @@ export async function runPluginUpload(
     bundler?: BundlerBuildContext;
     /** The bundles were stamped inside the build (stamp-assets.ts); skip the post-emit inject. */
     preStamped?: boolean;
+    /** Stamp a build that pins its script hashes, then re-write the hashes (see `UploadSourcemapsOptions.resealSri`). */
+    resealSri?: boolean;
+    /** Directories whose HTML / `.mjs` carry a copy of the hashes. */
+    resealDirs?: readonly string[];
     /**
      * The build's own outputs (esbuild's metafile). The run then touches exactly these files, never joins another
      * run of the same directory, and registers from these bundles only.
@@ -322,6 +326,8 @@ export async function runPluginUpload(
       // build that did not take the in-build path.
       ...(deps.preStamped === true ? { preStamped: true } : {}),
       ...(deps.files !== undefined ? { files: deps.files } : {}),
+      ...(deps.resealSri === true ? { resealSri: true } : {}),
+      ...(deps.resealDirs !== undefined ? { resealDirs: deps.resealDirs } : {}),
     });
     // AFTER the upload, because the build id is derived from the debug-ids its inject step stamps
     // into the bundles — and regardless of whether the maps made it, because a build exists either

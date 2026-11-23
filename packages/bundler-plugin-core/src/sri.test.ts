@@ -1,9 +1,9 @@
 import { createHash } from 'node:crypto';
-import { chmod, mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { findIntegrityMismatches, findSriProtectedScripts } from './sri';
+import { findIntegrityMismatches, findSriProtectedScripts, resealIntegrity } from './sri';
 
 // Measured, 2026-09-18: a real webpack 5.111 build with `webpack-subresource-integrity` +
 // `html-webpack-plugin`, served over HTTP and loaded in Chromium 151. Before `sourcemaps inject` the
@@ -453,5 +453,116 @@ describe('findIntegrityMismatches', () => {
     // A stale page pinning a deleted bundle is broken, but not by anything this build did.
     await page(digest('sha384', 'x();'), 'gone.js');
     expect(await findIntegrityMismatches(root)).toEqual([]);
+  });
+});
+
+describe('resealIntegrity', () => {
+  const sha = (alg: string, text: string) =>
+    `${alg}-${createHash(alg).update(text).digest('base64')}`;
+  let root: string;
+  beforeEach(async () => {
+    root = await fixture();
+  });
+
+  /** An Angular-shaped page (script + modulepreload) hashed over the ORIGINAL bytes, then the script is stamped. */
+  const hashedThenStamped = async () => {
+    await write(root, 'main.js', 'a();');
+    await write(root, 'chunk.js', 'b();');
+    const html = await write(
+      root,
+      'index.html',
+      `<link rel="modulepreload" href="chunk.js" integrity="${sha('sha384', 'b();')}">` +
+        `<script src="main.js" integrity="${sha('sha384', 'a();')}"></script>`,
+    );
+    const pins = await findSriProtectedScripts(root);
+    await write(root, 'main.js', 'a();\n//# debugId=x');
+    return { html, pins };
+  };
+
+  it('rewrites the pinned hash of a changed script, so the page verifies again', async () => {
+    const { html, pins } = await hashedThenStamped();
+    await write(root, 'about.html', '<p>no hashes here</p>');
+    const { files } = await resealIntegrity(pins, [root]);
+    expect(files).toEqual([html]);
+    expect(await findIntegrityMismatches(root)).toEqual([]);
+    const page = await readFile(html, 'utf8');
+    expect(page).toContain(sha('sha384', 'a();\n//# debugId=x'));
+    expect(page).not.toContain(sha('sha384', 'a();'));
+  });
+
+  it('leaves a script that did not change, and its page, alone', async () => {
+    const { html, pins } = await hashedThenStamped();
+    const before = await readFile(html, 'utf8');
+    await write(root, 'main.js', 'a();'); // back to the hashed bytes
+    await write(root, 'about.html', '<p>no hashes here</p>');
+    expect((await resealIntegrity(pins, [root])).files).toEqual([]);
+    expect(await readFile(html, 'utf8')).toBe(before);
+  });
+
+  it('rewrites every algorithm in the value, and keeps the ones it cannot compute', async () => {
+    await write(root, 'main.js', 'a();');
+    const html = await write(
+      root,
+      'index.html',
+      `<script src="main.js" integrity="${sha('sha256', 'a();')}   ${sha('sha512', 'a();')} md5-zzz"></script>`,
+    );
+    const pins = await findSriProtectedScripts(root);
+    await write(root, 'main.js', 'a2();');
+    await resealIntegrity(pins, [root]);
+    const page = await readFile(html, 'utf8');
+    expect(page).toContain(sha('sha256', 'a2();'));
+    expect(page).toContain(sha('sha512', 'a2();'));
+    expect(page).toContain('md5-zzz');
+    expect(await findIntegrityMismatches(root)).toEqual([]);
+  });
+
+  it('keeps the ?options suffix of a token', async () => {
+    await write(root, 'main.js', 'a();');
+    const html = await write(
+      root,
+      'index.html',
+      `<script src="main.js" integrity="${sha('sha384', 'a();')}?ct=x"></script>`,
+    );
+    const pins = await findSriProtectedScripts(root);
+    await write(root, 'main.js', 'a2();');
+    await resealIntegrity(pins, [root]);
+    expect(await readFile(html, 'utf8')).toContain(`${sha('sha384', 'a2();')}?ct=x`);
+  });
+
+  it('also rewrites the copies of the page embedded in server modules, in every directory given', async () => {
+    const { pins } = await hashedThenStamped();
+    const server = await fixture();
+    const embedded = await write(
+      server,
+      'assets-chunks/index.html.mjs',
+      `export default "<script src=\\"main.js\\" integrity=\\"${sha('sha384', 'a();')}\\"></script>";`,
+    );
+    const untouched = await write(server, 'notes.txt', sha('sha384', 'a();'));
+    const { files } = await resealIntegrity(pins, [root, server]);
+    expect(files).toContain(embedded);
+    expect(files).not.toContain(untouched);
+    expect(await readFile(embedded, 'utf8')).toContain(sha('sha384', 'a();\n//# debugId=x'));
+    expect(await readFile(untouched, 'utf8')).toBe(sha('sha384', 'a();'));
+  });
+
+  it('skips a pinned script that is gone, and a directory that is missing', async () => {
+    await write(
+      root,
+      'index.html',
+      `<script src="gone.js" integrity="${sha('sha384', 'x')}"></script>`,
+    );
+    const pins = await findSriProtectedScripts(root);
+    expect(await resealIntegrity(pins, [root, join(root, 'missing')])).toEqual({ files: [] });
+  });
+
+  it('does not descend into node_modules, dot directories or past the depth bound', async () => {
+    const { pins } = await hashedThenStamped();
+    const hidden = await write(root, 'node_modules/x/index.html', sha('sha384', 'a();'));
+    const dot = await write(root, '.cache/index.html', sha('sha384', 'a();'));
+    const deep = await write(root, 'a/b/c/d/e/f/g/h/index.html', sha('sha384', 'a();'));
+    const { files } = await resealIntegrity(pins, [root]);
+    expect(files).not.toContain(hidden);
+    expect(files).not.toContain(dot);
+    expect(files).not.toContain(deep);
   });
 });

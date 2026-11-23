@@ -16,7 +16,7 @@
 // every dynamic import.
 import { createHash } from 'node:crypto';
 import type { Dirent } from 'node:fs';
-import { readdir, readFile } from 'node:fs/promises';
+import { readdir, readFile, writeFile } from 'node:fs/promises';
 import { isAbsolute, join, normalize, resolve, sep } from 'node:path';
 
 /** One `<script>` whose `integrity` pins a file in the build output. */
@@ -83,7 +83,9 @@ const resolveLocalScript = (outDir: string, htmlDir: string, src: string): strin
   return normalize(full).startsWith(rooted) ? full : undefined;
 };
 
-const walkHtml = async (dir: string, depth = 0): Promise<string[]> => {
+const HTML_FILE = /\.x?html?$/i;
+
+const walkFiles = async (dir: string, wanted: RegExp, depth = 0): Promise<string[]> => {
   if (depth > MAX_DEPTH) {
     return [];
   }
@@ -102,8 +104,8 @@ const walkHtml = async (dir: string, depth = 0): Promise<string[]> => {
       if (NEVER_WALK.has(entry.name) || entry.name.startsWith('.')) {
         continue;
       }
-      found.push(...(await walkHtml(full, depth + 1)));
-    } else if (entry.isFile() && /\.x?html?$/i.test(entry.name)) {
+      found.push(...(await walkFiles(full, wanted, depth + 1)));
+    } else if (entry.isFile() && wanted.test(entry.name)) {
       found.push(full);
     }
   }
@@ -122,7 +124,7 @@ export async function findSriProtectedScripts(outDirInput: string): Promise<SriP
   // absolute resolved script path against a relative root made every `src="main.js"` look like it
   // was outside the output directory, so the guard was silently inert for exactly those builds.
   const outDir = resolve(outDirInput);
-  const pages = await walkHtml(outDir);
+  const pages = await walkFiles(outDir, HTML_FILE);
   const seen = new Set<string>();
   const found: SriProtectedScript[] = [];
   for (const html of pages.sort()) {
@@ -162,12 +164,8 @@ export async function findSriProtectedScripts(outDirInput: string): Promise<SriP
 const SRI_ALGORITHMS = ['sha256', 'sha384', 'sha512'] as const;
 type SriAlgorithm = (typeof SRI_ALGORITHMS)[number];
 
-/**
- * Whether `bytes` would pass `integrity`, by the browser's rule (SRI): unknown algorithms are
- * ignored; of what remains only the STRONGEST algorithm is compared; any one digest of it matching is
- * enough. A value with no algorithm the browser knows means no check at all.
- */
-function passesIntegrity(integrity: string, bytes: Buffer): boolean {
+/** The digests of `integrity` the browser can evaluate, grouped by algorithm. Unknown algorithms are dropped. */
+function digestsByAlgorithm(integrity: string): Map<SriAlgorithm, string[]> {
   const byAlgorithm = new Map<SriAlgorithm, string[]>();
   for (const token of integrity.split(/\s+/)) {
     // `alg-base64[?options]` — the options suffix is allowed by the grammar and has no effect here.
@@ -178,6 +176,16 @@ function passesIntegrity(integrity: string, bytes: Buffer): boolean {
       byAlgorithm.set(alg, [...(byAlgorithm.get(alg) ?? []), spec.slice(dash + 1)]);
     }
   }
+  return byAlgorithm;
+}
+
+/**
+ * Whether `bytes` would pass `integrity`, by the browser's rule (SRI): unknown algorithms are
+ * ignored; of what remains only the STRONGEST algorithm is compared; any one digest of it matching is
+ * enough. A value with no algorithm the browser knows means no check at all.
+ */
+function passesIntegrity(integrity: string, bytes: Buffer): boolean {
+  const byAlgorithm = digestsByAlgorithm(integrity);
   const strongest = [...SRI_ALGORITHMS].reverse().find((alg) => byAlgorithm.has(alg));
   if (strongest === undefined) {
     return true;
@@ -212,4 +220,59 @@ export async function findIntegrityMismatches(outDirInput: string): Promise<SriP
     }
   }
   return mismatched;
+}
+
+/** Text files that can carry a copy of a page's hashes: the page itself and the server modules that embed it. */
+const RESEAL_FILE = /\.(x?html?|mjs)$/i;
+
+/**
+ * Re-seal a build whose scripts changed AFTER their hashes were written: replace each stale digest with the
+ * digest of the script's current bytes, in every HTML page and `.mjs` module under `dirs`.
+ *
+ * `pins` must be what {@link findSriProtectedScripts} returned BEFORE the change — it is where the stale
+ * digests come from. A pin whose script still matches is left alone; one whose script is gone is skipped.
+ *
+ * Sound only for a build whose copies of the hashes all live in those files — e.g. Angular's, where the
+ * integrity attributes are in `index.html` (and, with SSR, in the HTML Angular embeds in its server modules).
+ * It is NOT sound for `webpack-subresource-integrity`, which also writes the lazy chunks' hashes into the
+ * runtime chunk; the caller checks the result with {@link findIntegrityMismatches}, and a build with another
+ * copy of a hash is not claimed to be fixed. Returns the files it rewrote. A missing directory is skipped.
+ */
+export async function resealIntegrity(
+  pins: readonly SriProtectedScript[],
+  dirs: readonly string[],
+): Promise<{ files: string[] }> {
+  const swaps = new Map<string, string>();
+  for (const pin of pins) {
+    let bytes: Buffer;
+    try {
+      bytes = await readFile(pin.script);
+    } catch {
+      continue;
+    }
+    if (passesIntegrity(pin.integrity, bytes)) {
+      continue;
+    }
+    for (const [alg, digests] of digestsByAlgorithm(pin.integrity)) {
+      const fresh = createHash(alg).update(bytes).digest('base64');
+      for (const digest of digests) {
+        swaps.set(`${alg}-${digest}`, `${alg}-${fresh}`);
+      }
+    }
+  }
+  const rewritten = new Set<string>();
+  for (const dir of dirs) {
+    for (const file of await walkFiles(resolve(dir), RESEAL_FILE)) {
+      const before = await readFile(file, 'utf8');
+      let after = before;
+      for (const [stale, fresh] of swaps) {
+        after = after.split(stale).join(fresh);
+      }
+      if (after !== before) {
+        await writeFile(file, after, 'utf8');
+        rewritten.add(file);
+      }
+    }
+  }
+  return { files: [...rewritten] };
 }
