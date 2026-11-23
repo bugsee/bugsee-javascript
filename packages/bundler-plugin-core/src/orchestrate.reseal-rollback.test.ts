@@ -176,6 +176,39 @@ describeReal('uploadSourcemaps re-seal rollback', () => {
     expect(snapshot(out, server)).toEqual(before);
   });
 
+  it('restores everything when a service worker manifest still does not match its files, and uploads nothing', async () => {
+    const { out, server } = build();
+    const before = snapshot(out, server);
+    const { opts, calls, errors } = options(out, server, {
+      verifyServiceWorker: async () => [{ manifest: join(out, 'ngsw.json'), url: '/main.js' }],
+    });
+    const result = await uploadSourcemaps(opts);
+    expect(snapshot(out, server)).toEqual(before);
+    expect(calls).not.toContain('upload');
+    expect(result).toMatchObject({ injected: false, uploaded: false });
+    expect(String(errors[0])).toContain('ngsw.json');
+    expect(String(errors[0])).toContain('/main.js');
+    expect(String(errors[0])).toMatch(/restored/);
+  });
+
+  it('seals a build with a real service worker manifest (control)', async () => {
+    const { out, server } = build();
+    const js = readFileSync(join(out, 'main.js'), 'utf8');
+    const sha1 = (t: string) => createHash('sha1').update(t).digest('hex');
+    writeFileSync(
+      join(out, 'ngsw.json'),
+      JSON.stringify({ hashTable: { '/main.js': sha1(js) } }, null, 2),
+    );
+    const { opts, calls, errors } = options(out, server);
+    const result = await uploadSourcemaps(opts);
+    expect(errors).toEqual([]);
+    expect(result.uploaded).toBe(true);
+    expect(calls).toContain('upload');
+    const manifest = JSON.parse(readFileSync(join(out, 'ngsw.json'), 'utf8'));
+    expect(manifest.hashTable['/main.js']).toBe(sha1(readFileSync(join(out, 'main.js'), 'utf8')));
+    expect(manifest.hashTable['/main.js']).not.toBe(sha1(js));
+  });
+
   it('names a file it could not restore', async () => {
     const { out, server } = build();
     const { opts, errors } = options(out, server, {

@@ -8,6 +8,7 @@ import { type RunBugseeCliOptions, runBugseeCli, type SpawnResult } from './run-
 import {
   findIntegrityMismatches,
   findSriProtectedScripts,
+  findStaleServiceWorkerEntries,
   listResealFiles,
   resealIntegrity,
   type SriProtectedScript,
@@ -134,6 +135,8 @@ export interface UploadSourcemapsOptions {
   restoreFile?: (spill: string, target: string) => Promise<void>;
   /** Injectable script-digest snapshot taken before the stamp (default {@link snapshotScriptDigests}). */
   snapshotDigests?: typeof snapshotScriptDigests;
+  /** Injectable check that service worker manifests match their files after the re-seal (default {@link findStaleServiceWorkerEntries}). */
+  verifyServiceWorker?: typeof findStaleServiceWorkerEntries;
   /**
    * FAIL the build when `bugsee-cli` fails. Default `false`.
    *
@@ -414,6 +417,23 @@ export async function uploadSourcemaps(
                 `a form this step does not rewrite (one computed at run time, or a file outside the directories it covers), ` +
                 `which it cannot see. Turn Subresource Integrity off for this build, or do not stamp it.`,
             );
+          } else {
+            // A service worker manifest (Angular's ngsw.json) pins a SHA-1 of every file it caches; the worker
+            // treats a file that no longer matches as corrupt and stops serving the app.
+            const stale = await (options.verifyServiceWorker ?? findStaleServiceWorkerEntries)(
+              options.resealDirs ?? [outDir],
+            );
+            if (stale.length > 0) {
+              const [first] = stale as [
+                { manifest: string; url: string },
+                ...{ manifest: string; url: string }[],
+              ];
+              sealFailure = new Error(
+                `${first.manifest} still lists a hash for ${first.url} that is not the file's` +
+                  (stale.length > 1 ? ` (and ${stale.length - 1} more)` : '') +
+                  ` after the hashes were re-written, so the service worker would treat the app as corrupt and stop serving it`,
+              );
+            }
           }
         } catch (error) {
           sealFailure = error instanceof Error ? error : new Error(String(error));

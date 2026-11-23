@@ -17,7 +17,7 @@
 import { createHash } from 'node:crypto';
 import type { Dirent } from 'node:fs';
 import { readdir, readFile, writeFile } from 'node:fs/promises';
-import { isAbsolute, join, normalize, resolve, sep } from 'node:path';
+import { dirname, isAbsolute, join, normalize, resolve, sep } from 'node:path';
 
 /** One `<script>` whose `integrity` pins a file in the build output. */
 export interface SriProtectedScript {
@@ -258,7 +258,7 @@ const SCRIPT_FILE = /\.[cm]?js$/i;
  * Text files that can carry a copy of a script's hash: the page itself, the server modules that embed it, and
  * the scripts that hold a table of other scripts' hashes (the webpack builder's runtime chunk).
  */
-const RESEAL_FILE = /\.(x?html?|[cm]?js)$/i;
+const RESEAL_FILE = /\.(x?html?|[cm]?js)$|^ngsw\.json$/i;
 
 /** The files {@link resealIntegrity} may rewrite under `dirs`: pages, server modules, scripts. */
 export async function listResealFiles(dirs: readonly string[]): Promise<string[]> {
@@ -356,5 +356,101 @@ export async function resealIntegrity(
       }
     }
   }
+  // After the last pass, so every file a manifest lists is final: the service worker's own hashes (below).
+  for (const manifest of await findManifests(dirs)) {
+    const text = await readFile(manifest.path, 'utf8');
+    let after = text;
+    for (const { url, recorded, actual } of manifest.entries) {
+      if (actual !== undefined && actual !== recorded) {
+        const entry = new RegExp(`(${escapeRegExp(JSON.stringify(url))}\\s*:\\s*")${recorded}(")`);
+        after = after.replace(entry, `$1${actual}$2`);
+      }
+    }
+    if (after !== text) {
+      await writeFile(manifest.path, after, 'utf8');
+      rewritten.add(manifest.path);
+    }
+  }
   return { files: [...rewritten] };
+}
+
+const escapeRegExp = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+interface ManifestEntry {
+  url: string;
+  recorded: string;
+  /** SHA-1 of the file the URL names, `undefined` when no such file is under the manifest's directory. */
+  actual: string | undefined;
+}
+
+/** The file a manifest URL names, looked for under the manifest's directory with leading segments dropped (base href). */
+async function readManifestTarget(dir: string, url: string): Promise<Buffer | undefined> {
+  const segments = url.split('/').filter((segment) => segment !== '' && segment !== '.');
+  if (segments.includes('..')) {
+    return undefined;
+  }
+  for (let from = 0; from < segments.length; from++) {
+    try {
+      return await readFile(join(dir, ...segments.slice(from)));
+    } catch {
+      // not there: try without the next leading segment
+    }
+  }
+  return undefined;
+}
+
+/** Every `ngsw.json` under `dirs` with a `hashTable`, and what each entry's file hashes to now. */
+async function findManifests(
+  dirs: readonly string[],
+): Promise<{ path: string; entries: ManifestEntry[] }[]> {
+  const found = new Set<string>();
+  for (const dir of dirs) {
+    for (const file of await walkFiles(resolve(dir), /^ngsw\.json$/)) {
+      found.add(file);
+    }
+  }
+  const manifests: { path: string; entries: ManifestEntry[] }[] = [];
+  for (const path of found) {
+    let table: unknown;
+    try {
+      table = (JSON.parse(await readFile(path, 'utf8')) as { hashTable?: unknown }).hashTable;
+    } catch {
+      continue; // not JSON: nothing this can say about it
+    }
+    if (typeof table !== 'object' || table === null) {
+      continue;
+    }
+    const entries: ManifestEntry[] = [];
+    for (const [url, recorded] of Object.entries(table)) {
+      if (typeof recorded !== 'string') {
+        continue;
+      }
+      const bytes = await readManifestTarget(dirname(path), url);
+      entries.push({
+        url,
+        recorded,
+        actual: bytes === undefined ? undefined : createHash('sha1').update(bytes).digest('hex'),
+      });
+    }
+    manifests.push({ path, entries });
+  }
+  return manifests;
+}
+
+/**
+ * Entries of a service worker manifest whose recorded SHA-1 is not the file's: the service worker would treat the
+ * app as corrupt and stop serving it. An entry whose file cannot be found is not reported (nothing to compare).
+ */
+export async function findStaleServiceWorkerEntries(
+  dirs: readonly string[],
+): Promise<{ manifest: string; url: string }[]> {
+  const stale: { manifest: string; url: string }[] = [];
+  for (const manifest of await findManifests(dirs)) {
+    for (const { url, recorded, actual } of manifest.entries) {
+      if (actual !== undefined && actual !== recorded) {
+        stale.push({ manifest: manifest.path, url });
+      }
+    }
+  }
+  return stale;
 }
