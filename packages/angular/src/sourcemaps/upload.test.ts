@@ -164,6 +164,38 @@ describe('uploadAngularSourcemaps', () => {
     expect(notices.join('\n')).toContain('BUGSEE_APP_TOKEN');
   });
 
+  it('is a no-op without a token even where the output cannot be located (a contributor build with no secret)', async () => {
+    const notices: string[] = [];
+    // No angular.json at all.
+    const none = await uploadAngularSourcemaps(
+      { cwd, vcs: false, env: {}, onNotice: (m) => notices.push(m) },
+      { runPluginUpload: ran() },
+    );
+    expect(none.status).toBe('disabled');
+    // Several applications and no --project.
+    await write(
+      'angular.json',
+      JSON.stringify({
+        projects: {
+          one: { projectType: 'application', root: '', architect: { build: {} } },
+          two: { projectType: 'application', root: '', architect: { build: {} } },
+        },
+      }),
+    );
+    const several = await uploadAngularSourcemaps(
+      { cwd, vcs: false, env: {}, onNotice: (m) => notices.push(m) },
+      { runPluginUpload: ran() },
+    );
+    expect(several.status).toBe('disabled');
+    expect(notices.filter((m) => m.includes('BUGSEE_APP_TOKEN'))).toHaveLength(2);
+  });
+
+  it('still fails on an unlocatable output when there IS a token', async () => {
+    await expect(
+      uploadAngularSourcemaps(base({ cwd }), { runPluginUpload: ran() }),
+    ).rejects.toThrow(/angular\.json/);
+  });
+
   it('is silent when disabled on purpose', async () => {
     await builtApp();
     const notices: string[] = [];

@@ -3,11 +3,12 @@
 // debug-IDs with `bugsee-cli`, upload the maps, register the build, delete the client maps) and adds only what
 // is Angular's: where the output is, and Subresource Integrity.
 //
-// SRI. With `subresourceIntegrity: true` Angular writes a hash of every script into `index.html` (and, for SSR,
-// into the copy of that page it embeds in the server modules). Stamping the scripts afterwards changes their
-// bytes, so the hashes are re-written to match (`resealSri`) — sound here because those pages are the only
-// place Angular's esbuild builder keeps them (lazy chunks are loaded by `import()`, with no hash). Measured on
-// a real @angular/build 22 build; see docs/design/source-maps.md §7.1.
+// SRI. With `subresourceIntegrity: true` Angular writes a hash of every script into `index.html` — as tags, and
+// (esbuild builder, Angular 21+) as an import map's `integrity` table that pins every lazy chunk — and, for SSR,
+// into the copy of that page it embeds in the server modules; the webpack builder also keeps the lazy chunks'
+// hashes in its runtime chunk. Stamping the scripts afterwards changes their bytes, so every digest of a changed
+// script is re-written wherever it appears (`resealSri`, bundler-plugin-core), and a build that cannot be re-sealed
+// is restored. Measured on real @angular/build 22.3 and build-angular 19.2 builds; see docs/design/source-maps.md §7.1.
 import { existsSync, readdirSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import {
@@ -96,6 +97,18 @@ export async function uploadAngularSourcemaps(
     env,
   );
 
+  if (!resolved.enabled) {
+    // Before the output is looked up: a build with no token (a contributor's PR, no secrets) is a no-op, and must
+    // stay one when angular.json cannot be read or names several applications.
+    if (!options.disabled) {
+      say('no app token (BUGSEE_APP_TOKEN): nothing was uploaded.');
+    }
+    return {
+      status: 'disabled',
+      outDir: options.dist !== undefined ? resolve(cwd, options.dist) : '',
+      configuration: options.configuration,
+    };
+  }
   const located =
     options.dist !== undefined
       ? undefined
@@ -108,12 +121,6 @@ export async function uploadAngularSourcemaps(
     options.dist !== undefined ? resolve(cwd, options.dist) : (located?.browserDir as string);
   const configuration = located?.configuration ?? options.configuration;
 
-  if (!resolved.enabled) {
-    if (!options.disabled) {
-      say('no app token (BUGSEE_APP_TOKEN): nothing was uploaded.');
-    }
-    return { status: 'disabled', outDir, configuration };
-  }
   if (!existsSync(outDir)) {
     throw new Error(
       `the build output ${outDir} does not exist. Run \`ng build\` first (this step uploads what it wrote), or ` +

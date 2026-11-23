@@ -168,12 +168,29 @@ function instrument(located: Located, token: string): Rule {
       );
     }
     let provided = false;
+    let foreign = false;
     tree.getDir(located.sourceRoot).visit((path) => {
-      if (path.endsWith('.ts') && tree.readText(path).includes('BugseeErrorHandler')) {
+      if (!path.endsWith('.ts')) {
+        return;
+      }
+      const text = tree.readText(path);
+      if (text.includes('BugseeErrorHandler')) {
         provided = true;
+      } else if (!path.endsWith('.spec.ts') && /provide\s*:\s*ErrorHandler\b/.test(text)) {
+        foreign = true;
       }
     });
     if (provided) {
+      return;
+    }
+    if (foreign) {
+      // Providers are last-wins: adding ours would silently replace theirs. They choose how to combine them.
+      context.logger.warn(
+        `Bugsee: your app already provides its own ErrorHandler, so BugseeErrorHandler was not added (it would replace ` +
+          `yours). Report from inside it instead:\n\n  import { reportAngularError } from '@bugsee/angular';\n` +
+          `  handleError(error: unknown) { reportAngularError(error); /* then your handling */ }\n\n` +
+          `or wrap yours:\n\n  { provide: ErrorHandler, useFactory: () => createAngularErrorHandler({ delegate: new MyHandler() }) }\n`,
+      );
       return;
     }
     try {

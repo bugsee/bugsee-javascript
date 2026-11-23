@@ -438,6 +438,67 @@ describe('ng add @bugsee/angular — an app already using Bugsee', () => {
   });
 });
 
+describe('ng add @bugsee/angular — an app that already has its own ErrorHandler', () => {
+  const MINE = `{ provide: ErrorHandler, useClass: MyHandler }`;
+
+  it('standalone: does not add a second handler (the last one wins and would silence theirs), and says what to do', async () => {
+    const tree = await workspace();
+    const config = tree
+      .readContent('/src/app/app.config.ts')
+      .replace('providers: [', `providers: [\n    ${MINE},`)
+      .replace(/^/, `import { ErrorHandler } from '@angular/core';\nclass MyHandler {}\n`);
+    tree.overwrite('/src/app/app.config.ts', config);
+    await run(tree, { appToken: 'T' });
+    expect(tree.readContent('/src/app/app.config.ts')).toBe(config);
+    expect(tree.readContent('/src/main.ts')).toContain(`launch('T');`);
+    expect(logged('warn')).toMatch(/already provides its own ErrorHandler/);
+    expect(logged('warn')).toMatch(/reportAngularError\(error\)/);
+    expect(logged('warn')).toMatch(/createAngularErrorHandler\(\{ delegate/);
+  });
+
+  it('NgModule: the same', async () => {
+    const tree = await workspace([{ name: 'demo', standalone: false }]);
+    const modulePath = tree.files.find((f) => /app[.-]module\.ts$/.test(f)) as string;
+    const module = tree
+      .readContent(modulePath)
+      .replace('providers: [', `providers: [\n    ${MINE},`)
+      .replace(/^/, `import { ErrorHandler } from '@angular/core';\nclass MyHandler {}\n`);
+    tree.overwrite(modulePath, module);
+    await run(tree, { appToken: 'T' });
+    expect(tree.readContent(modulePath)).toBe(module);
+    expect(logged('warn')).toMatch(/already provides its own ErrorHandler/);
+  });
+
+  it('is idempotent with it', async () => {
+    const tree = await workspace();
+    tree.create(
+      '/src/app/handler.ts',
+      `export const p = { provide: ErrorHandler,\n  useClass: MyHandler };\n`,
+    );
+    const first = await run(tree, { appToken: 'T' });
+    const before = snapshot(first);
+    const second = await run(first, { appToken: 'T' });
+    expect(snapshot(second)).toEqual(before);
+  });
+
+  it('does not mistake another token that starts with ErrorHandler for it', async () => {
+    const tree = await workspace();
+    tree.create('/src/app/x.ts', `export const p = { provide: ErrorHandlerLike, useClass: X };\n`);
+    await run(tree, { appToken: 'T' });
+    expect(tree.readContent('/src/app/app.config.ts')).toContain('BugseeErrorHandler');
+  });
+
+  it('ignores a test double in a spec file', async () => {
+    const tree = await workspace();
+    tree.create(
+      '/src/app/x.spec.ts',
+      `TestBed.configureTestingModule({ providers: [${MINE}] });\n`,
+    );
+    await run(tree, { appToken: 'T' });
+    expect(tree.readContent('/src/app/app.config.ts')).toContain('BugseeErrorHandler');
+  });
+});
+
 describe('ng add @bugsee/angular — the build script', () => {
   const setScripts = (tree: UnitTestTree, scripts: Record<string, string>, indent = 2) => {
     tree.overwrite('/package.json', `${JSON.stringify({ name: 'x', scripts }, null, indent)}\n`);

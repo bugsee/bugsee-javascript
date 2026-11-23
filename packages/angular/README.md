@@ -55,6 +55,8 @@ It works with the esbuild `application` builder and the webpack `browser` builde
 
 - `subresourceIntegrity: true` is supported: after stamping, the integrity hashes in `index.html`, in the import map and in the SSR server modules are re-written to match, so the page keeps loading.
 - A build with a service worker (`ngsw.json` in the output) is not stamped, since the service worker pins a hash of every file; nothing is uploaded for it.
+- Install weight: `@bugsee/angular` depends on `@bugsee/bundler-plugin-core` (and through it `@bugsee/cli`, `acorn`, `magic-string`, `unplugin`), because the `bugsee-angular-upload` bin and `@bugsee/angular/sourcemaps` need them. They are build-time only and never reach a browser bundle, but they are installed with the package. Making them an optional peer that `ng add` installs as a devDependency was considered and not done: `ng add` saves the package itself under `dependencies`, the bin would fail for anyone who skips `ng add`, and the extra install step has to be verified against every package manager.
+- If your app already provides its own `ErrorHandler`, `ng add` does not add a second one (the last provider wins and would silence yours); it prints how to report from yours with `reportAngularError(error)`, or to wrap it with `createAngularErrorHandler({ delegate })`.
 - Only the browser output is uploaded; errors from an SSR server are reported by the Node SDK.
 
 Details and the measurements behind them: [source maps](https://github.com/bugsee/bugsee-javascript/blob/main/docs/source-maps-usage.md).

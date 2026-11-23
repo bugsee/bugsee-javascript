@@ -92,8 +92,8 @@
   },
   "devDependencies": {
     "@bugsee/core": "workspace:*",
-    "@angular-devkit/schematics": "22.3.0",
-    "@schematics/angular": "22.3.0",
+    "@angular-devkit/schematics": "22.0.0",
+    "@schematics/angular": "22.0.0",
     "@types/node": "^22.20.5"
   },
   "schematics": "./dist/schematics/collection.json",
