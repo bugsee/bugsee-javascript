@@ -606,12 +606,25 @@ describe('an uppercase A.JS / A.JS.map pair goes through snapshot, verify and re
   });
 });
 
-describe('ownedBy — webpack names carry ?query / #fragment that never reach the disk', () => {
-  it('matches main.js.map?hash (own) against main.js.map (on disk), and a literal ?name on disk against its asset', () => {
-    const own = ownedBy('/o/dist', ['main.js.map?abc123', 'src/x.css.map#frag', 'lit.js?h']);
-    expect(own('/o/dist/main.js.map')).toBe(true);
-    expect(own('/o/dist/src/x.css.map')).toBe(true);
-    expect(own('/o/dist/lit.js?h')).toBe(true); // Rollup writes the name literally
+// GROUND TRUTH (real builds): webpack/Rspack drop `?...` when they write a file (`x.js.map?h` -> `x.js.map`) and KEEP
+// `#` (`a#1.js` is written as `a#1.js`). Rollup/Vite write every name literally, `?` and `#` included
+// (`index.js?v=1` -> `index.js?v=1`).
+describe('ownedBy — what the bundlers really write', () => {
+  it('matches a webpack ?query own-name to the file on disk without the query, and a literal name to itself', () => {
+    const own = ownedBy('/o/dist', ['main.js.map?abc123', 'index.js?v=1', 'index.js?v=1.map']);
+    expect(own('/o/dist/main.js.map')).toBe(true); // webpack: query dropped
+    expect(own('/o/dist/index.js?v=1')).toBe(true); // Rollup: written literally
+    expect(own('/o/dist/index.js?v=1.map')).toBe(true);
+    expect(own('/o/dist/index.js?old')).toBe(false); // a stale foreign sibling is not this build's
     expect(own('/o/dist/other.js.map')).toBe(false);
+  });
+  it('treats # as part of the name: a#1 is not a#2, and x#old is not x#new', () => {
+    const own = ownedBy('/o/dist', ['main#new.js.map', 'a#1.js']);
+    expect(own('/o/dist/main#new.js.map')).toBe(true);
+    expect(own('/o/dist/main#old.js.map')).toBe(false);
+    expect(own('/o/dist/main.js.map')).toBe(false);
+    expect(own('/o/dist/a#1.js')).toBe(true);
+    expect(own('/o/dist/a#2.js')).toBe(false);
+    expect(own('/o/dist/a')).toBe(false); // nothing is cut at the #
   });
 });

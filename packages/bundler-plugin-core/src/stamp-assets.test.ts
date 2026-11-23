@@ -663,14 +663,26 @@ describe('stampAssets — a store whose map is named outside the output', () => 
 });
 
 describe('stampAssets — how many bundles it staged', () => {
-  it('reports the number of bundles it staged (0 for an asset it cannot match)', async () => {
-    const run = async () => ({ code: 0, stdout: '', stderr: '' });
+  const run = async () => ({ code: 0, stdout: '', stderr: '' });
+  it('is 0 for an asset it cannot match', async () => {
     expect((await stampAssets(memoryStore({ 'a.css': 'x' }), { run })).bundles).toBe(0);
     expect((await stampAssets(memoryStore({ 'main.js?h': 'x' }), { run })).bundles).toBe(0);
-    const two = await stampAssets(memoryStore({ 'a.js': 'a', 'b.mjs': 'b', 'c.css': 'c' }), {
-      run,
-      parse: () => true,
-    }).catch(() => undefined);
-    expect(two === undefined || two.bundles === 2).toBe(true);
+  });
+  it('counts the BUNDLES staged, not the maps staged with them (real bugsee-cli)', async () => {
+    const MAP = '{"version":3,"sources":["x.ts"],"names":[],"mappings":"AAAA"}';
+    const store = memoryStore({
+      'a.js': 'a();\n//# sourceMappingURL=a.js.map\n',
+      'a.js.map': MAP,
+      'b.mjs': 'b();\n//# sourceMappingURL=b.mjs.map\n',
+      'b.mjs.map': MAP,
+      'c.css': 'c{}',
+    });
+    const result = await stampAssets(store);
+    expect(result.bundles).toBe(2); // four assets were staged
+    expect(result.stamped).toEqual(['a.js', 'b.mjs']);
+  });
+  it('a dry run reports the count too', async () => {
+    const store = memoryStore({ 'a.js': 'a\n', 'a.js.map': '{}', 'b.js': 'b\n' });
+    expect((await stampAssets(store, { run, dryRun: true })).bundles).toBe(2);
   });
 });

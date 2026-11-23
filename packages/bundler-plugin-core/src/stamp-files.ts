@@ -85,11 +85,14 @@ export function ownedBy(
   if (ownFiles === undefined) {
     return (file) => !isFencedPath(relative(outDir, file));
   }
-  // webpack names carry `?query` / `#fragment` that never reach the disk (`x.js.map?h` is written as
-  // `x.js.map`), and a bundler that writes such a name literally is matched the same way on both sides.
-  const normal = (name: string): string =>
-    posix.normalize(name.replace(/\\/g, '/').replace(/[?#].*$/, ''));
-  const owned = new Set(ownFiles.map(normal));
+  // GROUND TRUTH (real builds): webpack/Rspack drop `?...` when they write a file (`x.js.map?h` -> `x.js.map`)
+  // and KEEP `#` (`a#1.js` stays); Rollup/Vite write every name literally (`index.js?v=1` stays). So each
+  // own name is known both literally and without its `?query`, and a file on disk is compared literally:
+  // a stale `x#old.js.map` or `index.js?old` is never mistaken for this build's.
+  const normal = (name: string): string => posix.normalize(name.replace(/\\/g, '/'));
+  const owned = new Set(
+    ownFiles.flatMap((name) => [normal(name), normal(name.replace(/\?.*$/, ''))]),
+  );
   return (file) => owned.has(normal(relative(outDir, file)));
 }
 

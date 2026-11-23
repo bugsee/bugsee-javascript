@@ -192,8 +192,11 @@ function unreadableIdentityNotices(
   return notices;
 }
 
-/** An asset name without its `?query` / `#fragment`: webpack writes `x.js?h` to disk as `x.js`. */
-const withoutQuery = (name: string): string => name.replace(/[?#].*$/, '');
+/**
+ * An asset name without its `?query`. Measured on real Rspack builds: webpack/Rspack drop `?...` when they write
+ * a file (`x.js?h` is written as `x.js`) and KEEP `#` (`a#1.js` is written as `a#1.js`), so only `?` is cut.
+ */
+const withoutQuery = (name: string): string => name.replace(/\?.*$/, '');
 
 /**
  * A compilation's asset table as the core's `AssetStore`.
@@ -439,7 +442,7 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
       const scripts = emitted.filter((name) => /\.[cm]?js([?#]|$)/i.test(name));
       if (bundles === 0 && scripts.length > 0) {
         say(
-          `no debug-ID could be stamped inside the build (none of ${scripts.slice(0, 3).join(', ')}${scripts.length > 3 ? ', …' : ''} matched), so stamping after emit instead.`,
+          `no debug-ID could be stamped inside the build (none of its ${scripts.length} script asset(s), e.g. ${scripts[0]}, matched), so stamping after emit instead.`,
         );
         return { preStamped: false };
       }

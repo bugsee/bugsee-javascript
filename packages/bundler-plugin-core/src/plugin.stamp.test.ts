@@ -149,7 +149,7 @@ describe('rspack: stamps inside the compilation', () => {
     expect(seen).toEqual(['maps/main.js.map', undefined, 'm1.map', undefined]);
   });
 
-  it('the compilation store strips ?query / #fragment for matching and staging, and writes back under the REAL name', async () => {
+  it('the compilation store strips ONLY ?query (webpack keeps # on disk), and writes back under the REAL name', async () => {
     const seen: Record<string, unknown> = {};
     stampSpy.mockImplementation(async (store) => {
       const st = store as {
@@ -171,6 +171,7 @@ describe('rspack: stamps inside the compilation', () => {
       { name: 'main.js.map?h2' },
       { name: 'dup.js?a' },
       { name: 'dup.js?b' },
+      { name: 'a#1.js?z' },
     ];
     (r.compilation as Record<string, unknown>).getAsset = (name: string) => ({
       source: { buffer: () => Buffer.from(`content of ${name}`) },
@@ -179,7 +180,7 @@ describe('rspack: stamps inside the compilation', () => {
     apply({ appToken: 'tok' }, r.compiler);
     await r.compile();
     // dup.js?a and dup.js?b would collide once cleaned: both keep their real (unmatchable) names.
-    expect(seen.names).toEqual(['main.js', 'main.js.map', 'dup.js?a', 'dup.js?b']);
+    expect(seen.names).toEqual(['main.js', 'main.js.map', 'dup.js?a', 'dup.js?b', 'a#1.js']);
     expect(seen.read).toBe('content of main.js?h1');
     expect(seen.map).toBe('main.js.map');
     expect(r.updated.map((u) => u.name)).toEqual(['main.js?h1', 'main.js.map?h2']);
@@ -657,5 +658,83 @@ describe('an in-build stamp that staged NO bundle although the build emitted scr
     await hooks.writeBundle(output);
     expect((uploadSpy.mock.calls[0]?.[2] as { preStamped?: boolean }).preStamped).toBe(true);
     expect(notices).toEqual([]);
+  });
+});
+
+describe('webpack/Rspack: the zero-staged guard looks at the REAL asset names', () => {
+  it('says so when scripts exist but none staged (names the first), and runs the post-emit path', async () => {
+    stampSpy.mockImplementation(async () => ({ stamped: [], maps: {}, bundles: 0 }));
+    const notices: string[] = [];
+    const after: Array<(c?: unknown) => Promise<void>> = [];
+    const taps: Array<() => Promise<void>> = [];
+    const compilations: Array<(c: unknown) => void> = [];
+    const compilation = {
+      hooks: {
+        processAssets: { tapPromise: (_o: unknown, fn: () => Promise<void>) => taps.push(fn) },
+      },
+      getAssets: () => [{ name: 'main.js?h' }, { name: 'main.js.map?h' }, { name: 'style.css' }],
+      getAsset: () => undefined,
+      updateAsset: () => undefined,
+    };
+    const compiler = {
+      options: { output: { path: '/o' }, mode: 'production', devtool: 'source-map' },
+      hooks: {
+        afterEmit: {
+          tapPromise: (_n: string, fn: (c?: unknown) => Promise<void>) => after.push(fn),
+        },
+        thisCompilation: { tap: (_n: string, fn: (c: unknown) => void) => compilations.push(fn) },
+      },
+      rspack: {
+        Compilation: { PROCESS_ASSETS_STAGE_DEV_TOOLING: 500 },
+        sources: { RawSource: class {} },
+      },
+    };
+    (
+      makePlugin({ appToken: 'tok', onNotice: (m: string) => notices.push(m) }, 'rspack')
+        .rspack as (c: unknown) => void
+    )(compiler);
+    for (const fn of compilations) fn(compilation);
+    for (const t of taps) await t();
+    await after[0]?.(compilation);
+    expect(notices.join('\n')).toContain('main.js');
+    expect(notices.join('\n')).toContain('after emit');
+    expect((uploadSpy.mock.calls[0]?.[2] as { preStamped?: boolean }).preStamped).toBe(false);
+  });
+
+  it('the store follows the compilation: an asset that disappears is no longer listed', async () => {
+    const seen: string[][] = [];
+    let assets = [{ name: 'a.js' }, { name: 'b.js' }];
+    stampSpy.mockImplementation(async (store) => {
+      const st = store as { names(): string[] };
+      seen.push(st.names());
+      assets = [{ name: 'a.js' }];
+      seen.push(st.names());
+      return { stamped: [], maps: {}, bundles: 1 };
+    });
+    const compilations: Array<(c: unknown) => void> = [];
+    const taps: Array<() => Promise<void>> = [];
+    const compilation = {
+      hooks: {
+        processAssets: { tapPromise: (_o: unknown, fn: () => Promise<void>) => taps.push(fn) },
+      },
+      getAssets: () => assets,
+      getAsset: () => undefined,
+      updateAsset: () => undefined,
+    };
+    const compiler = {
+      options: { output: { path: '/o' }, mode: 'production', devtool: 'source-map' },
+      hooks: {
+        afterEmit: { tapPromise: () => undefined },
+        thisCompilation: { tap: (_n: string, fn: (c: unknown) => void) => compilations.push(fn) },
+      },
+      rspack: {
+        Compilation: { PROCESS_ASSETS_STAGE_DEV_TOOLING: 500 },
+        sources: { RawSource: class {} },
+      },
+    };
+    (makePlugin({ appToken: 'tok' }, 'rspack').rspack as (c: unknown) => void)(compiler);
+    for (const fn of compilations) fn(compilation);
+    for (const t of taps) await t();
+    expect(seen).toEqual([['a.js', 'b.js'], ['a.js']]);
   });
 });

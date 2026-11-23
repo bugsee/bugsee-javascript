@@ -978,3 +978,80 @@ describeReal('Rspack: asset names with a ?query', () => {
     });
   }
 });
+
+// GROUND TRUTH: webpack/Rspack write `a#1.js` as `a#1.js` (the `#` stays); only `?...` is dropped.
+describeReal('Rspack: # in a file name is part of the name', () => {
+  const run = (
+    app: { dir: string; out: string },
+    filename: unknown,
+    failOnError: boolean,
+    errors: unknown[],
+  ) =>
+    new Promise<{ errors: unknown[] }>((resolve, reject) => {
+      writeFileSync(join(app.dir, 'other.js'), "console.log('other');\n");
+      const compiler = rspack({
+        context: app.dir,
+        mode: 'production',
+        entry: { main: join(app.dir, 'index.js'), a: join(app.dir, 'other.js') },
+        devtool: 'source-map',
+        output: { path: app.out, filename: filename as never },
+        plugins: [
+          bugseeRspackPlugin({
+            ...pluginOptions(),
+            failOnError,
+            onError: (e: unknown) => errors.push(e),
+          }),
+        ],
+      });
+      compiler.run((err, stats) =>
+        compiler.close(() =>
+          err
+            ? reject(err)
+            : resolve({
+                errors: [...(stats as { compilation: { errors: unknown[] } }).compilation.errors],
+              }),
+        ),
+      );
+    });
+  const expectAllStampedAndGone = (out: string, before: number, atLeast: number): void => {
+    const files = readdirSync(out, { recursive: true }) as string[];
+    expect(requests.length, 'uploaded').toBeGreaterThan(before);
+    expect(
+      files.filter((f) => f.endsWith('.map')),
+      'every own map deleted',
+    ).toEqual([]);
+    const bundles = files.filter((f) => /\.js$/.test(f));
+    expect(bundles.length).toBeGreaterThanOrEqual(atLeast);
+    for (const bundle of bundles) {
+      expect(readFileSync(join(out, bundle), 'utf8'), bundle).toMatch(/\/\/# debugId=/);
+    }
+  };
+
+  for (const failOnError of [true, false]) {
+    it(`one entry emitted as a#1.js beside normal bundles (failOnError ${failOnError})`, async () => {
+      const app = makeApp(`rspack-hash-mixed-${failOnError}`, { lazy: false });
+      const before = requests.length;
+      const errors: unknown[] = [];
+      const result = await run(
+        app,
+        (p: { chunk?: { name?: string } }) => (p.chunk?.name === 'a' ? 'a#1.js' : '[name].js'),
+        failOnError,
+        errors,
+      );
+      expect(result.errors.map(String)).toEqual([]);
+      expect(errors.map(String)).toEqual([]);
+      expect(readdirSync(app.out)).toContain('a#1.js');
+      expectAllStampedAndGone(app.out, before, 2);
+    });
+
+    it(`every file named [name]#[contenthash:6].js (failOnError ${failOnError})`, async () => {
+      const app = makeApp(`rspack-hash-all-${failOnError}`, { lazy: false });
+      const before = requests.length;
+      const errors: unknown[] = [];
+      const result = await run(app, '[name]#[contenthash:6].js', failOnError, errors);
+      expect(result.errors.map(String)).toEqual([]);
+      expect(errors.map(String)).toEqual([]);
+      expectAllStampedAndGone(app.out, before, 2);
+    });
+  }
+});

@@ -292,13 +292,16 @@ refused and the build falls back to stamping after emit. Covered by real Rollup,
   with no bundler output to ask) does the directory-name fence (`node_modules`, `src`, `test(s)`, `__tests__`,
   dot-directories) apply, as the fallback; an unkeyed map in such a directory is never reported. The post-emit
   path uses the same whole-directory walk as the pre-stamped path (fenced only at a project root).
-- **Asset names with a `?query` / `#fragment`** (webpack/Rspack `[name].js?[contenthash]`; the file on disk has no
-  query). The compilation store presents and stages the query-free name (inject matches by extension) and maps it
-  back to the real asset name on every read and write; `related.sourceMap` names are cleaned the same way, and
-  two assets that would collide once cleaned keep their real names. `ownFiles` names are compared with the query
-  stripped on both sides. An in-build stamp that stages NO bundle while the build emitted script-like assets
-  never claims to have stamped: it says so (a notice) and the post-emit path runs. (A Rollup/Vite file name
-  that carries a `?` is written literally and is not a `.js` file to the CLI either; the same notice appears.)
+- **Asset names with a `?query`.** Ground truth, measured on real builds: webpack/Rspack drop `?...` when they
+  write a file (`[name].js?[contenthash]` is written as `main.js`) and KEEP `#` (`a#1.js` is written as `a#1.js`);
+  Rollup and Vite write every name literally, `?` and `#` included (`index.js?v=1` stays). So the compilation
+  store presents and stages the name cut at the `?` only (inject matches by extension) and maps it back to the
+  real asset name on every read and write; `related.sourceMap` names are cut the same way, and two assets that
+  would collide once cut keep their real names. `ownFiles` knows each name literally AND without its `?query`,
+  and compares the file on disk literally, so `main#old.js.map` is never mistaken for `main#new.js.map`. An
+  in-build stamp that stages NO bundle while the build emitted script-like assets never claims to have
+  stamped: it says so (a notice) and the post-emit path runs. (A Rollup/Vite file name with a `?` is not a
+  `.js` file to the CLI either; the same notice appears.)
 - An outside-the-output map is reported with how to fix it: emit the maps inside the output directory, or upload
   them yourself with bugsee-cli.
 
