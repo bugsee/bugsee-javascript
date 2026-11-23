@@ -592,9 +592,67 @@ Windows hosts were not run. Bun does not map `Error.stack` and has no
 
 ---
 
+## 7.3 Next.js: `withBugsee` (`@bugsee/nextjs/config`)
+
+Status: **BUILT** (`packages/nextjs/src/config/`, real-build e2e `packages/nextjs-e2e/test/source-maps.e2e.ts`).
+`withBugsee(nextConfig, options)` wraps a Next config (object, phase function, async, or a promise) so
+`next build` stamps debug-IDs and uploads source maps, on **both** bundlers. It takes the plugin options of §4
+(through `resolvePluginOptions`, same env / `.env.bugsee-build-plugin` lookup, same identity resolution) plus
+`serverSourceMaps` (default on), `deleteServerMaps` (default off) and `silent`. It never touches `next dev`
+(`next start`, `next export`): a function config is gated on the phase, an object config on `dev` in the webpack
+function and on the hook only existing in a production build.
+
+**Why not the generic webpack plugin (measured).** Adding `@bugsee/webpack-plugin` in `webpack(config)` runs it
+three times (client, server, edge) and breaks on Next's layout: the server compilation's `output.path` is
+`.next/server/chunks` while its assets are named `../app/page.js`, so (1) the in-build stamp skipped them (an asset
+name may not escape the staging directory; the verify step then failed the run) and (2) the plugin's directory-wide
+upload of `.next` swept up the server compilation's files. `withBugsee` therefore ships a small per-compilation
+plugin that reuses the same core (`stampAssets`, `runPluginUpload`) but stages `../` names under a stand-in
+directory and uploads **exactly the files its own compilation emitted** (`files` mode; nothing walks `.next`).
+
+**Detecting the bundler.** `process.env.TURBOPACK` (set by `next build` before the config loads, Next 15.5 and 16
+alike); otherwise webpack. `NEXT_RSPACK` (the experimental Rspack adapter) is not special-cased and unverified.
+
+| | webpack (`--webpack`; default <= 15) | Turbopack (default 16; `--turbopack` in 15.x) |
+|---|---|---|
+| stamp | in the compilation, `PROCESS_ASSETS_STAGE_DEV_TOOLING + 1` (SRI-safe), client + server + edge | after the build, in `compiler.runAfterProductionCompile`: the real `inject` over the written files, with the post-emit verify-and-restore |
+| upload | each compilation's `afterEmit`, its own files | the hook: `.next/static` (browser) then `.next/server` (node + edge), explicit file lists |
+| maps | client: `productionBrowserSourceMaps` (forced on only if unset); server/edge: `devtool: 'source-map'` unless the app set one | always emitted (browser: `productionBrowserSourceMaps`; server maps are emitted regardless of `serverSourceMaps`, measured on 16.4) |
+| SRI (`experimental.sri`) | works: the hashes are of the stamped bytes (verified against the written HTML) | **not stampable**: Turbopack writes `server/subresource-integrity-manifest.json` and the HTML hashes BEFORE the hook (appending one byte in the hook made every `integrity` wrong), so the build is left unmodified, a notice says why, and nothing is uploaded |
+| min Next | any with `webpack()` | 15.4.0 (the first release with `compiler.runAfterProductionCompile`: present in the 15.4.0 types, schema and build, absent in 15.3.x, checked against the published tarballs); older Turbopack builds get a notice. `compiler.define` (the baked version/build) needs 15.1.0; below that it is not added |
+
+**Policy.** Browser maps live in `.next/static`, which `next start` and CDNs serve to every visitor: `deleteMaps`
+(default true) removes them after a *confirmed* upload, exactly as the plugins do (and, as there, a failed upload
+leaves them for a retry). `.next/server` is never served and a server run with source maps reads it, so server and
+edge maps stay unless `deleteServerMaps`. The build is registered once (browser run). The app version and build are baked
+through `compiler.define` (applies to all three runtimes; repeating the keys in `defineServer` is a Next error,
+measured). Only bundles that have a map are stamped on Turbopack, and bundles are paired with maps by the
+`sourceMappingURL` pointer inside each bundle: Turbopack does not name a map after its bundle (Next 16.4:
+`0ihtwxitjxx9w.js` points at `1wkfrb_3m2k-z.js.map`), and Next 15.5's Turbopack points two runtime chunks at ONE map.
+A map carries one debug-ID (the hash of bundle + map), so such bundles are left unstamped (a notice counts them) and
+their shared map stays on disk, unuploaded; they are Turbopack's runtime, not the app.
+
+**SRI fallback guard.** A webpack in-build stamp that failed falls back (core) to stamping the written files; on an SRI build that rewrites bytes Next already pinned (measured: Chromium blocked every script). The per-compilation plugin therefore skips the fallback and the upload when `experimental.sri` is set or Next's integrity manifest sits next to the output (`sri.ts`, shared with the Turbopack step), with a notice. `productionBrowserSourceMaps` is forced on only when this build can upload (not Turbopack + SRI, not Turbopack < 15.4.0), so an upload that cannot happen never leaves Bugsee-requested public maps. On webpack, when no upload follows (an SRI build whose stamp failed, or an abandoned stamp), the browser maps Bugsee itself turned on are deleted from this compilation's own files; maps the app enabled stay and the notice says they are public. Every removal is attempted and each failure reported through `onError` (console warning without one; `failOnError` rethrows the first); a throwing `onError` aborts like the core's. Nothing is deleted on a dry run. The reason a stamp did not apply is always reported through `onError`/console, never only through the (mutable) notice sink.
+
+**Composition.** The app's `webpack` function runs first and its result is extended (Next itself rejects an async one, measured on 16.4.6); its
+`compiler.runAfterProductionCompile` runs before ours; its `compiler.define` keys win; `productionBrowserSourceMaps`
+is respected when set. Without a token the integration changes nothing Next emits.
+
+**Open.** Both runs resolve the app identity, the token file and the installed Next from `process.cwd()` at config
+load, so run `next build` from the project directory (Next passes no project dir to a config function). The
+Turbopack hook does receive `metadata.projectDir` and says so when it differs from the directory the config was
+resolved for (`next build <dir>` from a monorepo root); it does not re-resolve, so the baked define and the upload
+identity cannot disagree. Applying `withBugsee` twice is a no-op the second time (a WeakSet of extended configs). Any
+failure in the post-build hook is contained (reported, never thrown) unless `failOnError`, because Next fails the
+build on anything the hook throws. A failed upload leaves the browser maps in the public `.next/static` (forced on
+by `withBugsee`), and Next 15's shared Turbopack runtime map stays there too (unuploaded, not the app's code). A Turbopack SRI build
+cannot be symbolicated by upload (see the table); an in-hook alternative would have to re-hash the integrity
+manifests and the HTML Next writes later, which is Next's contract, not ours.
+
 ## 8. Deferred
 - A real-`bugsee-cli` integration e2e (needs the built Rust binary in the harness) — follow-up once CI has it.
-- Turbopack loader for Next.js (`turbopack.rules`) — Next-adapter follow-up.
+- ~~Turbopack loader for Next.js (`turbopack.rules`)~~ — superseded by §7.3 (a post-build hook, not a loader: a loader
+  sees one module at a time and cannot stamp a finished chunk).
 - Node/edge runtime debug-ID wiring (browser done in SM7) — trivial.
 - The exact debug-ID WIRE FORMAT — additive ` debugId=<id>` string suffix now; a structured `debug_meta`/per-frame
   field is a refinement gated on the JS-backend symbolication contract.
