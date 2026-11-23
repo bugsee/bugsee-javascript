@@ -21,6 +21,11 @@ vi.mock('./stamp-assets', async (importOriginal) => ({
 }));
 
 const { bugseeUnpluginFactory } = await import('./plugin');
+const { StampVerificationError } = await import('./stamp-assets');
+const outsideError = () =>
+  new StampVerificationError([
+    { name: '../maps/a.js.map', reason: 'lies outside the output directory', outside: true },
+  ]);
 const makePlugin = (options?: BugseePluginOptions, framework = 'rollup'): UnpluginOptions =>
   bugseeUnpluginFactory(options, { framework } as never) as UnpluginOptions;
 
@@ -84,6 +89,7 @@ describe('rspack: stamps inside the compilation', () => {
     };
     return {
       compiler,
+      compilation,
       processAssets,
       updated,
       afterEmit: () => afterEmit[0]?.(),
@@ -116,14 +122,47 @@ describe('rspack: stamps inside the compilation', () => {
     expect(stampSpy).toHaveBeenCalledOnce();
   });
 
+  it("the compilation asset store names a bundle's map from the asset info (related.sourceMap), string or array", async () => {
+    const seen: Array<string | undefined> = [];
+    stampSpy.mockImplementation(async (store) => {
+      const st = store as { mapOf(n: string): string | undefined };
+      seen.push(
+        st.mapOf('main.js'),
+        st.mapOf('other.js'),
+        st.mapOf('multi.js'),
+        st.mapOf('none.js'),
+      );
+      return { stamped: [], maps: {} };
+    });
+    const r = rspackCompiler();
+    const infos: Record<string, unknown> = {
+      'main.js': { related: { sourceMap: 'maps/main.js.map' } },
+      'other.js': { related: { sourceMap: null } },
+      'multi.js': { related: { sourceMap: ['m1.map', 'm2.map'] } },
+    };
+    (r.compilation as { getAsset: unknown }).getAsset = (name: string) => ({
+      source: { buffer: () => Buffer.from('x') },
+      info: infos[name],
+    });
+    apply({ appToken: 'tok' }, r.compiler);
+    await r.compile();
+    expect(seen).toEqual(['maps/main.js.map', undefined, 'm1.map', undefined]);
+  });
+
   it('uploads without re-injecting after emit (preStamped), naming the bundles it stamped', async () => {
-    stampSpy.mockImplementation(async () => ({ stamped: ['main.js'] }));
+    stampSpy.mockImplementation(async () => ({
+      stamped: ['main.js'],
+      maps: { 'main.js': 'm/main.js.map' },
+    }));
     const r = rspackCompiler();
     apply({ appToken: 'tok' }, r.compiler);
     await r.compile();
     await r.afterEmit();
     expect(depsOf(0)?.preStamped).toBe(true);
     expect(depsOf(0)?.stampedBundles).toEqual(['main.js']);
+    expect((depsOf(0) as { stampedMaps?: unknown }).stampedMaps).toEqual({
+      'main.js': 'm/main.js.map',
+    });
   });
 
   it('reads and writes the compilation asset table, through rspack own RawSource', async () => {
@@ -430,6 +469,78 @@ describe('vite / rollup: stamps in generateBundle, before anything is written or
         expect(notices[0]).toContain('after emit');
         expect(depsOf(0)?.preStamped).toBeUndefined();
       });
+    });
+  }
+});
+
+describe('a map the stamp can never reach is not retried after emit (that would half-stamp)', () => {
+  const hooks = (p: UnpluginOptions, kind: 'vite' | 'rollup') =>
+    p[kind] as unknown as {
+      generateBundle: { handler: (o: object, b: Record<string, unknown>) => Promise<void> };
+      writeBundle: (o: object) => Promise<void>;
+    };
+  const bundle = () => ({
+    'a.js': { type: 'chunk', fileName: 'a.js', code: 'x', map: {} },
+    'a.js.map': { type: 'asset', fileName: 'a.js.map', source: '{}' },
+  });
+
+  for (const kind of ['vite', 'rollup'] as const) {
+    it(`${kind}: reported, and the write does NOT upload or inject; under failOnError the build fails`, async () => {
+      stampSpy.mockImplementation(async () => {
+        throw outsideError();
+      });
+      const onError = vi.fn();
+      const h = hooks(makePlugin({ appToken: 'tok', onError }), kind);
+      const output = { dir: '/out' };
+      await h.generateBundle.handler(output, bundle());
+      await h.writeBundle(output);
+      expect(String(onError.mock.calls[0]?.[0])).toContain('outside the output directory');
+      expect(String(onError.mock.calls[0]?.[0])).not.toContain('falling back');
+      expect(uploadSpy).not.toHaveBeenCalled();
+
+      const strict = hooks(makePlugin({ appToken: 'tok', failOnError: true }), kind);
+      await expect(strict.generateBundle.handler({ dir: '/o2' }, bundle())).rejects.toThrow(
+        /outside/,
+      );
+    });
+  }
+
+  for (const hook of ['rspack', 'webpack'] as const) {
+    it(`${hook}: the afterEmit upload is skipped too`, async () => {
+      stampSpy.mockImplementation(async () => {
+        throw outsideError();
+      });
+      const compilations: Array<(c: unknown) => void> = [];
+      const taps: Array<() => Promise<void>> = [];
+      const after: Array<() => Promise<void>> = [];
+      const compilation = {
+        hooks: {
+          processAssets: { tapPromise: (_o: unknown, fn: () => Promise<void>) => taps.push(fn) },
+        },
+        getAssets: () => [],
+        getAsset: () => undefined,
+        updateAsset: () => undefined,
+      };
+      const compiler = {
+        options: { output: { path: '/o' }, mode: 'production', devtool: 'source-map' },
+        hooks: {
+          afterEmit: { tapPromise: (_n: string, fn: () => Promise<void>) => after.push(fn) },
+          thisCompilation: { tap: (_n: string, fn: (c: unknown) => void) => compilations.push(fn) },
+        },
+        [hook]: {
+          Compilation: { PROCESS_ASSETS_STAGE_DEV_TOOLING: 500 },
+          sources: { RawSource: class {} },
+        },
+      };
+      (
+        makePlugin({ appToken: 'tok', onError: () => undefined, onNotice: () => undefined }, hook)[
+          hook
+        ] as (c: unknown) => void
+      )(compiler);
+      for (const fn of compilations) fn(compilation);
+      for (const t of taps) await t();
+      await after[0]?.();
+      expect(uploadSpy).not.toHaveBeenCalled();
     });
   }
 });

@@ -59,7 +59,12 @@ interface WebpackCompilationLike {
     };
   };
   getAssets(): ReadonlyArray<{ name: string }>;
-  getAsset(name: string): { source: { buffer(): Buffer } } | undefined;
+  getAsset(name: string):
+    | {
+        source: { buffer(): Buffer };
+        info?: { related?: { sourceMap?: string | string[] | null } };
+      }
+    | undefined;
   updateAsset(name: string, source: unknown): void;
 }
 
@@ -194,6 +199,11 @@ function webpackAssetStore(
     names: () => compilation.getAssets().map((asset) => asset.name),
     read: (name) => compilation.getAsset(name)?.source.buffer() ?? Buffer.alloc(0),
     update: (name, content) => compilation.updateAsset(name, new RawSource(content)),
+    // The compilation records which asset is a bundle's source map (SourceMapDevToolPlugin: info.related).
+    mapOf: (name) => {
+      const related = compilation.getAsset(name)?.info?.related?.sourceMap;
+      return (Array.isArray(related) ? related[0] : related) ?? undefined;
+    },
   };
 }
 
@@ -274,6 +284,9 @@ function esbuildOutputDir(options: EsbuildBuildLike['initialOptions']): string |
 interface InBuildStamp {
   preStamped: boolean;
   stampedBundles?: string[];
+  stampedMaps?: Record<string, string>;
+  /** A map lies outside the output: nothing was stamped and stamping after emit would half-stamp, so skip it. */
+  abandoned?: boolean;
 }
 
 export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefined> = (
@@ -376,22 +389,25 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
   // failed in-build stamp degrades to the old safe behaviour rather than to a page nobody checked.
   const stampInBuild = async (store: AssetStore): Promise<InBuildStamp> => {
     try {
-      const { stamped } = await stampAssets(store, { dryRun: resolved.dryRun });
+      const { stamped, maps } = await stampAssets(store, { dryRun: resolved.dryRun });
       // Stamped on a dry run too: the preview must follow the path the real run takes, and the real run
       // would not refuse an SRI build — it would stamp it here.
-      return { preStamped: true, stampedBundles: stamped };
+      return { preStamped: true, stampedBundles: stamped, stampedMaps: maps };
     } catch (error) {
       if (resolved.failOnError) {
         throw error;
       }
+      const abandoned = (error as { unreachableMap?: boolean } | null)?.unreachableMap === true;
       (
         resolved.onError ??
         ((e: unknown) =>
           console.warn(
-            `[bugsee] in-build debug-ID stamping failed; falling back to stamping after emit: ${String(e)}`,
+            abandoned
+              ? `[bugsee] debug-IDs were NOT stamped, and stamping after emit would half-stamp this build: ${String(e)}`
+              : `[bugsee] in-build debug-ID stamping failed; falling back to stamping after emit: ${String(e)}`,
           ))
       )(error);
-      return { preStamped: false };
+      return { preStamped: false, ...(abandoned ? { abandoned: true } : {}) };
     }
   };
 
@@ -469,10 +485,17 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
     if (outDir !== undefined) {
       const stamp = stampedOutputs.get(output);
       stampedOutputs.delete(output);
+      if (stamp?.abandoned === true) {
+        return;
+      }
       await runPluginUpload(forOutput(outDir), outDir, {
         bundler,
         ...(stamp?.preStamped === true
-          ? { preStamped: true, stampedBundles: stamp.stampedBundles }
+          ? {
+              preStamped: true,
+              stampedBundles: stamp.stampedBundles,
+              stampedMaps: stamp.stampedMaps,
+            }
           : {}),
       });
     }
@@ -716,7 +739,10 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
           dir !== '' &&
           !skipDevelopment(compiler.options.mode !== 'development', 'Rspack')
         ) {
-          await runPluginUpload(forOutput(dir), dir, { bundler, ...preStamped() });
+          const stamp = preStamped();
+          if (stamp.abandoned !== true) {
+            await runPluginUpload(forOutput(dir), dir, { bundler, ...stamp });
+          }
         }
       });
     },
@@ -735,10 +761,13 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
       compiler.hooks.afterEmit.tapPromise(name, async () => {
         const dir = compiler.options.output?.path;
         if (typeof dir === 'string' && dir !== '') {
-          await runPluginUpload(forOutput(dir), dir, {
-            bundler: webpackBuild(compiler.options.mode),
-            ...preStamped(),
-          });
+          const stamp = preStamped();
+          if (stamp.abandoned !== true) {
+            await runPluginUpload(forOutput(dir), dir, {
+              bundler: webpackBuild(compiler.options.mode),
+              ...stamp,
+            });
+          }
         }
       });
     },

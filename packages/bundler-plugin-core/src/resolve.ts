@@ -279,6 +279,8 @@ export async function runPluginUpload(
     preStamped?: boolean;
     /** The bundles the in-build stamp wrote (relative to the output directory), for the on-disk re-check. */
     stampedBundles?: readonly string[];
+    /** The in-build stamp's bundle -> map names, for the on-disk re-check. */
+    stampedMaps?: Readonly<Record<string, string>>;
     /**
      * The build's own outputs (esbuild's metafile). The run then touches exactly these files, never joins another
      * run of the same directory, and registers from these bundles only.
@@ -325,6 +327,7 @@ export async function runPluginUpload(
       // build that did not take the in-build path.
       ...(deps.preStamped === true ? { preStamped: true } : {}),
       ...(deps.stampedBundles !== undefined ? { stampedBundles: deps.stampedBundles } : {}),
+      ...(deps.stampedMaps !== undefined ? { stampedMaps: deps.stampedMaps } : {}),
       ...(deps.files !== undefined ? { files: deps.files } : {}),
     });
     // AFTER the upload, because the build id is derived from the debug-ids its inject step stamps

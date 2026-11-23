@@ -24,7 +24,13 @@ import {
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path, { dirname, join, resolve, sep } from 'node:path';
-import { resolveMapName, type StampIssue, verifyStamp, verifyStampedPairs } from './verify-stamp';
+import {
+  localPointerTarget,
+  resolveMapName,
+  type StampIssue,
+  verifyStamp,
+  verifyStampedPairs,
+} from './verify-stamp';
 
 /**
  * Directories never descended into when walking build output.
@@ -54,8 +60,20 @@ export const NEVER_WALK = new Set([
  */
 export const MAX_WALK_DEPTH = 6;
 
+/**
+ * Whether a path RELATIVE to an output directory runs through a directory that is not this build's output:
+ * a never-walk name (`node_modules`, `src`, `test`, …) or a dot-directory. Files there are not this build's to
+ * delete (the CLI's directory scan does reach them, which is why the upload is not the reference).
+ */
+export function isFencedPath(relative: string): boolean {
+  return relative
+    .split(/[\\/]/)
+    .slice(0, -1)
+    .some((segment) => NEVER_WALK.has(segment) || segment.startsWith('.'));
+}
+
 /** What inject can change: the scripts it stamps and the maps it pairs with them. */
-const STAMPABLE = /\.([cm]?js|map)$/;
+const STAMPABLE = /\.([cm]?js|map)$/i;
 
 /** Every stampable file under `dir`. An unreadable directory contributes nothing (never throws). */
 async function walkStampable(dir: string, fenced: boolean, depth = 0): Promise<string[]> {
@@ -244,7 +262,7 @@ export async function verifyAndRestore(
   const issues: StampIssue[] = [];
   const partner = new Map<string, string>();
   const paired = new Set<string>();
-  const stampedBundles = changed.filter((file) => /\.[cm]?js$/.test(file));
+  const stampedBundles = changed.filter((file) => /\.[cm]?js$/i.test(file));
   for (const bundle of stampedBundles) {
     const after = (await read(bundle)) as Buffer;
     const map = resolveMapName(bundle, after.toString('utf8'), (n) => entries.has(n), path);
@@ -261,6 +279,21 @@ export async function verifyAndRestore(
       }
     }
     issues.push(...verifyStamp(before, now, options.parse, path));
+    // A pointer that reaches a map OUTSIDE the snapshotted output: inject cannot have stamped it.
+    const target = localPointerTarget(bundle, after.toString('utf8'), path);
+    if (
+      target !== undefined &&
+      !entries.has(target) &&
+      (await stat(target).then(
+        () => true,
+        () => false,
+      ))
+    ) {
+      issues.push({
+        name: bundle,
+        reason: `its source map (${target}) lies outside the output directory, so it cannot be stamped with the bundle`,
+      });
+    }
   }
   for (const file of changed) {
     if (file.endsWith('.map') && !paired.has(file)) {
@@ -308,7 +341,11 @@ export async function verifyAndRestore(
  * the directory — so a file that was not part of the bundle (a `public/` script, a stale file with
  * `emptyOutDir: false`) is not mistaken for one the stamp missed. One bundle and its map in memory at a time.
  */
-export async function verifyStampedOnDisk(bundles: readonly string[]): Promise<StampIssue[]> {
+export async function verifyStampedOnDisk(
+  bundles: readonly string[],
+  /** The build's own bundle -> map mapping (absolute paths), tried before the pointer and the sibling. */
+  known: ReadonlyMap<string, string> = new Map(),
+): Promise<StampIssue[]> {
   const issues: StampIssue[] = [];
   for (const bundle of bundles) {
     let code: Buffer;
@@ -319,8 +356,10 @@ export async function verifyStampedOnDisk(bundles: readonly string[]): Promise<S
     }
     const files = new Map([[bundle, code]]);
     const pointed = resolveMapName(bundle, code.toString('utf8'), () => true, path);
+    const hinted = known.get(bundle);
     try {
-      files.set(pointed, await readFile(pointed));
+      const first = hinted ?? pointed;
+      files.set(first, await readFile(first));
     } catch {
       // The pointer names no file: the `<bundle>.map` sibling inject pairs by default.
       await readFile(`${bundle}.map`).then(
@@ -328,7 +367,7 @@ export async function verifyStampedOnDisk(bundles: readonly string[]): Promise<S
         () => undefined,
       );
     }
-    issues.push(...verifyStampedPairs(files));
+    issues.push(...verifyStampedPairs(files, known));
   }
   return issues;
 }

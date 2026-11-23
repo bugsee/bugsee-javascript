@@ -14,6 +14,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
+  isFencedPath,
   isProjectRootOrAbove,
   isUploadableMap,
   listOutputMaps,
@@ -488,5 +489,68 @@ describe('depth: an ordinary output directory is walked to any depth (the CLI sc
     } finally {
       process.chdir(start);
     }
+  });
+});
+
+describe("isFencedPath — directories that are not this build's output", () => {
+  it('is true when any directory segment is a never-walk name or a dot-directory', () => {
+    for (const rel of [
+      'node_modules/p/a.css.map',
+      'a/src/b.d.ts.map',
+      '.cache/x.map',
+      'x/.well-known/y.map',
+      'test/t.map',
+      '__tests__/a.map',
+    ]) {
+      expect(isFencedPath(rel), rel).toBe(true);
+    }
+    for (const rel of ['a.css.map', 'assets/a.css.map', 'srcs/a.map', 'a/b/.hidden.map']) {
+      expect(isFencedPath(rel), rel).toBe(false);
+    }
+  });
+});
+
+describe('verifyAndRestore — a map that lives OUTSIDE the snapshotted output', () => {
+  it('flags and restores a stamped bundle whose pointer reaches a map outside the directory', async () => {
+    await mkdir(join(dir, 'out', 'js'), { recursive: true });
+    await mkdir(join(dir, 'maps'));
+    await writeFile(join(dir, 'maps', 'a.js.map'), plainMap);
+    const original = 'a();\n//# sourceMappingURL=../../maps/a.js.map\n';
+    await writeFile(join(dir, 'out', 'js', 'a.js'), original);
+    const snap = await snapshotStampFiles({ dir: join(dir, 'out') });
+    await writeFile(join(dir, 'out', 'js', 'a.js'), `${original}${STAMP}`);
+    const { issues, restored } = await verifyAndRestore(snap);
+    expect(issues[0]?.reason).toContain('outside the output directory');
+    expect(restored).toEqual([join(dir, 'out', 'js', 'a.js')]);
+    expect(await readFile(join(dir, 'out', 'js', 'a.js'), 'utf8')).toBe(original);
+    await snap.dispose();
+  });
+});
+
+describe("verifyStampedOnDisk — the build's own bundle -> map mapping", () => {
+  it('checks a map the pointer and sibling both miss (Rollup moved map), and flags a lost id', async () => {
+    await mkdir(join(dir, 'js'));
+    await mkdir(join(dir, 'maps'));
+    await writeFile(join(dir, 'js', 'a.js'), `a();\n//# sourceMappingURL=a.map\n${STAMP}`);
+    await writeFile(join(dir, 'maps', 'a.js.map'), plainMap);
+    const hint = new Map([[join(dir, 'js', 'a.js'), join(dir, 'maps', 'a.js.map')]]);
+    expect(await verifyStampedOnDisk([join(dir, 'js', 'a.js')])).toEqual([]); // without the hint: blind
+    expect((await verifyStampedOnDisk([join(dir, 'js', 'a.js')], hint)).map((i) => i.name)).toEqual(
+      [join(dir, 'maps', 'a.js.map')],
+    );
+    await writeFile(join(dir, 'maps', 'a.js.map'), stampedMap);
+    expect(await verifyStampedOnDisk([join(dir, 'js', 'a.js')], hint)).toEqual([]);
+  });
+});
+
+describe('verifyAndRestore — a dangling pointer is not an outside map', () => {
+  it('raises nothing for a pointer at a file that does not exist anywhere', async () => {
+    const original = 'a();\n//# sourceMappingURL=../../nowhere/a.js.map\n';
+    await mkdir(join(dir, 'out'));
+    await writeFile(join(dir, 'out', 'a.js'), original);
+    const snap = await snapshotStampFiles({ dir: join(dir, 'out') });
+    await writeFile(join(dir, 'out', 'a.js'), `${original}${STAMP}`);
+    expect(await verifyAndRestore(snap)).toEqual({ issues: [], restored: [], failed: [] });
+    await snap.dispose();
   });
 });

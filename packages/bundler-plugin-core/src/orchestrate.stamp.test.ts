@@ -811,3 +811,108 @@ describe('the explicit upload is deterministic and its result is truthful', () =
     expect(some.uploaded).toBe(true);
   });
 });
+
+describe('foreign maps in fenced directories are never touched, read for a notice, or deleted', () => {
+  let dir: string;
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'bugsee-foreign-'));
+  });
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+  const keyed = JSON.stringify({ debugId: ID });
+  const ok = async (): Promise<SpawnResult> => ({ code: 0, stdout: '', stderr: '' });
+  const foreign = [
+    'node_modules/pkg/style.css.map',
+    'node_modules/pkg/types.d.ts.map',
+    '.cache/x.d.ts.map',
+    'src/old.d.ts.map',
+  ];
+  const seedForeign = async (): Promise<void> => {
+    for (const rel of foreign) {
+      await mkdir(join(dir, rel, '..'), { recursive: true });
+      await writeFile(join(dir, rel), '{}');
+    }
+    await mkdir(join(dir, 'node_modules', 'pkg'), { recursive: true });
+    await writeFile(join(dir, 'node_modules', 'pkg', 'vendor.js.map'), '{"version":3}');
+  };
+
+  it("pre-stamped: this build's own css/declaration maps are deleted, foreign ones under node_modules/src/dot-dirs survive, and no notice names them", async () => {
+    await seedForeign();
+    await writeFile(join(dir, 'a.js.map'), keyed);
+    await writeFile(join(dir, 'main.css.map'), '{}');
+    await writeFile(join(dir, 'types.d.ts.map'), '{}');
+    const notices: string[] = [];
+    await uploadSourcemaps({
+      ...base,
+      outDir: dir,
+      run: ok,
+      preStamped: true,
+      verifySri: async () => [],
+      onNotice: (m) => notices.push(m),
+    });
+    const left = ((await readdir(dir, { recursive: true })) as string[])
+      .filter((f) => f.endsWith('.map'))
+      .sort();
+    expect(left).toEqual([...foreign, 'node_modules/pkg/vendor.js.map'].sort());
+    expect(notices.join('\n')).not.toContain('node_modules');
+  });
+
+  it('post-emit (default walker): the same rule, and keyed maps at any depth or under src/ ARE deleted', async () => {
+    await seedForeign();
+    await mkdir(join(dir, 'src'), { recursive: true });
+    await writeFile(join(dir, 'src', 'k.js.map'), keyed);
+    let deep = dir;
+    for (let i = 0; i < 8; i++) {
+      deep = join(deep, `d${i}`);
+      await mkdir(deep);
+    }
+    await writeFile(join(deep, 'deep.js.map'), keyed);
+    await writeFile(join(dir, 'main.css.map'), '{}');
+    const onError = vi.fn();
+    await uploadSourcemaps({
+      ...base,
+      outDir: dir,
+      run: ok,
+      findSri: async () => [],
+      spillRoot: tmpdir(),
+      onError,
+    });
+    expect(onError).not.toHaveBeenCalled(); // the unkeyed vendor map under node_modules is not this build's to report
+    const left = ((await readdir(dir, { recursive: true })) as string[])
+      .filter((f) => f.endsWith('.map'))
+      .sort();
+    expect(left).toEqual([...foreign, 'node_modules/pkg/vendor.js.map'].sort());
+  });
+});
+
+describe("the on-disk re-check uses the build's own bundle -> map names", () => {
+  it('flags a moved map (that neither pointer nor sibling can name) that lost its id', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'bugsee-known-'));
+    try {
+      await mkdir(join(dir, 'js'));
+      await mkdir(join(dir, 'maps'));
+      await writeFile(
+        join(dir, 'js', 'a.js'),
+        `a();\n//# sourceMappingURL=a.map\n\n;1;\n//# debugId=${ID}\n`,
+      );
+      await writeFile(join(dir, 'maps', 'a.js.map'), '{"version":3}');
+      const errors: unknown[] = [];
+      await uploadSourcemaps({
+        ...base,
+        outDir: dir,
+        run: async () => ({ code: 0, stdout: '', stderr: '' }),
+        preStamped: true,
+        verifySri: async () => [],
+        stampedBundles: ['js/a.js'],
+        stampedMaps: { 'js/a.js': 'maps/a.js.map' },
+        deleteMaps: false,
+        onNotice: () => undefined,
+        onError: (e) => errors.push(e),
+      });
+      expect(String(errors[0])).toContain('maps/a.js.map');
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});

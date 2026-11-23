@@ -266,6 +266,29 @@ refused and the build falls back to stamping after emit. Covered by real Rollup,
 (`maps/[name].js.map`, with and without `js/` bundles, `failOnError` on and off). The upload result is truthful:
 `uploaded` is false when a pre-stamped build had no keyed map to upload.
 
+### Maps the stamp cannot reach, and the one deletion rule
+
+- webpack and Rspack name a bundle's map through the compilation's asset info (`related.sourceMap`), so a map
+  moved by `SourceMapDevToolPlugin({ filename: 'maps/[file].map' })` is staged as the bundle's sibling like a
+  Rollup/Vite one (`mapOf` for the compilation store). The pointer is NOT trusted: measured, Rspack emits
+  `../maps/js/main.js.map` for a bundle in `js/` whose map is outside the output.
+- A stamped bundle whose map lies **outside the output directory** cannot be stamped with it (inject does not
+  follow `..` out of the directory it is given). The in-build stamp is refused and, because stamping after emit
+  would half-stamp the same way, NOT retried: the build is reported (and fails under `failOnError`), nothing is
+  stamped, uploaded or deleted. On the post-emit path a stamped bundle whose pointer reaches an existing map
+  outside the snapshotted directory is restored and reported.
+- A `sourceMappingURL` is read to the end of the line (a bundler can emit an unencoded space), and `.JS`
+  bundles are stamped like `.js` (the CLI does).
+- After the bundler wrote an in-build stamp, the on-disk re-check uses the build's own bundle -> map names (from
+  the store), so a moved map that neither its pointer nor its sibling name can reach is still checked.
+- **One deletion rule for every path:** a map is deleted only when it carries the debug-id this build stamped
+  and was uploaded (confirmed), wherever it is, at any depth; plus this build's own stylesheet / declaration
+  maps. Those never-uploaded maps are deleted only OUTSIDE `node_modules`, `src`, `test(s)`, `__tests__` and
+  dot-directories (foreign files an ordinary output directory can hold; the CLI's directory scan does reach
+  them, so the scan is not the reference), and an unkeyed map in such a directory is not reported either. The
+  post-emit path uses the same walk as the pre-stamped path (the whole output directory, fenced only at a
+  project root). The esbuild `files` path deletes exactly its own listed files.
+
 ### Uploading a pre-stamped directory
 
 A pre-stamped build is uploaded as an **explicit file set**, never as the directory. Only what the in-build

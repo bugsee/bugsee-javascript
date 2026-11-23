@@ -48,6 +48,10 @@ export interface StampAssetsOptions {
  */
 export class StampVerificationError extends Error {
   readonly issues: StampIssue[];
+  /** A map lies outside the output: stamping after emit cannot reach it either, so a retry would half-stamp. */
+  get unreachableMap(): boolean {
+    return this.issues.some((issue) => issue.outside === true);
+  }
   constructor(issues: StampIssue[]) {
     super(`the debug-ID stamp did not verify, so none of it was applied (${formatIssues(issues)})`);
     this.name = 'StampVerificationError';
@@ -56,13 +60,15 @@ export class StampVerificationError extends Error {
 }
 
 export interface StampAssetsResult {
-  /** The bundles inject rewrote (their maps are rewritten alongside, and not listed). */
+  /** The bundles inject rewrote (their maps are rewritten alongside, and not listed), sorted. */
   stamped: string[];
+  /** Each stamped bundle's source map, by real asset name, where it has one: what the on-disk re-check uses. */
+  maps: Record<string, string>;
 }
 
 /** What inject stamps (`.js`/`.cjs`/`.mjs`), and the maps it pairs them with. */
-const BUNDLE = /\.[cm]?js$/;
-const STAGED = /\.([cm]?js|map)$/;
+const BUNDLE = /\.[cm]?js$/i;
+const STAGED = /\.([cm]?js|map)$/i;
 
 /** A relative asset name that stays inside the staging directory once joined to it. */
 function staysInside(name: string): boolean {
@@ -83,7 +89,7 @@ export async function stampAssets(
 ): Promise<StampAssetsResult> {
   const staged = store.names().filter((name) => STAGED.test(name) && staysInside(name));
   if (!staged.some((name) => BUNDLE.test(name))) {
-    return { stamped: [] };
+    return { stamped: [], maps: {} };
   }
   // A map that is not the bundle's sibling is staged AS the sibling (and written back at its real name).
   const stageName = new Map<string, string>();
@@ -100,7 +106,10 @@ export async function stampAssets(
       throw new StampVerificationError([
         {
           name: map,
-          reason: `the map of ${bundle} cannot be staged for stamping (not a .map file inside the output)`,
+          reason: staysInside(map)
+            ? `the map of ${bundle} cannot be staged for stamping (not a .map file)`
+            : `the map of ${bundle} lies outside the output directory, so it cannot be stamped with the bundle`,
+          ...(staysInside(map) ? {} : { outside: true as const }),
         },
       ]);
     }
@@ -146,7 +155,7 @@ export async function stampAssets(
     );
 
     if (dryRun) {
-      return { stamped: [] };
+      return { stamped: [], maps: {} };
     }
     // Read everything back and verify BEFORE writing anything: a bad stamp must leave the build exactly
     // as the bundler produced it, which an interleaved read-and-update could not promise.
@@ -170,7 +179,14 @@ export async function stampAssets(
         }
       }
     }
-    return { stamped: stamped.sort() };
+    const maps: Record<string, string> = {};
+    for (const bundle of stamped) {
+      const map = store.mapOf?.(bundle) ?? `${bundle}.map`;
+      if (stagedSet.has(map)) {
+        maps[bundle] = map;
+      }
+    }
+    return { stamped: stamped.sort(), maps };
   } finally {
     await rm(root, { recursive: true, force: true });
   }

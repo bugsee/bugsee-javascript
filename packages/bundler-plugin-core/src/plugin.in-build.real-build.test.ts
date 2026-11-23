@@ -726,3 +726,124 @@ describeReal('a bundle deeper than the walk depth cap', () => {
     expect(readFileSync(join(app.out, 'a/b/c/d/e/f/g/index.js'), 'utf8')).toMatch(/debugId=/);
   });
 });
+
+// Maps this build did not produce, in directories that are not its output, must survive (the CLI's directory
+// scan reaches them; deleting them is not this build's business).
+describeReal('foreign css/declaration maps in an existing output directory', () => {
+  it("Rollup: dist/node_modules, src, dot-dirs are untouched; this build's own maps are gone", async () => {
+    const app = makeApp('rollup-foreign', { lazy: false });
+    const foreign = [
+      'node_modules/pkg/style.css.map',
+      'node_modules/pkg/types.d.ts.map',
+      '.cache/x.d.ts.map',
+      'src/old.d.ts.map',
+    ];
+    for (const rel of foreign) {
+      mkdirSync(join(app.out, rel, '..'), { recursive: true });
+      writeFileSync(join(app.out, rel), '{}');
+    }
+    const before = requests.length;
+    const bundle = await rollup({
+      input: join(app.dir, 'index.js'),
+      plugins: [bugseeRollupPlugin(pluginOptions())],
+    });
+    await bundle.write({ dir: app.out, sourcemap: true });
+    await bundle.close();
+    expect(requests.length).toBeGreaterThan(before);
+    const left = (readdirSync(app.out, { recursive: true }) as string[])
+      .filter((f) => f.endsWith('.map'))
+      .sort();
+    expect(left).toEqual([...foreign].sort());
+  });
+});
+
+// A map the bundle points at but that cannot be stamped with it (outside the output, or an unencoded space) must
+// never leave a stamped bundle whose id never reaches its map: the stamp is refused/restored and reported.
+describeReal('Rspack: a source map the stamp cannot reach', () => {
+  const build = (
+    app: { dir: string; out: string },
+    output: object,
+    filename: string,
+    failOnError: boolean,
+    errors: unknown[],
+  ) =>
+    new Promise<{ errors: unknown[] }>((resolve, reject) => {
+      const compiler = rspack({
+        context: app.dir,
+        mode: 'production',
+        entry: join(app.dir, 'index.js'),
+        devtool: false,
+        output: { path: app.out, ...output },
+        plugins: [
+          new rspack.SourceMapDevToolPlugin({ filename }),
+          bugseeRspackPlugin({
+            ...pluginOptions(),
+            failOnError,
+            onError: (e: unknown) => errors.push(e),
+          }),
+        ],
+      });
+      compiler.run((err, stats) => {
+        compiler.close(() =>
+          err
+            ? reject(err)
+            : resolve({
+                errors: [...(stats as { compilation: { errors: unknown[] } }).compilation.errors],
+              }),
+        );
+      });
+    });
+
+  it('a map OUTSIDE the output directory: nothing is stamped or uploaded, and it is said (never a silent half-stamp)', async () => {
+    const app = makeApp('rspack-outside', { lazy: false });
+    const before = requests.length;
+    const errors: unknown[] = [];
+    await build(app, { filename: 'js/[name].js' }, '../maps/[file].map', false, errors);
+    expect(errors.map((e) => String((e as Error).message ?? e)).join('\n')).toContain(
+      'outside the output directory',
+    );
+    expect(readFileSync(join(app.out, 'js', 'main.js'), 'utf8')).not.toContain('debugId');
+    expect(requests.length).toBe(before);
+  });
+
+  it('a map OUTSIDE the output directory fails the build under failOnError', async () => {
+    const app = makeApp('rspack-outside-strict', { lazy: false });
+    const before = requests.length;
+    await expect(
+      build(app, { filename: 'js/[name].js' }, '../maps/[file].map', true, []),
+    ).rejects.toThrow(/outside the output directory/);
+    expect(requests.length).toBe(before);
+  });
+
+  it('a map under a directory with a space, pointer emitted unencoded: stamped (mapOf) and uploaded', async () => {
+    const app = makeApp('rspack-space', { lazy: false });
+    const before = requests.length;
+    const errors: unknown[] = [];
+    const result = await build(
+      app,
+      { filename: 'j s/[name].js' },
+      'my maps/[file].map',
+      true,
+      errors,
+    );
+    expect(result.errors.map(String)).toEqual([]);
+    expect(errors.map(String)).toEqual([]);
+    expect(requests.length).toBeGreaterThan(before);
+    const files = readdirSync(app.out, { recursive: true }) as string[];
+    expect(files.filter((f) => f.endsWith('.map'))).toEqual([]);
+    expect(readFileSync(join(app.out, 'j s', 'main.js'), 'utf8')).toMatch(/debugId=/);
+  });
+
+  it('a map moved into another directory of the output (maps/[file].map, bundles in js/): stamped and uploaded', async () => {
+    const app = makeApp('rspack-moved', { lazy: false });
+    const before = requests.length;
+    const errors: unknown[] = [];
+    const result = await build(app, { filename: 'js/[name].js' }, 'maps/[file].map', true, errors);
+    expect(result.errors.map(String)).toEqual([]);
+    expect(errors.map(String)).toEqual([]);
+    expect(requests.length).toBeGreaterThan(before);
+    expect(
+      (readdirSync(app.out, { recursive: true }) as string[]).filter((f) => f.endsWith('.map')),
+    ).toEqual([]);
+  });
+});

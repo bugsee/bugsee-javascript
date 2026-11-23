@@ -16,7 +16,7 @@ const PREFIX = '//# debugId=';
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 /** The extensions inject stamps (`inject_paths`: `.js`/`.cjs`/`.mjs`). */
-const STAMPED = /\.[cm]?js$/;
+const STAMPED = /\.[cm]?js$/i;
 
 /**
  * How much of each bundle's END is read. Inject appends the stamp LAST — a ~300-byte runtime stub,
