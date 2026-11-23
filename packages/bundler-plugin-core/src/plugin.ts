@@ -439,7 +439,7 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
       const { stamped, maps, bundles } = await stampAssets(store, { dryRun: resolved.dryRun });
       // Never claim a stamp that staged nothing while the build emitted scripts: the post-emit path (which
       // reads real file names off the disk) has to run, and it is said.
-      const scripts = emitted.filter((name) => /\.[cm]?js([?#]|$)/i.test(name));
+      const scripts = emitted.filter((name) => /\.[cm]?js(\?|$)/i.test(name));
       if (bundles === 0 && scripts.length > 0) {
         say(
           `no debug-ID could be stamped inside the build (none of its ${scripts.length} script asset(s), e.g. ${scripts[0]}, matched), so stamping after emit instead.`,

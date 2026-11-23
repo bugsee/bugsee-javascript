@@ -253,6 +253,13 @@ ONLY to a walk from a project root; an ordinary output directory is walked to an
 and inject. A spill directory that cannot be removed (EPERM/EBUSY) is reported, never thrown. Windows paths
 resolve a custom map name through the native path API (the in-memory asset names use posix).
 
+`ownedBy` compares names case-exact and byte-exact against the on-disk name. On a case-insensitive or
+normalising file system (macOS APFS, Windows) a case-only or Unicode-form-only rename between builds, without
+`output.clean`, makes the build's own map look foreign: it is still uploaded but is kept on disk with the "not
+produced by this build" notice, so it fails safe (nothing is wrongly deleted). Two follow-ups if it ever
+matters, deliberately NOT implemented: identify files by `stat` (dev + ino) instead of by name, or do not stage
+`?`-named webpack assets and send them to the post-emit path.
+
 ### Maps that are not the bundle sibling
 
 `sourcemapFileNames` can put a map anywhere in the output (`maps/[name].js.map`, bundles in `js/`). `inject`

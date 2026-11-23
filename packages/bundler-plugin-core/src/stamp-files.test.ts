@@ -628,3 +628,18 @@ describe('ownedBy — what the bundlers really write', () => {
     expect(own('/o/dist/a')).toBe(false); // nothing is cut at the #
   });
 });
+
+describe('ownedBy — Windows separators and ./ prefixes (win32 path API, on any host)', () => {
+  it('matches own names written with / or \\ or a leading ./ against win32 disk paths', async () => {
+    const { win32 } = await import('node:path');
+    const own = ownedBy('C:\\o\\dist', ['src/a.css.map', './b.css.map', 'c\\d.css.map'], win32);
+    expect(own('C:\\o\\dist\\src\\a.css.map')).toBe(true);
+    expect(own('C:\\o\\dist\\b.css.map')).toBe(true);
+    expect(own('C:\\o\\dist\\c\\d.css.map')).toBe(true);
+    expect(own('C:\\o\\dist\\src\\other.css.map')).toBe(false);
+    // the directory-name fallback uses the same API
+    const fenced = ownedBy('C:\\o\\dist', undefined, win32);
+    expect(fenced('C:\\o\\dist\\node_modules\\p\\a.css.map')).toBe(false);
+    expect(fenced('C:\\o\\dist\\assets\\a.css.map')).toBe(true);
+  });
+});

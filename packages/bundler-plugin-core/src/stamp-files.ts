@@ -23,7 +23,7 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import path, { dirname, join, posix, relative, resolve, sep } from 'node:path';
+import path, { dirname, join, posix, resolve, sep } from 'node:path';
 import {
   localPointerTarget,
   resolveMapName,
@@ -81,9 +81,11 @@ export function isFencedPath(relative: string): boolean {
 export function ownedBy(
   outDir: string,
   ownFiles: readonly string[] | undefined,
+  /** The path implementation `outDir` and the files follow (the host's by default). */
+  api: Pick<typeof path, 'relative'> = path,
 ): (file: string) => boolean {
   if (ownFiles === undefined) {
-    return (file) => !isFencedPath(relative(outDir, file));
+    return (file) => !isFencedPath(api.relative(outDir, file));
   }
   // GROUND TRUTH (real builds): webpack/Rspack drop `?...` when they write a file (`x.js.map?h` -> `x.js.map`)
   // and KEEP `#` (`a#1.js` stays); Rollup/Vite write every name literally (`index.js?v=1` stays). So each
@@ -93,7 +95,7 @@ export function ownedBy(
   const owned = new Set(
     ownFiles.flatMap((name) => [normal(name), normal(name.replace(/\?.*$/, ''))]),
   );
-  return (file) => owned.has(normal(relative(outDir, file)));
+  return (file) => owned.has(normal(api.relative(outDir, file)));
 }
 
 /** What inject can change: the scripts it stamps and the maps it pairs with them. */

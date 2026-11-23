@@ -738,3 +738,22 @@ describe('webpack/Rspack: the zero-staged guard looks at the REAL asset names', 
     expect(seen).toEqual([['a.js', 'b.js'], ['a.js']]);
   });
 });
+
+describe('the zero-staged guard: only ? ends a webpack extension (# is part of the name)', () => {
+  it('x.js#frag is not script-like, so no notice and the build stays pre-stamped', async () => {
+    stampSpy.mockImplementation(async () => ({ stamped: [], maps: {}, bundles: 0 }));
+    const notices: string[] = [];
+    const hooks = makePlugin({ appToken: 'tok', onNotice: (m: string) => notices.push(m) })
+      .rollup as unknown as {
+      generateBundle: { handler: (o: object, b: Record<string, unknown>) => Promise<void> };
+      writeBundle: (o: object, b?: object) => Promise<void>;
+    };
+    const output = { dir: '/out' };
+    await hooks.generateBundle.handler(output, {
+      'x.js#frag': { type: 'asset', fileName: 'x.js#frag', source: 'x' },
+    });
+    await hooks.writeBundle(output);
+    expect(notices).toEqual([]);
+    expect((uploadSpy.mock.calls[0]?.[2] as { preStamped?: boolean }).preStamped).toBe(true);
+  });
+});
