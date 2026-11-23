@@ -542,20 +542,23 @@ export async function uploadSourcemaps(
         // A rejected inject may already have rewritten files (an earlier batch, or a partial write): verify and
         // restore them BEFORE the failure propagates, so no unverified stamp stays on disk.
         if (original !== undefined) {
+          let note: string | undefined;
           try {
             const { issues, restored, failed } = await verifyAndRestore(original);
             if (failed.length > 0) {
               // Files still carry the unverified rewrite: that must not go unmentioned.
-              throw new Error(
-                `${error instanceof Error ? error.message : String(error)}; ${verifyFailure(issues, restored, failed).message}`,
-                { cause: error },
-              );
+              note = verifyFailure(issues, restored, failed).message;
             }
           } catch (restoreError) {
-            if (restoreError instanceof Error && restoreError.cause === error) {
-              throw restoreError;
+            note = `restoring the originals also failed: ${restoreError instanceof Error ? restoreError.message : String(restoreError)}`;
+          }
+          if (note !== undefined) {
+            // The ORIGINAL error object is kept (a BugseeCliError stays one); the restore problem is appended.
+            if (error instanceof Error) {
+              error.message = `${error.message}; ${note}`;
+              throw error;
             }
-            // the inject failure is the one to report
+            throw new Error(`${String(error)}; ${note}`, { cause: error });
           }
         }
         throw error;
@@ -602,7 +605,12 @@ export async function uploadSourcemaps(
     // that set: no second walk to disagree with the first about which maps exist.
     // (Also after a restore: a restored map is unkeyed again, and the CLI rejects a DIRECTORY that holds one.)
     const explicitUpload =
-      files === undefined && (options.preStamped === true || restoredAny) && !dryRun;
+      files === undefined &&
+      (options.preStamped === true ||
+        restoredAny ||
+        // a sibling output's maps share the directory: upload only the names that are ours, never the directory
+        (options.siblingOwnFiles?.length ?? 0) > 0) &&
+      !dryRun;
     let uploadedMaps: string[] = [];
     let unuploadableMaps: string[] = [];
     let snapshot: string[] | undefined;
@@ -659,8 +667,11 @@ export async function uploadSourcemaps(
           `${noticed.length} source map(s) in ${outDir} have no readable debug-ID, so they were not uploaded (left on disk untouched): ${noticed.join(', ')}`,
         );
       }
+      // An output with no maps of its own while a sibling output of the directory has some has nothing to
+      // do: that is not "this build produced no maps". A lone unmapped output still fails.
+      const siblingHasMaps = (options.siblingOwnFiles ?? []).some((name) => name.endsWith('.map'));
       if (deletable.length === 0) {
-        if (options.failOnError === true) {
+        if (options.failOnError === true && !(everything.length === 0 && siblingHasMaps)) {
           throw new Error(
             `no source maps with a debug-ID were found in ${outDir}, so nothing was uploaded`,
           );

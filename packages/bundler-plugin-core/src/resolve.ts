@@ -2,6 +2,8 @@
 // with environment variables, applies defaults, and decides whether the plugin is active (a token is
 // required; a build without one is a no-op rather than an error). Pure + injectable for testing.
 
+import { readlinkSync, realpathSync } from 'node:fs';
+import { basename, dirname, join, resolve as resolvePath } from 'node:path';
 import {
   type AppIdentityDeps,
   appIdentityDefines,
@@ -265,6 +267,42 @@ export function resolvePluginOptions(
 /** What a plugin run reports: the source-map upload, plus the build registration when it ran. */
 export type PluginRunResult = UploadSourcemapsResult & { build?: RegisterJsBuildResult };
 
+/**
+ * One key per physical directory, whatever the spelling (`dist`, `dist/`, `./dist`, an absolute path, a symlink):
+ * the real path of the deepest ancestor that exists, plus the not-yet-created rest (a directory that does not
+ * exist yet when the first output announces itself must key the same once it does).
+ */
+export function dirKey(dir: string, depth = 0): string {
+  let head = resolvePath(dir);
+  const rest: string[] = [];
+  for (;;) {
+    try {
+      return join(realpathSync(head), ...rest);
+    } catch {
+      // A symlink whose target does not exist YET (the build will create it) still names that target.
+      const target = depth < 40 ? readLinkTarget(head) : undefined;
+      if (target !== undefined) {
+        return join(dirKey(target, depth + 1), ...rest);
+      }
+      const parent = dirname(head);
+      /* v8 ignore next 3 -- only when even the filesystem root cannot be resolved */
+      if (parent === head) {
+        return join(head, ...rest);
+      }
+      rest.unshift(basename(head));
+      head = parent;
+    }
+  }
+}
+
+function readLinkTarget(path: string): string | undefined {
+  try {
+    return resolvePath(dirname(path), readlinkSync(path));
+  } catch {
+    return undefined; // not a symlink (or not there)
+  }
+}
+
 /** The ownFiles of every output of a directory that is pending or running (see {@link runPluginUpload}). */
 const ownersByDir = new Map<string, Set<readonly string[]>>();
 
@@ -280,19 +318,20 @@ export async function runPluginUpload(
   deps: Parameters<typeof runPluginUploadInner>[2] = {},
 ): Promise<PluginRunResult | undefined> {
   const mine = deps.files === undefined ? deps.ownFiles : undefined;
+  const key = dirKey(outDir);
   if (mine !== undefined) {
-    const group = ownersByDir.get(outDir) ?? new Set<readonly string[]>();
+    const group = ownersByDir.get(key) ?? new Set<readonly string[]>();
     group.add(mine);
-    ownersByDir.set(outDir, group);
+    ownersByDir.set(key, group);
   }
   try {
     return await runPluginUploadInner(resolved, outDir, deps, mine);
   } finally {
     if (mine !== undefined) {
-      const group = ownersByDir.get(outDir);
+      const group = ownersByDir.get(key);
       group?.delete(mine);
       if (group?.size === 0) {
-        ownersByDir.delete(outDir);
+        ownersByDir.delete(key);
       }
     }
   }
@@ -337,13 +376,14 @@ async function runPluginUploadInner(
   // both `dist` — used to start two concurrent pipelines over one tree, with one deleting maps
   // while the other was still reading them. A concurrent caller JOINS the in-flight run and
   // gets its result; the entry is released on settle, so `vite build --watch` still uploads every rebuild.
+  const dirKey0 = dirKey(outDir); // once: a directory created meanwhile must not change the key
   // A run over a build's OWN files (`deps.files`) neither joins nor is joined: it touches nothing another run
   // of the directory touches, so there is nothing to coordinate.
   // A caller that knows which files ITS output emitted (`ownFiles`) does not join: the in-flight run was
   // started with another output's names, and would treat this one's maps as "not produced by this build".
   // It WAITS for that run (no concurrent pipelines over one tree) and then runs itself.
   for (;;) {
-    const inFlight = deps.files === undefined ? runsByDir.get(outDir) : undefined;
+    const inFlight = deps.files === undefined ? runsByDir.get(dirKey0) : undefined;
     if (inFlight === undefined) {
       break;
     }
@@ -379,7 +419,7 @@ async function runPluginUploadInner(
             ownFiles: deps.ownFiles,
             siblingOwnFiles: [
               ...(deps.siblingOwnFiles ?? []),
-              ...[...(ownersByDir.get(outDir) ?? [])].filter((names) => names !== mine).flat(),
+              ...[...(ownersByDir.get(dirKey0) ?? [])].filter((names) => names !== mine).flat(),
             ],
           }
         : {}),
@@ -427,11 +467,11 @@ async function runPluginUploadInner(
   if (deps.files !== undefined) {
     return run;
   }
-  runsByDir.set(outDir, run);
+  runsByDir.set(dirKey0, run);
   void run
     .catch(() => undefined)
     .finally(() => {
-      runsByDir.delete(outDir);
+      runsByDir.delete(dirKey0);
     });
   return run;
 }

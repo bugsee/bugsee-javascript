@@ -16,6 +16,7 @@ import { loadBuildPluginEnv, mergeBuildPluginEnv } from './env-file';
 import type { BundlerBuildContext } from './register-build';
 import {
   type BugseePluginOptions,
+  dirKey,
   notify,
   type ResolvedIdentity,
   resolveIdentity,
@@ -581,9 +582,10 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
     if (outDir === undefined || !resolved.enabled) {
       return;
     }
-    const group = announced.get(outDir) ?? new Map<object, string[]>();
+    const key = dirKey(outDir);
+    const group = announced.get(key) ?? new Map<object, string[]>();
     group.set(output, Object.keys(bundle));
-    announced.set(outDir, group);
+    announced.set(key, group);
     stampedOutputs.set(output, { preStamped: false });
     const unstampable = rollupUnstampableMaps(bundle);
     if (unstampable.length > 0) {
@@ -614,7 +616,8 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
     if (outDir !== undefined) {
       const stamp = stampedOutputs.get(output);
       stampedOutputs.delete(output);
-      const group = announced.get(outDir);
+      const key = dirKey(outDir);
+      const group = announced.get(key);
       // A name THIS output emitted is never a sibling's: a leftover announcement from `bundle.generate()` (which
       // never writes) has the same names and must not hide this output's own maps.
       const mine = new Set(Object.keys(bundle ?? {}));
@@ -624,7 +627,7 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
         .filter((name) => !mine.has(name));
       group?.delete(output);
       if (group?.size === 0) {
-        announced.delete(outDir);
+        announced.delete(key);
       }
       if (stamp?.abandoned === true) {
         return;

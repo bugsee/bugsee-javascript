@@ -1898,3 +1898,99 @@ describe('round-17 hardening: failed restore after a rejected inject, sibling ou
     expect(await readdir(dir)).toContain('b.js.map'); // untouched, left for its own output
   });
 });
+
+describe('round-18: sibling outputs on the post-emit path, empty own set under failOnError', () => {
+  let dir: string;
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'bugsee-r18b-'));
+  });
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+  const keyed = JSON.stringify({ debugId: ID });
+  const ok = async (_args: string[]): Promise<SpawnResult> => ({ code: 0, stdout: '', stderr: '' });
+
+  it("without an in-build stamp, a pending sibling's maps are neither uploaded, noticed nor deleted", async () => {
+    await writeFile(join(dir, 'a.js'), 'a();\n');
+    await writeFile(join(dir, 'a.js.map'), keyed);
+    await writeFile(join(dir, 'b.js.map'), keyed); // the sibling's, not yet through its writeBundle
+    const calls: string[][] = [];
+    const notices: string[] = [];
+    await uploadSourcemaps({
+      ...base,
+      outDir: dir,
+      run: async (args) => {
+        calls.push(args);
+        return ok(args);
+      },
+      findSri: async () => [],
+      ownFiles: ['a.js', 'a.js.map'],
+      siblingOwnFiles: ['b.js', 'b.js.map'],
+      onNotice: (m) => notices.push(m),
+    });
+    const upload = calls.find((c) => c[0] === 'debug-files') as string[];
+    expect(upload).toContain(join(dir, 'a.js.map'));
+    expect(upload).not.toContain(dir); // never the directory
+    expect(upload).not.toContain(join(dir, 'b.js.map'));
+    expect(notices.join('\n')).not.toContain('b.js.map');
+    expect(await readdir(dir)).toContain('b.js.map');
+    expect(await readdir(dir)).not.toContain('a.js.map');
+  });
+
+  it('an output with no maps of its own does not fail while a sibling has maps', async () => {
+    await writeFile(join(dir, 'u.js'), 'u();\n');
+    await writeFile(join(dir, 'm.js.map'), keyed);
+    const result = await uploadSourcemaps({
+      ...base,
+      outDir: dir,
+      run: ok,
+      findSri: async () => [],
+      failOnError: true,
+      preStamped: true,
+      verifySri: async () => [],
+      ownFiles: ['u.js'],
+      siblingOwnFiles: ['m.js', 'm.js.map'],
+      onNotice: () => undefined,
+    });
+    expect(result.uploaded).toBe(false);
+    expect(await readdir(dir)).toContain('m.js.map');
+  });
+
+  it('a lone unmapped output, or one whose siblings have no maps either, still fails', async () => {
+    await writeFile(join(dir, 'u.js'), 'u();\n');
+    for (const siblingOwnFiles of [undefined, ['v.js']]) {
+      await expect(
+        uploadSourcemaps({
+          ...base,
+          outDir: dir,
+          run: ok,
+          findSri: async () => [],
+          failOnError: true,
+          preStamped: true,
+          verifySri: async () => [],
+          ownFiles: ['u.js'],
+          ...(siblingOwnFiles !== undefined ? { siblingOwnFiles } : {}),
+        }),
+      ).rejects.toThrow(/no source maps with a debug-ID were found/);
+    }
+  });
+
+  it('an output whose own map has no debug-ID still fails even if a sibling has maps', async () => {
+    await writeFile(join(dir, 'u.js'), 'u();\n');
+    await writeFile(join(dir, 'u.js.map'), '{"version":3}'); // own, but no debugId
+    await expect(
+      uploadSourcemaps({
+        ...base,
+        outDir: dir,
+        run: ok,
+        findSri: async () => [],
+        failOnError: true,
+        preStamped: true,
+        verifySri: async () => [],
+        ownFiles: ['u.js', 'u.js.map'],
+        siblingOwnFiles: ['m.js.map'],
+        onNotice: () => undefined,
+      }),
+    ).rejects.toThrow(/no source maps with a debug-ID were found/);
+  });
+});

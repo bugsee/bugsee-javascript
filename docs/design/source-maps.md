@@ -324,6 +324,23 @@ id. (The hand-rolled SRI step pins only the entry chunks in `index.html`, never 
   hold the unverified rewrite), with or without `failOnError`. Two bundles claiming one map, counting a bundle's
   own sibling as a claim, refuse the in-build stamp.
 
+### Several outputs into one directory
+
+Outputs written concurrently into one directory (several `bundle.write()` calls, or Vite environments) coordinate by
+the PHYSICAL directory: `dist`, `dist/`, `./dist`, an absolute path and a symlink to it are one key (the real path
+of the deepest existing ancestor plus the not-yet-created rest). Each output announces its names at
+`generateBundle`; a run leaves the maps of every still-pending sibling to that sibling, on every path: the explicit
+pre-stamped upload, and the post-emit path (which, when siblings exist, also uploads an explicit file set instead of
+the directory, so a sibling's maps are neither uploaded, nor reported as "not produced by this build", nor deleted).
+**`failOnError` and an output with no maps:** an output whose own map set is empty while at least one announced
+sibling of the same directory has maps has nothing to do and does NOT fail ("no source maps with a debug-ID were
+found" is for a lone output, or when no sibling has maps either). An output whose own map exists but is unkeyed
+still fails. **Known limit:** an output that announced itself but never reaches `writeBundle` (a failed write, a
+`generate()`-only output) keeps its announcement until the next `buildStart`; maps another output finds that
+carry its names are left on disk, not reported. A name this output itself emitted is never treated as a sibling's.
+A rejected inject keeps its ORIGINAL error object (a `BugseeCliError` stays one); a failed restore is appended to its
+message.
+
 ### Maps that are not the bundle sibling
 
 `sourcemapFileNames` can put a map anywhere in the output (`maps/[name].js.map`, bundles in `js/`). `inject`

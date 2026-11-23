@@ -315,6 +315,28 @@ describe('one pipeline per output directory', () => {
     expect(seen[3]?.siblingOwnFiles).toEqual([]);
   });
 
+  it('explicit siblings (announced at generateBundle) and pending ones are BOTH passed; another spelling of the directory is the same directory', async () => {
+    const seen: Array<readonly string[] | undefined> = [];
+    const upload = async (opts: { siblingOwnFiles?: readonly string[] }) => {
+      seen.push(opts.siblingOwnFiles);
+      return { injected: true, uploaded: true, deletedMaps: [] };
+    };
+    const a = runPluginUpload(resolved, 'dist', {
+      uploadSourcemaps: upload as never,
+      ownFiles: ['a.js'],
+      siblingOwnFiles: ['announced.js.map'],
+      ...noVcs,
+    });
+    const b = runPluginUpload(resolved, './dist/', {
+      uploadSourcemaps: upload as never,
+      ownFiles: ['b.js'],
+      ...noVcs,
+    });
+    await Promise.all([a, b]);
+    expect(seen[0]?.slice().sort()).toEqual(['announced.js.map', 'b.js']);
+    expect(seen[1]).toEqual([]);
+  });
+
   it('a failed in-flight run does not stop the waiting second output from running', async () => {
     const calls: string[] = [];
     let first = true;
