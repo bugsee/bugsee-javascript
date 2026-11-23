@@ -21,7 +21,7 @@ import { rollup } from 'rollup';
 import { type Plugin as VitePlugin, build as viteBuild } from 'vite';
 import { build as vite7Build } from 'vite7';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { type DoctorReport, diagnoseBuildOutput } from './doctor';
+import { type DoctorReport, diagnoseBuildOutput, doctorExitCode } from './doctor';
 import { bugseeRollupPlugin, bugseeRspackPlugin, bugseeUnplugin } from './plugin';
 import { resolveBugseeCli, runBugseeCli } from './run-cli';
 
@@ -119,8 +119,9 @@ const viteSri = (): VitePlugin => ({
   },
 });
 
-const doctor = (out: string): Promise<DoctorReport> =>
+const doctor = (out: string, extra: { deployed?: boolean } = {}): Promise<DoctorReport> =>
   diagnoseBuildOutput(out, {
+    ...extra,
     env: { BUGSEE_APP_TOKEN: 't', BUGSEE_APP_BUILD: 'b' },
     projectRoot: dirname(out),
   });
@@ -135,7 +136,9 @@ function expectHealthyStamped(report: DoctorReport): void {
   expect(idsOf(report).sort()).toEqual(
     expect.arrayContaining(['map.hidden', 'map.public-leftover', 'map.sources-content']),
   );
-  expect(idsOf(report, 'warning')).toEqual(['map.public-leftover']);
+  // Straight after a plugin run nothing warns (so `--strict` passes); the leftover maps are a note...
+  expect(idsOf(report, 'warning')).toEqual([]);
+  expect(idsOf(report, 'info')).toContain('map.public-leftover');
   expect(report.passed).toEqual(
     expect.arrayContaining([
       'stamp.missing-debug-id',
@@ -181,7 +184,7 @@ describeReal('doctor on real, stamped build output', () => {
       sourcemapFileNames: 'maps/[name].map',
     });
     await bundle.close();
-    const report = await doctor(app.out);
+    const report = await doctor(app.out, { deployed: true });
     expect(idsOf(report, 'error')).toEqual([]);
     expect(report.summary.maps).toBe(report.summary.bundles);
     expect(report.findings.some((f) => f.file?.startsWith('maps/'))).toBe(true);
@@ -209,7 +212,7 @@ describeReal('doctor on real, stamped build output', () => {
     expectHealthyStamped(await doctor(app.out));
   });
 
-  it('Vite with visible maps and the default deleteMaps leaves a dangling pointer (warning, not error)', async () => {
+  it('Vite with visible maps and the default deleteMaps leaves a dangling pointer (a note, and --strict passes)', async () => {
     const app = makeApp('vite8-dangling');
     await viteBuild(
       viteConfig(app, [bugseeUnplugin.vite(pluginOptions({ deleteMaps: true })) as VitePlugin], {
@@ -219,7 +222,10 @@ describeReal('doctor on real, stamped build output', () => {
     const report = await doctor(app.out);
     expect(report.summary.maps).toBe(0);
     expect(idsOf(report, 'error')).toEqual([]);
-    expect(idsOf(report, 'warning')).toEqual(['map.pointer-dangling']);
+    // maps removed on purpose and every bundle stamped: a note, so --strict passes right after the plugin
+    expect(idsOf(report, 'warning')).toEqual([]);
+    expect(idsOf(report, 'info')).toContain('map.pointer-dangling');
+    expect(doctorExitCode(report, true)).toBe(0);
   });
 });
 

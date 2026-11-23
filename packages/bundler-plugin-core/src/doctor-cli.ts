@@ -19,6 +19,9 @@ Options:
   --project-root <dir>   Where .env.bugsee-build-plugin and package.json are looked up (default: cwd).
   --max-map-mb <n>       Flag source maps larger than n MiB (default 50).
   --no-env               Skip the token / version / build / NODE_ENV checks.
+  --deployed             The directory is (about to be) served: leftover .map files become a warning.
+  --ignore <id>          Drop a check ID from the report; repeatable.
+  --                     End of options (a directory may start with a dash after it).
   -h, --help             Show this help.
 
 Exit codes: 0 ok, 1 warnings only (with --strict), 2 errors.`;
@@ -35,6 +38,9 @@ export async function runDoctorCli(argv: readonly string[], io: DoctorCliIo): Pr
   let json = false;
   let strict = false;
   let skipEnv = false;
+  let deployed = false;
+  let onlyPositionals = false;
+  const ignore: string[] = [];
   let projectRoot: string | undefined;
   let maxMapBytes: number | undefined;
   const usage = (message: string): number => {
@@ -43,7 +49,14 @@ export async function runDoctorCli(argv: readonly string[], io: DoctorCliIo): Pr
   };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i] as string;
-    if (arg === '-h' || arg === '--help') {
+    if (onlyPositionals) {
+      if (dir !== undefined) {
+        return usage(`Unexpected argument ${arg}`);
+      }
+      dir = arg;
+    } else if (arg === '--') {
+      onlyPositionals = true;
+    } else if (arg === '-h' || arg === '--help') {
       io.stdout(`${DOCTOR_USAGE}\n`);
       return 0;
     } else if (arg === '--json') {
@@ -52,13 +65,17 @@ export async function runDoctorCli(argv: readonly string[], io: DoctorCliIo): Pr
       strict = true;
     } else if (arg === '--no-env') {
       skipEnv = true;
-    } else if (arg === '--project-root' || arg === '--max-map-mb') {
+    } else if (arg === '--deployed') {
+      deployed = true;
+    } else if (arg === '--project-root' || arg === '--max-map-mb' || arg === '--ignore') {
       const value = argv[++i];
       if (value === undefined || value.startsWith('--')) {
         return usage(`${arg} needs a value`);
       }
       if (arg === '--project-root') {
         projectRoot = value;
+      } else if (arg === '--ignore') {
+        ignore.push(value);
       } else {
         const mb = Number(value);
         if (!Number.isFinite(mb) || mb <= 0) {
@@ -80,6 +97,8 @@ export async function runDoctorCli(argv: readonly string[], io: DoctorCliIo): Pr
   const report = await diagnoseBuildOutput(dir, {
     env: io.env,
     skipEnv,
+    deployed,
+    ignore,
     ...(projectRoot !== undefined ? { projectRoot } : {}),
     ...(maxMapBytes !== undefined ? { maxMapBytes } : {}),
   });

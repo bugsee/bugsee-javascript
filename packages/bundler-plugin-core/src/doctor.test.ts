@@ -59,28 +59,55 @@ const sev = (report: DoctorReport, id: string): string | undefined =>
   report.findings.find((f) => f.id === id)?.severity;
 
 describe('diagnoseBuildOutput', () => {
-  it('a stamped bundle with a matching hidden map is clean except the public-leftover warning', async () => {
+  it('a stamped bundle with a matching hidden map has no warnings, only notes (even under --strict)', async () => {
     goodPair();
     const report = await run();
     expect(report.schemaVersion).toBe(DOCTOR_SCHEMA_VERSION);
     expect(report.tool).toBe('bugsee-sourcemaps-doctor');
-    expect(report.summary).toMatchObject({ errors: 0, bundles: 1, maps: 1 });
+    expect(report.summary).toMatchObject({ errors: 0, warnings: 0, bundles: 1, maps: 1 });
     expect(ids(report).sort()).toEqual([
+      'env.token-source',
       'map.hidden',
       'map.public-leftover',
       'map.sources-content',
     ]);
-    expect(sev(report, 'map.public-leftover')).toBe('warning');
+    expect(sev(report, 'map.public-leftover')).toBe('info');
+    expect(doctorExitCode(report, true)).toBe(0);
     expect(report.passed).toContain('stamp.missing-debug-id');
     expect(report.passed).not.toContain('map.public-leftover');
     // info-only facts are not "passed" checks
     expect(report.passed).not.toContain('map.hidden');
+    expect(report.passed).not.toContain('env.token-source');
+  });
+
+  it('map.public-leftover is a warning when the directory is deployed', async () => {
+    goodPair();
+    const report = await run({ deployed: true });
+    expect(sev(report, 'map.public-leftover')).toBe('warning');
+    expect(report.findings.find((f) => f.id === 'map.public-leftover')?.fix).toContain(
+      '--deployed',
+    );
+    expect(doctorExitCode(report, true)).toBe(1);
+  });
+
+  it('ignore drops the listed IDs from findings and passed, and reports what it dropped', async () => {
+    goodPair();
+    const report = await run({
+      deployed: true,
+      ignore: ['map.public-leftover', 'stamp.mixed', 'env.token-source'],
+    });
+    expect(ids(report)).not.toContain('map.public-leftover');
+    expect(report.summary.warnings).toBe(0);
+    expect(report.ignored).toEqual(['map.public-leftover', 'env.token-source']);
+    expect(report.passed).not.toContain('stamp.mixed');
+    expect((await run()).ignored).toBeUndefined();
   });
 
   it('after deleteMaps (bundle stamped, no maps) nothing is wrong', async () => {
     put('app.js', `console.log(1);${stamp(ID_A)}`);
     const report = await run();
-    expect(report.findings).toEqual([]);
+    expect(report.summary).toMatchObject({ errors: 0, warnings: 0 });
+    expect(ids(report)).toEqual(['env.token-source']);
     expect(doctorExitCode(report)).toBe(0);
     expect(doctorExitCode(report, true)).toBe(0);
   });
@@ -94,15 +121,23 @@ describe('diagnoseBuildOutput', () => {
     expect(ids(asFile)).toEqual(['output.dir-missing']);
   });
 
-  it('output.no-js: a directory with no scripts (and node_modules/src/dot dirs are not searched)', async () => {
+  it('output.no-js: a directory with no scripts; node_modules and .git are never searched', async () => {
     put('index.html', '<html></html>');
     put('node_modules/x/y.js', 'x');
-    put('src/z.js', 'x');
-    put('.hidden/h.js', 'x');
+    put('.git/z.js', 'x');
     const report = await run();
     expect(ids(report)).toContain('output.no-js');
     expect(sev(report, 'output.no-js')).toBe('error');
     expect(report.summary.bundles).toBe(0);
+  });
+
+  it('preserveModules-style layouts (dist/src/a.js, dist/test/b.js, dot-dirs) are walked, not dropped', async () => {
+    put('src/a.js', `a${stamp(ID_A)}`);
+    put('test/b.js', `b${stamp(ID_B)}`);
+    put('.hidden/c.js', 'c');
+    const report = await run();
+    expect(report.summary.bundles).toBe(3);
+    expect(ids(report)).not.toContain('output.no-js');
   });
 
   it('stamp.missing-debug-id: an unstamped bundle WITH a map is an error', async () => {
@@ -194,15 +229,20 @@ describe('diagnoseBuildOutput', () => {
     });
   });
 
-  it('map.pointer-dangling: the pointer names a map that is not there; hidden maps are noted', async () => {
+  it('map.pointer-dangling: a note when the maps were removed on purpose; a warning otherwise', async () => {
     put('a.js', `a\n//# sourceMappingURL=a.js.map${stamp(ID_A)}`);
     put('b.js', `b\n//# sourceMappingURL=https://cdn.example/b.js.map${stamp(ID_B)}`);
-    const report = await run();
-    const found = report.findings.find((f) => f.id === 'map.pointer-dangling');
-    expect(found).toMatchObject({
-      severity: 'warning',
-      details: { pointers: ['a.js -> a.js.map'] },
-    });
+    const note = await run();
+    const found = note.findings.find((f) => f.id === 'map.pointer-dangling');
+    expect(found).toMatchObject({ severity: 'info', details: { pointers: ['a.js -> a.js.map'] } });
+    expect(doctorExitCode(note, true)).toBe(0);
+    // a map file elsewhere in the output: the removal was not complete / deliberate
+    put('other.css.map', mapJson());
+    expect(sev(await run(), 'map.pointer-dangling')).toBe('warning');
+    rmSync(join(dist, 'other.css.map'));
+    // an unstamped bundle: nothing says the removal was deliberate
+    put('c.js', 'c');
+    expect(sev(await run(), 'map.pointer-dangling')).toBe('warning');
   });
 
   it('a pointer to a map in another directory resolves relative to the bundle', async () => {
@@ -433,14 +473,24 @@ describe('diagnoseBuildOutput', () => {
   });
 
   describe('environment', () => {
-    it('env.token-missing is an error and never echoes a token; the source is not printed either', async () => {
+    it('env.token-missing is a warning; the token value is never printed, only where it came from', async () => {
       goodPair();
       const report = await run({ env: {} });
-      expect(report.findings.find((f) => f.id === 'env.token-missing')?.severity).toBe('error');
+      expect(report.findings.find((f) => f.id === 'env.token-missing')?.severity).toBe('warning');
+      expect(ids(report)).not.toContain('env.token-source');
       const withToken = await run({ appToken: 'super-secret' });
       expect(JSON.stringify(withToken)).not.toContain('super-secret');
       expect(JSON.stringify(withToken)).not.toContain('secret-token-value');
       expect(ids(withToken)).not.toContain('env.token-missing');
+      expect(withToken.findings.find((f) => f.id === 'env.token-source')).toMatchObject({
+        severity: 'info',
+        details: { source: 'option' },
+      });
+      const fromEnv = await run();
+      expect(fromEnv.findings.find((f) => f.id === 'env.token-source')?.details).toEqual({
+        source: 'env',
+      });
+      expect(JSON.stringify(fromEnv)).not.toContain('secret-token-value');
       // whitespace-only counts as unset
       expect(ids(await run({ env: { BUGSEE_APP_TOKEN: '  ' } }))).toContain('env.token-missing');
       expect(ids(await run({ env: {}, appToken: '  ' }))).toContain('env.token-missing');
@@ -484,11 +534,26 @@ describe('diagnoseBuildOutput', () => {
     });
   });
 
-  it('walks only MAX_WALK_DEPTH levels down', async () => {
+  it('an output directory is walked at any depth', async () => {
     put('a/b/c/d/e/f/g/h/deep.js', 'x');
     put('a/b/c/d/e/f/ok.js', 'x');
     const report = await run();
-    expect(report.summary.bundles).toBe(1);
+    expect(report.summary.bundles).toBe(2);
+  });
+
+  it('only a directory that is (or contains) the project root is fenced and depth-capped', async () => {
+    put('a/b/c/d/e/f/g/h/deep.js', 'x');
+    put('a/ok.js', 'x');
+    put('src/s.js', 'x');
+    put('.cache/c.js', 'x');
+    const here = process.cwd();
+    process.chdir(dist);
+    try {
+      const report = await run({ skipEnv: true });
+      expect(report.summary.bundles).toBe(1);
+    } finally {
+      process.chdir(here);
+    }
   });
 
   it('a map pointer that resolves to a directory is skipped, not a crash', async () => {
@@ -532,7 +597,7 @@ describe('diagnoseBuildOutput', () => {
   it('every check ID is unique and namespaced', () => {
     expect(new Set(DOCTOR_CHECK_IDS).size).toBe(DOCTOR_CHECK_IDS.length);
     for (const id of DOCTOR_CHECK_IDS) {
-      expect(id).toMatch(/^(output|stamp|map|sri|build|env)\.[a-z-]+$/);
+      expect(id).toMatch(/^(output|stamp|map|sri|build|env|doctor)\.[a-z-]+$/);
     }
   });
 });

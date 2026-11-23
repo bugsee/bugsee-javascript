@@ -7,14 +7,15 @@
 import { createHash } from 'node:crypto';
 import type { Dirent } from 'node:fs';
 import { existsSync } from 'node:fs';
-import { readdir, readFile, stat } from 'node:fs/promises';
-import nodePath, { dirname, isAbsolute, join, relative, resolve } from 'node:path';
+import { lstat, readdir, readFile, stat } from 'node:fs/promises';
+import nodePath, { dirname, join, relative, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { findAppIdentity } from './app-identity';
 import { readDebugId } from './debug-ids';
 import { loadBuildPluginEnv, mergeBuildPluginEnv } from './env-file';
 import type { EnvRecord } from './run-cli';
 import { findIntegrityMismatches, findSriProtectedScripts } from './sri';
-import { MAX_WALK_DEPTH, NEVER_WALK } from './stamp-files';
+import { isProjectRootOrAbove, MAX_WALK_DEPTH, NEVER_WALK } from './stamp-files';
 import { localPointerTarget } from './verify-stamp';
 
 /** Bumped on any incompatible change to `DoctorReport`; the Rust command emits the same number. */
@@ -44,6 +45,8 @@ export interface DoctorReport {
   /** Check IDs that ran and found nothing wrong. */
   passed: string[];
   findings: DoctorFinding[];
+  /** Check IDs dropped by `ignore`; omitted when none were. */
+  ignored?: string[];
 }
 
 export interface DoctorOptions {
@@ -59,9 +62,21 @@ export interface DoctorOptions {
   maxMapBytes?: number;
   /** Skip the `env.*` checks (an output-only audit, e.g. in a container with no token). */
   skipEnv?: boolean;
+  /**
+   * The directory is (about to be) served to the public: leftover `.map` files are then a WARNING (they expose
+   * source) instead of a note. Off by default so `--strict` works straight after a plugin run.
+   */
+  deployed?: boolean;
+  /** Check IDs to drop from the report (repeatable `--ignore`). */
+  ignore?: readonly string[];
+  /** A script larger than this many bytes is not read (default 512 MiB). */
+  maxBundleBytes?: number;
 }
 
 const DEFAULT_MAX_MAP_BYTES = 50 * 1024 * 1024;
+const DEFAULT_MAX_BUNDLE_BYTES = 512 * 1024 * 1024;
+/** Files read at once: bounds open handles and the bytes held in memory. */
+const READ_CONCURRENCY = 16;
 const BUNDLE = /\.[cm]?js$/;
 const MAP = /\.map$/;
 /** The global the runtime stub writes the id into (`@bugsee/browser` reads it at crash time). */
@@ -72,6 +87,7 @@ const MAX_LISTED = 5;
 export const DOCTOR_CHECK_IDS = [
   'output.dir-missing',
   'output.no-js',
+  'output.unreadable',
   'stamp.missing-debug-id',
   'stamp.missing-registration',
   'stamp.map-id-mismatch',
@@ -86,15 +102,19 @@ export const DOCTOR_CHECK_IDS = [
   'map.sources-content',
   'map.sources-unresolvable',
   'map.too-large',
+  'map.unreadable',
+  'map.pointer-outside-dir',
   'map.public-leftover',
   'sri.unstamped-hazard',
   'sri.mismatch',
   'sri.outside-dir',
   'build.dev-bundle',
+  'env.token-source',
   'env.token-missing',
   'env.version-unresolved',
   'env.build-unresolved',
   'env.node-env-development',
+  'doctor.internal-error',
 ] as const;
 export type DoctorCheckId = (typeof DOCTOR_CHECK_IDS)[number];
 
@@ -103,25 +123,40 @@ const posix = (path: string): string => path.split('\\').join('/');
 /** `bundle.js.map` -> the same name as written in the report; always relative to `dir`. */
 const rel = (dir: string, path: string): string => posix(relative(dir, path));
 
-async function walk(dir: string, depth = 0): Promise<string[]> {
-  if (depth > MAX_WALK_DEPTH) {
-    return [];
-  }
-  let entries: Dirent[];
-  try {
-    entries = await readdir(dir, { withFileTypes: true });
-  } catch {
-    return [];
-  }
+/**
+ * Every script and map under `root`. An output directory is walked in full (Rollup `preserveModules` writes
+ * `dist/src/*.js`; a build may emit `dist/test/`), skipping only `node_modules` and `.git`; the fence on
+ * `src`/`test`/dot-directories and the depth cap apply ONLY when `root` is the project root or above, where
+ * they keep the walk out of the source tree. Iterative, and never spreads a result list (a directory with
+ * 100k files must not overflow the call stack).
+ */
+export async function walk(root: string): Promise<string[]> {
+  const fenced = await isProjectRootOrAbove(root);
   const found: string[] = [];
-  for (const entry of entries) {
-    const full = join(dir, entry.name);
-    if (entry.isDirectory()) {
-      if (!NEVER_WALK.has(entry.name) && !entry.name.startsWith('.')) {
-        found.push(...(await walk(full, depth + 1)));
+  const pending: Array<{ dir: string; depth: number }> = [{ dir: root, depth: 0 }];
+  for (let next = pending.pop(); next !== undefined; next = pending.pop()) {
+    if (fenced && next.depth > MAX_WALK_DEPTH) {
+      continue;
+    }
+    let entries: Dirent[];
+    try {
+      entries = await readdir(next.dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      const full = join(next.dir, entry.name);
+      if (entry.isDirectory()) {
+        const skip =
+          entry.name === 'node_modules' ||
+          entry.name === '.git' ||
+          (fenced && (NEVER_WALK.has(entry.name) || entry.name.startsWith('.')));
+        if (!skip) {
+          pending.push({ dir: full, depth: next.depth + 1 });
+        }
+      } else if (entry.isFile() && (BUNDLE.test(entry.name) || MAP.test(entry.name))) {
+        found.push(full);
       }
-    } else if (entry.isFile() && (BUNDLE.test(entry.name) || MAP.test(entry.name))) {
-      found.push(full);
     }
   }
   return found.sort();
@@ -143,6 +178,12 @@ interface ParsedMap {
 }
 
 function parseMap(text: string): ParsedMap | { ok: false; why: string } {
+  if (text.startsWith('\uFEFF')) {
+    return {
+      ok: false,
+      why: 'not valid JSON: it starts with a UTF-8 byte order mark (BOM), which the upload rejects',
+    };
+  }
   let parsed: unknown;
   try {
     parsed = JSON.parse(text);
@@ -160,19 +201,78 @@ function parseMap(text: string): ParsedMap | { ok: false; why: string } {
 /** Sources that name no file on disk by construction (bundler runtime, virtual modules). */
 const VIRTUAL_SOURCE = /^(webpack\/|\(webpack\)|\0|<|rollup:|vite\/)|\0/;
 
-/** Resolve a map `sources` entry against the map's directory and `sourceRoot`, as a debugger would. */
-function sourcePath(mapDir: string, sourceRoot: string, source: string): string | undefined {
+/**
+ * Resolve a map `sources` entry as a debugger would. `file://` URLs follow `fileURLToPath` (so `file:///C:/x`
+ * is `C:\x` on Windows and a bad escape is "unknowable", not an exception). A bundler-scheme path
+ * (`webpack://app/./src/x.ts`) is relative to the PROJECT root, not to the map. Anything else is resolved from
+ * the map's directory and its `sourceRoot`. Undefined means "names no file on disk" (virtual / unparseable).
+ */
+export function sourcePath(
+  mapDir: string,
+  sourceRoot: string,
+  source: string,
+  projectRoot: string = mapDir,
+  api: typeof nodePath = nodePath,
+): string | undefined {
   let path = source;
-  if (/^file:\/\//.test(path)) {
-    path = decodeURIComponent(path.replace(/^file:\/\/(?=\/)/, '').replace(/^file:\/\//, ''));
-  } else if (/^[a-z][a-z0-9+.-]*:\/\//i.test(path)) {
+  let fromProject = false;
+  if (/^file:\/\//i.test(path)) {
+    try {
+      return fileURLToPath(path, api === nodePath.win32 ? { windows: true } : undefined);
+    } catch {
+      return undefined;
+    }
+  }
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(path)) {
     // `webpack://app/./src/x.ts` and friends: the scheme/namespace is not a directory; drop it.
     path = path.replace(/^[a-z][a-z0-9+.-]*:\/\/[^/]*\//i, '');
+    fromProject = true;
   }
   if (VIRTUAL_SOURCE.test(path) || path === '') {
     return undefined;
   }
-  return isAbsolute(path) ? path : resolve(mapDir, sourceRoot, path);
+  if (api.isAbsolute(path)) {
+    return path;
+  }
+  return fromProject ? api.resolve(projectRoot, path) : api.resolve(mapDir, sourceRoot, path);
+}
+
+type ReadResult =
+  | { ok: true; bytes: Buffer }
+  | { ok: false; reason: string; tooLarge?: { size: number } };
+
+/**
+ * Read a REGULAR file of at most `limit` bytes. `lstat` first, so a FIFO, a device (`/dev/zero`) or a symlink
+ * is never opened, and the size is judged before a single byte is read. A failure is a value, not a throw.
+ */
+async function readRegular(path: string, limit: number): Promise<ReadResult> {
+  try {
+    const info = await lstat(path);
+    if (!info.isFile()) {
+      return {
+        ok: false,
+        reason: info.isSymbolicLink() ? 'is a symbolic link' : 'is not a regular file',
+      };
+    }
+    if (info.size > limit) {
+      return { ok: false, reason: 'is too large to read', tooLarge: { size: info.size } };
+    }
+    return { ok: true, bytes: await readFile(path) };
+  } catch (error) {
+    return {
+      ok: false,
+      reason: `could not be read (${(error as NodeJS.ErrnoException).code ?? 'error'})`,
+    };
+  }
+}
+
+/** Whether `target` is `root` itself or inside it. */
+function isInside(root: string, target: string): boolean {
+  const path = relative(root, target);
+  return (
+    path === '' ||
+    !(path === '..' || path.startsWith(`..${nodePath.sep}`) || nodePath.isAbsolute(path))
+  );
 }
 
 const sha = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex');
@@ -217,6 +317,29 @@ export async function diagnoseBuildOutput(
   dirInput: string,
   options: DoctorOptions = {},
 ): Promise<DoctorReport> {
+  try {
+    return await diagnose(dirInput, options);
+  } catch (error) {
+    // The contract is "never throws": whatever went wrong is the finding.
+    return finish(
+      resolve(String(dirInput)),
+      [
+        {
+          id: 'doctor.internal-error',
+          severity: 'error',
+          message: `The doctor failed unexpectedly: ${error instanceof Error ? error.message : String(error)}`,
+          fix: 'This is a bug in the doctor; re-run with --json and report it with the directory layout.',
+        },
+      ],
+      0,
+      0,
+      [],
+      options.ignore,
+    );
+  }
+}
+
+async function diagnose(dirInput: string, options: DoctorOptions): Promise<DoctorReport> {
   const dir = resolve(dirInput);
   const findings: DoctorFinding[] = [];
   const failed = new Set<string>();
@@ -226,6 +349,8 @@ export async function diagnoseBuildOutput(
   };
   const env = options.env ?? (process.env as EnvRecord);
   const maxMapBytes = options.maxMapBytes ?? DEFAULT_MAX_MAP_BYTES;
+  const maxBundleBytes = options.maxBundleBytes ?? DEFAULT_MAX_BUNDLE_BYTES;
+  const projectRoot = resolve(options.projectRoot ?? process.cwd());
 
   let isDir = false;
   try {
@@ -240,7 +365,7 @@ export async function diagnoseBuildOutput(
       message: `${dir} does not exist or is not a directory.`,
       fix: 'Run the build first, and pass the bundler output directory (e.g. dist, build, .output/public).',
     });
-    return finish(dir, findings, 0, 0, []);
+    return finish(dir, findings, 0, 0, [], options.ignore);
   }
 
   const files = await walk(dir);
@@ -250,32 +375,50 @@ export async function diagnoseBuildOutput(
     add({
       id: 'output.no-js',
       severity: 'error',
-      message: `No .js/.cjs/.mjs files found under ${dir} (node_modules, src, test and dot-directories are not searched).`,
+      message: `No .js/.cjs/.mjs files found under ${dir} (node_modules and .git are not searched).`,
       fix: 'Point the doctor at the bundler output directory, not the project root or a source tree.',
     });
   }
 
   const mapSet = new Set(maps);
   const claimedMaps = new Set<string>();
-  const stampedIds = new Map<string, Array<{ file: string; hash: string }>>();
+  const stampedIds = new Map<string, Array<{ file: string; path: string }>>();
   let stamped = 0;
-  const unstamped: string[] = [];
+  const unstamped = new Set<string>();
   const unstampedWithoutMap: string[] = [];
   const noRegistration: string[] = [];
   const dangling: string[] = [];
+  const outsideDir: string[] = [];
   const devBundles: string[] = [];
-  const inline: string[] = [];
+  const inline = new Set<string>();
   const hidden: string[] = [];
-  const bundleIds = new Map<string, string | undefined>();
+  const unreadable: string[] = [];
 
-  for (const bundle of bundles) {
+  // Reads happen in bounded batches; analysis stays sequential so findings keep a deterministic order.
+  const reads = new Map<string, ReadResult>();
+  const readBatch = async (batch: readonly string[]): Promise<void> => {
+    const results = await Promise.all(batch.map((path) => readRegular(path, maxBundleBytes)));
+    batch.forEach((path, i) => {
+      reads.set(path, results[i] as ReadResult);
+    });
+  };
+
+  for (let at = 0; at < bundles.length; at++) {
+    if (at % READ_CONCURRENCY === 0) {
+      reads.clear();
+      await readBatch(bundles.slice(at, at + READ_CONCURRENCY));
+    }
+    const bundle = bundles[at] as string;
     const name = rel(dir, bundle);
-    const bytes = await readFile(bundle);
-    const code = bytes.toString('utf8');
+    const read = reads.get(bundle) as ReadResult;
+    if (!read.ok) {
+      unreadable.push(`${name} ${read.reason}`);
+      continue;
+    }
+    const code = read.bytes.toString('utf8');
     const id = readDebugId(code);
-    bundleIds.set(bundle, id);
 
-    if (/\/\/# sourceURL=webpack-internal:\/\/\/|webpack-internal:\/\/\//.test(code)) {
+    if (code.includes('webpack-internal:///')) {
       devBundles.push(name);
     }
 
@@ -284,13 +427,22 @@ export async function diagnoseBuildOutput(
     let mapPath: string | undefined;
     if (pointer !== undefined && pointer !== '') {
       if (/^data:/i.test(pointer)) {
-        inline.push(name);
+        inline.add(name);
       } else {
         // The pairing rule the stamp itself uses (verify-stamp.ts): a LOCAL pointer, resolved from the
         // bundle's directory; remote / root-absolute / malformed pointers pair nothing.
         const target = localPointerTarget(bundle, code, nodePath);
         if (target !== undefined) {
-          if (mapSet.has(target) || existsSync(target)) {
+          if (!isInside(dir, target)) {
+            // Never read it: a pointer can name `/dev/zero`, a FIFO or someone else's file.
+            outsideDir.push(`${name} -> ${pointer}`);
+          } else if (
+            mapSet.has(target) ||
+            (await lstat(target).then(
+              () => true,
+              () => false,
+            ))
+          ) {
             mapPath = target;
           } else {
             dangling.push(`${name} -> ${pointer}`);
@@ -306,14 +458,14 @@ export async function diagnoseBuildOutput(
     }
 
     if (id === undefined) {
-      unstamped.push(name);
-      if (mapPath === undefined && !inline.includes(name)) {
+      unstamped.add(name);
+      if (mapPath === undefined && !inline.has(name)) {
         unstampedWithoutMap.push(name);
       }
     } else {
       stamped++;
       const list = stampedIds.get(id) ?? [];
-      list.push({ file: name, hash: sha(bytes) });
+      list.push({ file: name, path: bundle });
       stampedIds.set(id, list);
       if (!code.includes(REGISTRATION)) {
         noRegistration.push(name);
@@ -323,13 +475,12 @@ export async function diagnoseBuildOutput(
     if (mapPath !== undefined) {
       claimedMaps.add(mapPath);
       const mapName = rel(dir, mapPath);
-      let mapBytes: Buffer;
-      try {
-        mapBytes = await readFile(mapPath);
-      } catch {
+      const mapRead = await readRegular(mapPath, maxMapBytes);
+      if (!mapRead.ok) {
+        reportUnreadableMap(mapName, mapRead);
         continue;
       }
-      const parsed = parseMap(mapBytes.toString('utf8'));
+      const parsed = parseMap(mapRead.bytes.toString('utf8'));
       if (!parsed.ok) {
         add({
           id: 'map.invalid',
@@ -368,9 +519,9 @@ export async function diagnoseBuildOutput(
           details: { mapDebugId: parsed.debugId },
         });
         // Counted once as unstamped above; do not double report below.
-        unstamped.splice(unstamped.indexOf(name), 1);
+        unstamped.delete(name);
       }
-      validateMap(mapPath, mapName, mapBytes.length, parsed.json);
+      validateMap(mapPath, mapName, parsed.json);
     }
   }
 
@@ -378,32 +529,48 @@ export async function diagnoseBuildOutput(
   for (const map of maps) {
     if (!claimedMaps.has(map)) {
       const mapName = rel(dir, map);
-      try {
-        const bytes = await readFile(map);
-        const parsed = parseMap(bytes.toString('utf8'));
-        if (!parsed.ok) {
-          add({
-            id: 'map.invalid',
-            severity: 'error',
-            file: mapName,
-            message: `${mapName} is ${parsed.why}.`,
-            fix: 'Check the build is not truncating or post-processing the map; rebuild.',
-          });
-        } else {
-          validateMap(map, mapName, bytes.length, parsed.json);
-        }
-      } catch {
-        // unreadable: skip
+      const mapRead = await readRegular(map, maxMapBytes);
+      if (!mapRead.ok) {
+        reportUnreadableMap(mapName, mapRead);
+        continue;
+      }
+      const parsed = parseMap(mapRead.bytes.toString('utf8'));
+      if (!parsed.ok) {
+        add({
+          id: 'map.invalid',
+          severity: 'error',
+          file: mapName,
+          message: `${mapName} is ${parsed.why}.`,
+          fix: 'Check the build is not truncating or post-processing the map; rebuild.',
+        });
+      } else {
+        validateMap(map, mapName, parsed.json);
       }
     }
   }
 
-  function validateMap(
-    mapPath: string,
-    mapName: string,
-    size: number,
-    json: Record<string, unknown>,
-  ): void {
+  function reportUnreadableMap(mapName: string, read: Extract<ReadResult, { ok: false }>): void {
+    if (read.tooLarge !== undefined) {
+      add({
+        id: 'map.too-large',
+        severity: 'warning',
+        file: mapName,
+        message: `${mapName} is ${(read.tooLarge.size / 1024 / 1024).toFixed(1)} MiB (limit checked: ${(maxMapBytes / 1024 / 1024).toFixed(0)} MiB), so it was not read or validated; the upload may be slow or rejected.`,
+        fix: 'Split the bundle, strip sourcesContent (`stripSourcesContent`) or exclude vendor chunks; raise --max-map-mb to validate it.',
+        details: { bytes: read.tooLarge.size, limit: maxMapBytes },
+      });
+    } else {
+      add({
+        id: 'map.unreadable',
+        severity: 'error',
+        file: mapName,
+        message: `${mapName} ${read.reason}, so it cannot be validated or uploaded.`,
+        fix: 'Make it a regular file inside the output directory (no symlink, FIFO or device).',
+      });
+    }
+  }
+
+  function validateMap(mapPath: string, mapName: string, json: Record<string, unknown>): void {
     if (json.version !== 3) {
       add({
         id: 'map.invalid',
@@ -425,16 +592,6 @@ export async function diagnoseBuildOutput(
       });
       return;
     }
-    if (size > maxMapBytes) {
-      add({
-        id: 'map.too-large',
-        severity: 'warning',
-        file: mapName,
-        message: `${mapName} is ${(size / 1024 / 1024).toFixed(1)} MiB (limit checked: ${(maxMapBytes / 1024 / 1024).toFixed(0)} MiB); the upload may be slow or rejected.`,
-        fix: 'Split the bundle, strip sourcesContent (`stripSourcesContent`) or exclude vendor chunks.',
-        details: { bytes: size, limit: maxMapBytes },
-      });
-    }
     const content = Array.isArray(json.sourcesContent) ? (json.sourcesContent as unknown[]) : [];
     const missing = sources.filter((_, i) => typeof content[i] !== 'string').map(String);
     if (missing.length === 0) {
@@ -449,7 +606,7 @@ export async function diagnoseBuildOutput(
     const sourceRoot = typeof json.sourceRoot === 'string' ? json.sourceRoot : '';
     const mapDir = dirname(mapPath);
     const unresolved = missing.filter((source) => {
-      const path = sourcePath(mapDir, sourceRoot, source);
+      const path = sourcePath(mapDir, sourceRoot, source, projectRoot);
       return path !== undefined && !existsSync(path);
     });
     if (unresolved.length > 0) {
@@ -473,9 +630,18 @@ export async function diagnoseBuildOutput(
   }
 
   // --- aggregate findings -------------------------------------------------------------------------
+  const withoutMap = new Set(unstampedWithoutMap);
+  if (unreadable.length > 0) {
+    add({
+      id: 'output.unreadable',
+      severity: 'error',
+      message: `${unreadable.length} script(s) could not be read (${unreadable.slice(0, MAX_LISTED).join('; ')}${unreadable.length > MAX_LISTED ? '; …' : ''}); they were not checked.`,
+      fix: 'Make them regular files under the size limit, or exclude them from the output directory.',
+      details: { files: unreadable },
+    });
+  }
   for (const name of unstamped) {
-    const hasMap = !unstampedWithoutMap.includes(name);
-    if (hasMap || inline.includes(name)) {
+    if (!withoutMap.has(name)) {
       add({
         id: 'stamp.missing-debug-id',
         severity: 'error',
@@ -503,17 +669,25 @@ export async function diagnoseBuildOutput(
       details: { files: noRegistration },
     });
   }
-  if (stamped > 0 && unstamped.length > 0) {
+  if (stamped > 0 && unstamped.size > 0) {
     add({
       id: 'stamp.mixed',
       severity: 'warning',
-      message: `${stamped} bundle(s) are stamped but ${unstamped.length} are not (${unstamped.slice(0, MAX_LISTED).join(', ')}${unstamped.length > MAX_LISTED ? ', …' : ''}): a partial stamp usually means a second build output or a late-emitted file was missed.`,
+      message: `${stamped} bundle(s) are stamped but ${unstamped.size} are not (${[...unstamped].slice(0, MAX_LISTED).join(', ')}${unstamped.size > MAX_LISTED ? ', …' : ''}): a partial stamp usually means a second build output or a late-emitted file was missed.`,
       fix: 'Run the stamp over the whole output directory after the last emit step.',
-      details: { stamped, unstamped: unstamped.length },
+      details: { stamped, unstamped: unstamped.size },
     });
   }
   for (const [id, entries] of stampedIds) {
-    if (new Set(entries.map((e) => e.hash)).size > 1) {
+    if (entries.length < 2) {
+      continue; // hashing is only worth it for an id that appears more than once
+    }
+    const hashes = new Set<string>();
+    for (const entry of entries) {
+      const read = await readRegular(entry.path, maxBundleBytes);
+      hashes.add(read.ok ? sha(read.bytes) : `unreadable:${entry.path}`);
+    }
+    if (hashes.size > 1) {
       add({
         id: 'stamp.duplicate-debug-id',
         severity: 'error',
@@ -524,12 +698,24 @@ export async function diagnoseBuildOutput(
     }
   }
   if (dangling.length > 0) {
+    // No map file anywhere and every bundle stamped: the maps were removed on purpose (the plugin's
+    // `deleteMaps` after a confirmed upload), so the leftover comment is a note, not a defect to fail on.
+    const removedOnPurpose = maps.length === 0 && unstamped.size === 0;
     add({
       id: 'map.pointer-dangling',
-      severity: 'warning',
-      message: `${dangling.length} bundle(s) point at a source map that is not on disk (${dangling.slice(0, MAX_LISTED).join(', ')}${dangling.length > MAX_LISTED ? ', …' : ''}); browsers request it and get a 404.`,
+      severity: removedOnPurpose ? 'info' : 'warning',
+      message: `${dangling.length} bundle(s) point at a source map that is not on disk (${dangling.slice(0, MAX_LISTED).join(', ')}${dangling.length > MAX_LISTED ? ', …' : ''}); browsers request it and get a 404${removedOnPurpose ? ' (harmless for symbolication: the maps were removed and the bundles are stamped)' : ''}.`,
       fix: 'Emit hidden source maps (sourcemap: "hidden") so no pointer is written, or keep the maps until deploy.',
       details: { pointers: dangling },
+    });
+  }
+  if (outsideDir.length > 0) {
+    add({
+      id: 'map.pointer-outside-dir',
+      severity: 'warning',
+      message: `${outsideDir.length} bundle(s) point at a source map outside ${dir} (${outsideDir.slice(0, MAX_LISTED).join(', ')}${outsideDir.length > MAX_LISTED ? ', …' : ''}); it was not read and cannot be paired.`,
+      fix: 'Emit the map inside the output directory, or check the sourceMappingURL.',
+      details: { pointers: outsideDir },
     });
   }
   if (hidden.length > 0) {
@@ -540,13 +726,13 @@ export async function diagnoseBuildOutput(
       details: { files: hidden },
     });
   }
-  if (inline.length > 0) {
+  if (inline.size > 0) {
     add({
       id: 'map.inline',
       severity: 'error',
-      message: `${inline.length} bundle(s) carry an inline (data:) source map (${inline.slice(0, MAX_LISTED).join(', ')}); there is no .map file to upload and the map ships to every visitor.`,
+      message: `${inline.size} bundle(s) carry an inline (data:) source map (${[...inline].slice(0, MAX_LISTED).join(', ')}); there is no .map file to upload and the map ships to every visitor.`,
       fix: 'Switch to external hidden maps (Vite `build.sourcemap: "hidden"`, webpack `devtool: "hidden-source-map"`, esbuild `sourcemap: "external"`).',
-      details: { files: inline },
+      details: { files: [...inline] },
     });
   }
   if (devBundles.length > 0) {
@@ -561,9 +747,9 @@ export async function diagnoseBuildOutput(
   if (maps.length > 0) {
     add({
       id: 'map.public-leftover',
-      severity: 'warning',
+      severity: options.deployed === true ? 'warning' : 'info',
       message: `${maps.length} .map file(s) are on disk in ${dir}; if this directory is deployed they are served publicly and expose your source.`,
-      fix: 'Keep `deleteMaps` on (default) so maps are removed after a confirmed upload, or emit hidden maps and exclude *.map from deploys.',
+      fix: 'Keep `deleteMaps` on (default) so maps are removed after a confirmed upload, or emit hidden maps and exclude *.map from deploys. Run with --deployed on the directory you actually serve to make this a warning.',
       details: { count: maps.length, files: maps.slice(0, MAX_LISTED).map((m) => rel(dir, m)) },
     });
   }
@@ -573,13 +759,11 @@ export async function diagnoseBuildOutput(
   if (pinned.length > 0) {
     const unstampedPinned: typeof pinned = [];
     for (const p of pinned) {
-      let code: string;
-      try {
-        code = await readFile(p.script, 'utf8');
-      } catch {
+      const read = await readRegular(p.script, maxBundleBytes);
+      if (!read.ok) {
         continue; // a pin to a file that is not there is stale, not something stamping would break
       }
-      if (readDebugId(code) === undefined) {
+      if (readDebugId(read.bytes.toString('utf8')) === undefined) {
         unstampedPinned.push(p);
       }
     }
@@ -619,7 +803,7 @@ export async function diagnoseBuildOutput(
 
   // --- environment ----------------------------------------------------------------------------------
   if (options.skipEnv !== true) {
-    const root = resolve(options.projectRoot ?? process.cwd());
+    const root = projectRoot;
     const fromFile = loadBuildPluginEnv(root);
     const merged = mergeBuildPluginEnv(env, fromFile.values);
     const optionToken = options.appToken?.trim() ?? '';
@@ -627,11 +811,30 @@ export async function diagnoseBuildOutput(
     if (optionToken === '' && envToken === '') {
       add({
         id: 'env.token-missing',
-        severity: 'error',
+        severity: 'warning',
         message:
-          'No Bugsee app token is resolvable (BUGSEE_APP_TOKEN, .env.bugsee-build-plugin, or the appToken option): the plugin is disabled and nothing is uploaded.' +
+          'No Bugsee app token is resolvable (BUGSEE_APP_TOKEN, .env.bugsee-build-plugin, or the appToken option): the bundler plugin is disabled and uploads nothing (fine if you upload with bugsee-cli by hand).' +
           (fromFile.problem !== undefined ? ` ${fromFile.problem}` : ''),
         fix: 'Set BUGSEE_APP_TOKEN in the build environment or in .env.bugsee-build-plugin next to your project.',
+      });
+    } else {
+      // Where it came from, never the value: the same precedence the plugin applies (option, env, file).
+      const source =
+        optionToken !== ''
+          ? ('option' as const)
+          : (env.BUGSEE_APP_TOKEN?.trim() ?? '') !== ''
+            ? ('env' as const)
+            : ('env-file' as const);
+      const label = {
+        option: 'the appToken option',
+        env: 'the BUGSEE_APP_TOKEN environment variable',
+        'env-file': '.env.bugsee-build-plugin',
+      }[source];
+      findings.push({
+        id: 'env.token-source',
+        severity: 'info',
+        message: `The app token comes from ${label}.`,
+        details: { source },
       });
     }
     const identity = findAppIdentity(
@@ -672,11 +875,16 @@ export async function diagnoseBuildOutput(
     (id) =>
       !failed.has(id) && !INFO_ONLY.has(id) && !(options.skipEnv === true && id.startsWith('env.')),
   );
-  return finish(dir, findings, bundles.length, maps.length, passed);
+  return finish(dir, findings, bundles.length, maps.length, passed, options.ignore);
 }
 
 /** Checks that only ever produce an `info` finding: they are not "passed", they are facts. */
-const INFO_ONLY: ReadonlySet<string> = new Set(['map.hidden', 'map.sources-content']);
+const INFO_ONLY: ReadonlySet<string> = new Set([
+  'map.hidden',
+  'map.sources-content',
+  'env.token-source',
+  'doctor.internal-error',
+]);
 
 function finish(
   dir: string,
@@ -684,7 +892,12 @@ function finish(
   bundles: number,
   maps: number,
   passed: readonly string[],
+  ignore: readonly string[] = [],
 ): DoctorReport {
+  const dropped = ignore.filter((id) => findings.some((f) => f.id === id));
+  if (dropped.length > 0) {
+    findings = findings.filter((f) => !ignore.includes(f.id));
+  }
   const count = (severity: DoctorSeverity): number =>
     findings.filter((f) => f.severity === severity).length;
   return {
@@ -698,8 +911,9 @@ function finish(
       bundles,
       maps,
     },
-    passed: [...passed],
+    passed: passed.filter((id) => !ignore.includes(id)),
     findings,
+    ...(dropped.length > 0 ? { ignored: [...new Set(dropped)] } : {}),
   };
 }
 

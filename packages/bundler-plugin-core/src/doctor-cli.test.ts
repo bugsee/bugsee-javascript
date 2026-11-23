@@ -33,7 +33,8 @@ describe('runDoctorCli', () => {
     writeFileSync(join(dist, 'a.js'), stamped);
     const { code, out, err } = await cli([dist, '--project-root', root]);
     expect(code).toBe(0);
-    expect(out).toContain('No problems found.');
+    expect(out).toContain('The app token comes from the BUGSEE_APP_TOKEN environment variable.');
+    expect(out).not.toContain('t,'); // the value is never printed
     expect(err).toBe('');
   });
 
@@ -53,10 +54,61 @@ describe('runDoctorCli', () => {
     expect((await cli([dist, '--no-env', '--strict'])).code).toBe(1);
   });
 
-  it('--no-env skips the token check; without it a missing token is an error', async () => {
+  it('a missing token is a warning (exit 0; 1 under --strict); --no-env drops the check', async () => {
     writeFileSync(join(dist, 'a.js'), stamped);
-    expect((await cli([dist, '--no-env'], {} as never)).code).toBe(0);
-    expect((await cli([dist, '--project-root', root], {} as never)).code).toBe(2);
+    const base = [dist, '--project-root', root, '--json'];
+    const warned = await cli(base, {} as never);
+    expect(warned.code).toBe(0);
+    expect(JSON.parse(warned.out).findings.map((f: { id: string }) => f.id)).toContain(
+      'env.token-missing',
+    );
+    expect((await cli([...base, '--strict'], {} as never)).code).toBe(1);
+    const skipped = await cli([...base, '--no-env', '--strict'], {} as never);
+    expect(skipped.code).toBe(0);
+  });
+
+  it('--strict passes straight after a plugin run: stamped bundle, maps removed, pointer left', async () => {
+    writeFileSync(join(dist, 'a.js'), `x\n//# sourceMappingURL=a.js.map${stamped}`);
+    const { code } = await cli([dist, '--project-root', root, '--strict']);
+    expect(code).toBe(0);
+  });
+
+  it('--deployed makes leftover maps a warning; --ignore drops an ID (repeatable)', async () => {
+    writeFileSync(join(dist, 'a.js'), stamped);
+    writeFileSync(
+      join(dist, 'a.js.map'),
+      JSON.stringify({ version: 3, debugId: ID, sources: ['a'], sourcesContent: ['x'] }),
+    );
+    const args = [dist, '--no-env', '--strict'];
+    expect((await cli(args)).code).toBe(0);
+    expect((await cli([...args, '--deployed'])).code).toBe(1);
+    const ignored = await cli([
+      ...args,
+      '--deployed',
+      '--ignore',
+      'map.public-leftover',
+      '--ignore',
+      'x',
+      '--json',
+    ]);
+    expect(ignored.code).toBe(0);
+    expect(JSON.parse(ignored.out).ignored).toEqual(['map.public-leftover']);
+  });
+
+  it('`--` ends options, so a directory can start with a dash', async () => {
+    const odd = join(root, '-odd');
+    mkdirSync(odd);
+    writeFileSync(join(odd, 'a.js'), stamped);
+    const { code, out } = await cli(['--no-env', '--', odd]);
+    expect(code).toBe(0);
+    expect(out).toContain('1 bundle(s)');
+    expect((await cli(['--', odd, 'second'])).code).toBe(2);
+  });
+
+  it('a single-dash unknown flag is rejected, not taken for the directory', async () => {
+    const { code, err } = await cli(['-x', dist]);
+    expect(code).toBe(2);
+    expect(err).toContain('Unknown option -x');
   });
 
   it('--max-map-mb sets the large-map threshold', async () => {
@@ -72,6 +124,11 @@ describe('runDoctorCli', () => {
     );
     const small = await cli([dist, '--no-env', '--max-map-mb', '0.001', '--json']);
     expect(JSON.parse(small.out).findings.map((f: { id: string }) => f.id)).toContain(
+      'map.too-large',
+    );
+    // 2000 bytes against 1 MiB: only the right unit (MiB, not KiB) leaves it unflagged
+    const oneMb = await cli([dist, '--no-env', '--max-map-mb', '1', '--json']);
+    expect(JSON.parse(oneMb.out).findings.map((f: { id: string }) => f.id)).not.toContain(
       'map.too-large',
     );
     const big = await cli([dist, '--no-env', '--json']);

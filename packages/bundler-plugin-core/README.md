@@ -22,7 +22,7 @@ npm install --save-dev @bugsee/vite-plugin
 
 ## `bugsee-sourcemaps-doctor`
 
-An offline check of a build output directory: why would a crash from this build not symbolicate? No network, no token needed.
+An offline check of a build output directory: why would a crash from this build not symbolicate? No network call; a token is not required (a missing one is only a warning).
 
 ```bash
 npx bugsee-sourcemaps-doctor dist            # human report
@@ -30,9 +30,9 @@ npx bugsee-sourcemaps-doctor dist --json     # machine-readable report (schemaVe
 npx bugsee-sourcemaps-doctor dist --strict   # exit 1 on warnings too
 ```
 
-Exit codes: 0 ok, 1 warnings only (with `--strict`), 2 errors. Options: `--project-root <dir>` (where `.env.bugsee-build-plugin` and `package.json` are looked up; default the working directory), `--max-map-mb <n>`, `--no-env` (skip the token / version / build / `NODE_ENV` checks).
+Exit codes: 0 ok, 1 warnings only (with `--strict`), 2 errors. Options: `--project-root <dir>` (where `.env.bugsee-build-plugin` and `package.json` are looked up; default the working directory), `--max-map-mb <n>`, `--no-env` (skip the token / version / build / `NODE_ENV` checks), `--deployed` (the directory is, or is about to be, served: leftover `.map` files become a warning instead of a note), `--ignore <id>` (drop a check ID; repeatable), `--` (end of options). Straight after a default plugin run `--strict` passes: leftover maps are a note unless `--deployed`, and a pointer to maps removed on purpose from a fully stamped build is a note.
 
-It checks, each with a stable ID, a severity and a fix hint: the output directory and its JavaScript; the debug-ID comment and `_bugseeDebugIds` registration on every bundle; a matching map with the same ID; `sourceMappingURL` pointers (dangling, hidden, inline); map validity (v3, `sources`, `sourcesContent` embedded or resolvable on disk, size); mixed stamped/unstamped bundles; duplicate IDs across different contents; Subresource Integrity hazards and mismatches (including manifests or pages outside the directory); leftover `.map` files that a deploy would serve; development-mode bundles; and the build environment (token present, version and build resolvable, `NODE_ENV`). The token is never printed. Programmatic use: `diagnoseBuildOutput(dir, options)` returns the same report. The backend-assisted checks (is this ID's map uploaded?) are not part of this command; see `docs/source-maps-usage.md` §4.
+It checks, each with a stable ID, a severity and a fix hint: the output directory and its JavaScript; the debug-ID comment and `_bugseeDebugIds` registration on every bundle; a matching map with the same ID; `sourceMappingURL` pointers (dangling, hidden, inline); map validity (v3, `sources`, `sourcesContent` embedded or resolvable on disk, size); mixed stamped/unstamped bundles; duplicate IDs across different contents; Subresource Integrity hazards and mismatches (including manifests or pages outside the directory); leftover `.map` files that a deploy would serve; development-mode bundles; and the build environment (token present, version and build resolvable, `NODE_ENV`). The token value is never printed; the report says where it came from (option, environment variable, or `.env.bugsee-build-plugin`), and a missing token is a warning, because uploading by hand is legitimate. The doctor never throws (an internal failure is a `doctor.internal-error` finding), never reads outside the checked directory, never opens a symlink, FIFO or device as a map, and checks a map's size before reading it. Programmatic use: `diagnoseBuildOutput(dir, options)` returns the same report. The backend-assisted checks (is this ID's map uploaded?) are not part of this command; see `docs/source-maps-usage.md` §4.
 
 The rest of the programmatic API beyond the plugins and the doctor is internal and may change between releases.
 
