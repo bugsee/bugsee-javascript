@@ -63,6 +63,16 @@ describe('a rejected inject followed by a restore problem', () => {
     );
   });
 
+  it('a frozen (read-only message) error still reports the restore note, as a new error caused by it', async () => {
+    restore.mode = 'throw';
+    const original = Object.freeze(new BugseeCliError('inject died', 3, 'stderr'));
+    const caught = await go(original).catch((e: unknown) => e);
+    expect(caught).not.toBe(original);
+    expect((caught as Error).cause).toBe(original);
+    expect((caught as Error).message).toContain('inject died');
+    expect((caught as Error).message).toContain('restoring the originals also failed: disk gone');
+  });
+
   it('wraps a non-Error rejection, keeping it as the cause', async () => {
     restore.mode = 'throw';
     const caught = await go('plain string').catch((e: unknown) => e);

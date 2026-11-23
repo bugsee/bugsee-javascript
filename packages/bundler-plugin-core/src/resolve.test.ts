@@ -337,6 +337,33 @@ describe('one pipeline per output directory', () => {
     expect(seen[1]).toEqual([]);
   });
 
+  it('a pending output of a NESTED directory is a sibling of the parent run, under its relative path', async () => {
+    const seen: Array<readonly string[] | undefined> = [];
+    const upload = async (opts: { siblingOwnFiles?: readonly string[] }) => {
+      seen.push(opts.siblingOwnFiles);
+      return { injected: true, uploaded: true, deletedMaps: [] };
+    };
+    await Promise.all([
+      runPluginUpload(resolved, 'dist', {
+        uploadSourcemaps: upload as never,
+        ownFiles: ['p.js'],
+        ...noVcs,
+      }),
+      runPluginUpload(resolved, 'dist/b', {
+        uploadSourcemaps: upload as never,
+        ownFiles: ['c.js'],
+        ...noVcs,
+      }),
+      runPluginUpload(resolved, 'dist-other', {
+        uploadSourcemaps: upload as never,
+        ownFiles: ['o.js'],
+        ...noVcs,
+      }),
+    ]);
+    expect(seen[0]).toEqual(['b/c.js']); // not dist-other's (a prefix-named sibling directory)
+    expect(seen[1]).toEqual([]);
+  });
+
   it('a failed in-flight run does not stop the waiting second output from running', async () => {
     const calls: string[] = [];
     let first = true;

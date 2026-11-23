@@ -1993,4 +1993,23 @@ describe('round-18: sibling outputs on the post-emit path, empty own set under f
       }),
     ).rejects.toThrow(/no source maps with a debug-ID were found/);
   });
+
+  it('siblingsHaveMaps alone (the sibling already finished) relaxes the empty-own-set failure and avoids a directory upload', async () => {
+    await writeFile(join(dir, 'u.js'), 'u();\n');
+    const calls: string[][] = [];
+    await uploadSourcemaps({
+      ...base,
+      outDir: dir,
+      run: async (args) => {
+        calls.push(args);
+        return ok(args);
+      },
+      findSri: async () => [],
+      failOnError: true,
+      siblingsHaveMaps: true,
+      ownFiles: ['u.js'],
+      onNotice: () => undefined,
+    });
+    expect(calls.some((c) => c[0] === 'debug-files')).toBe(false); // nothing to upload, and not the directory
+  });
 });

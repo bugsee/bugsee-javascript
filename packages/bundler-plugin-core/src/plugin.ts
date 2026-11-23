@@ -19,6 +19,7 @@ import {
   dirKey,
   notify,
   type ResolvedIdentity,
+  relativeUnder,
   resolveIdentity,
   resolvePluginOptions,
   runPluginUpload,
@@ -577,15 +578,26 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
   // the first to write already knows its siblings and leaves their maps to them. Per plugin instance; a new
   // build forgets outputs that never wrote.
   const announced = new Map<string, Map<object, string[]>>();
-  const stampBundle = async (output: OutputLike, bundle: RollupBundleLike): Promise<void> => {
+  // Directories an output WITH maps has already written in this build: an unmapped output that comes after it
+  // (its sibling already finished and left the registry) still has nothing to do. Cleared with a new build.
+  const mappedDirs = new Set<string>();
+  const stampBundle = async (
+    output: OutputLike,
+    bundle: RollupBundleLike,
+    isWrite?: boolean,
+  ): Promise<void> => {
     const outDir = resolveOutputDir(output);
     if (outDir === undefined || !resolved.enabled) {
       return;
     }
     const key = dirKey(outDir);
-    const group = announced.get(key) ?? new Map<object, string[]>();
-    group.set(output, Object.keys(bundle));
-    announced.set(key, group);
+    // Only an output that WILL write is a sibling: `bundle.generate()` (isWrite === false) never writes, so
+    // its announcement would hide, as a stale sibling, maps that belong to nobody.
+    if (isWrite !== false) {
+      const group = announced.get(key) ?? new Map<object, string[]>();
+      group.set(output, Object.keys(bundle));
+      announced.set(key, group);
+    }
     stampedOutputs.set(output, { preStamped: false });
     const unstampable = rollupUnstampableMaps(bundle);
     if (unstampable.length > 0) {
@@ -603,7 +615,8 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
   // `pre` order run in the order they appear in `plugins`: list this plugin BEFORE any SRI plugin.
   const generateBundleHook = {
     order: 'pre' as const,
-    handler: (output: OutputLike, bundle: RollupBundleLike) => stampBundle(output, bundle),
+    handler: (output: OutputLike, bundle: RollupBundleLike, isWrite?: boolean) =>
+      stampBundle(output, bundle, isWrite),
   };
 
   const uploadForOutput = async (
@@ -618,13 +631,25 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
       stampedOutputs.delete(output);
       const key = dirKey(outDir);
       const group = announced.get(key);
+      const nested = [...announced].filter(
+        ([dir]) => dir !== key && relativeUnder(key, dir) !== undefined,
+      );
       // A name THIS output emitted is never a sibling's: a leftover announcement from `bundle.generate()` (which
       // never writes) has the same names and must not hide this output's own maps.
       const mine = new Set(Object.keys(bundle ?? {}));
+      const siblingsHaveMaps = [...mappedDirs].some((dir) => relativeUnder(key, dir) !== undefined);
+      if ([...mine].some((name) => name.endsWith('.map'))) {
+        mappedDirs.add(key);
+      }
       const siblings = [...(group ?? [])]
         .filter(([other]) => other !== output)
         .flatMap(([, names]) => names)
-        .filter((name) => !mine.has(name));
+        .filter((name) => !mine.has(name))
+        .concat(
+          nested.flatMap(([dir, g]) =>
+            [...g.values()].flat().map((name) => `${relativeUnder(key, dir)}/${name}`),
+          ),
+        );
       group?.delete(output);
       if (group?.size === 0) {
         announced.delete(key);
@@ -635,6 +660,7 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
       await runPluginUpload(forOutput(outDir), outDir, {
         bundler,
         ...(bundle !== undefined ? { siblingOwnFiles: siblings } : {}),
+        ...(bundle !== undefined && siblingsHaveMaps ? { siblingsHaveMaps: true } : {}),
         ...(bundle !== undefined ? { ownFiles: Object.keys(bundle) } : {}),
         ...(stamp?.preStamped === true
           ? {
@@ -706,6 +732,7 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
       },
       buildStart() {
         announced.clear();
+        mappedDirs.clear();
       },
       generateBundle: generateBundleHook,
       writeBundle: (output: OutputLike, bundle?: object) =>
@@ -747,6 +774,7 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
       buildStart() {
         unbakedOutDirs.clear();
         announced.clear();
+        mappedDirs.clear();
       },
       generateBundle: generateBundleHook,
       writeBundle: (output: OutputLike, bundle?: object) => uploadForOutput(output, {}, bundle),

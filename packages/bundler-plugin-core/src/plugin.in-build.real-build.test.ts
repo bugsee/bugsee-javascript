@@ -1252,6 +1252,7 @@ describeReal('one directory spelled several ways', () => {
   it('outputs into `dist`, `dist/`, a symlink to it and a relative spelling coordinate as ONE directory', async () => {
     const app = makeApp('rollup-spellings', { lazy: false });
     const link = `${app.out}-link`;
+    mkdirSync(app.out); // first: Rollup creating a directory through a still-dangling link races the others
     symlinkSync(app.out, link);
     const spellings = [app.out, `${app.out}/`, link, relative(process.cwd(), app.out)];
     const before = requests.length;
@@ -1320,5 +1321,99 @@ describeReal('a mapped and an unmapped output into one directory under failOnErr
     await bundle.close();
     expect(errors.map(String)).toEqual([]);
     expect((readdirSync(app.out) as string[]).filter((f) => f.endsWith('.map'))).toEqual([]);
+  });
+});
+
+describeReal('a generate()-only output is not a sibling', () => {
+  it('an unmapped write after a never-written mapped generate() still fails under failOnError', async () => {
+    const app = makeApp('rollup-generate-unmapped', { lazy: false });
+    const bundle = await rollup({
+      input: join(app.dir, 'index.js'),
+      plugins: [bugseeRollupPlugin({ ...pluginOptions(), failOnError: true })],
+    });
+    await bundle.generate({
+      dir: app.out,
+      entryFileNames: 'g.js',
+      format: 'iife',
+      name: 'g',
+      sourcemap: true,
+    });
+    await expect(
+      bundle.write({
+        dir: app.out,
+        entryFileNames: 'u.js',
+        format: 'iife',
+        name: 'u',
+        sourcemap: false,
+      }),
+    ).rejects.toThrow(/no source maps with a debug-ID were found/);
+    await bundle.close();
+  });
+});
+
+describeReal('an output into a nested directory of another output', () => {
+  it('the parent output neither uploads nor reports the nested output maps as foreign', async () => {
+    const app = makeApp('rollup-nested-dirs', { lazy: false });
+    const before = requests.length;
+    const notices: string[] = [];
+    const errors: unknown[] = [];
+    const bundle = await rollup({
+      input: join(app.dir, 'index.js'),
+      plugins: [
+        bugseeRollupPlugin({
+          ...pluginOptions(),
+          onNotice: (m: string) => notices.push(m),
+          onError: (e: unknown) => errors.push(e),
+        }),
+      ],
+    });
+    await Promise.all([
+      bundle.write({
+        dir: app.out,
+        entryFileNames: 'p.js',
+        format: 'iife',
+        name: 'p',
+        sourcemap: true,
+      }),
+      bundle.write({
+        dir: join(app.out, 'b'),
+        entryFileNames: 'c.js',
+        format: 'iife',
+        name: 'c',
+        sourcemap: true,
+      }),
+    ]);
+    await bundle.close();
+    expect(errors.map(String)).toEqual([]);
+    expect(notices.filter((m) => m.includes('not produced by this build'))).toEqual([]);
+    expect(
+      readdirSync(app.out, { recursive: true }).filter((f) => String(f).endsWith('.map')),
+    ).toEqual([]);
+    expect(requests.length - before).toBeLessThanOrEqual(2);
+  });
+});
+
+describeReal('a mapped output that FINISHED before an unmapped one, under failOnError', () => {
+  it('the later unmapped output has nothing to do and does not fail', async () => {
+    const app = makeApp('rollup-mapped-then-unmapped', { lazy: false });
+    const bundle = await rollup({
+      input: join(app.dir, 'index.js'),
+      plugins: [bugseeRollupPlugin({ ...pluginOptions(), failOnError: true })],
+    });
+    await bundle.write({
+      dir: app.out,
+      entryFileNames: 'm.js',
+      format: 'iife',
+      name: 'm',
+      sourcemap: true,
+    });
+    await bundle.write({
+      dir: app.out,
+      entryFileNames: 'u.js',
+      format: 'iife',
+      name: 'u',
+      sourcemap: false,
+    });
+    await bundle.close();
   });
 });

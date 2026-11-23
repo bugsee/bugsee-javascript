@@ -332,14 +332,21 @@ of the deepest existing ancestor plus the not-yet-created rest). Each output ann
 `generateBundle`; a run leaves the maps of every still-pending sibling to that sibling, on every path: the explicit
 pre-stamped upload, and the post-emit path (which, when siblings exist, also uploads an explicit file set instead of
 the directory, so a sibling's maps are neither uploaded, nor reported as "not produced by this build", nor deleted).
-**`failOnError` and an output with no maps:** an output whose own map set is empty while at least one announced
-sibling of the same directory has maps has nothing to do and does NOT fail ("no source maps with a debug-ID were
-found" is for a lone output, or when no sibling has maps either). An output whose own map exists but is unkeyed
-still fails. **Known limit:** an output that announced itself but never reaches `writeBundle` (a failed write, a
-`generate()`-only output) keeps its announcement until the next `buildStart`; maps another output finds that
-carry its names are left on disk, not reported. A name this output itself emitted is never treated as a sibling's.
-A rejected inject keeps its ORIGINAL error object (a `BugseeCliError` stays one); a failed restore is appended to its
-message.
+**`failOnError` and an output with no maps:** an output whose own map set is empty while a sibling output of the
+same directory has maps has nothing to do and does NOT fail ("no source maps with a debug-ID were found" is for a lone
+output, or when no sibling has maps either). The sibling counts when it is announced and about to write, or has
+already written and finished in this build (an unmapped output that comes LAST must not fail because its mapped
+sibling got there first). An output whose own map exists but is unkeyed still fails. **Only an output that will
+write is a sibling:** `bundle.generate()` (`isWrite === false`) is never announced, so a generate-only mapped output
+cannot make a later unmapped write pass silently. **Nested directories:** an output written into `dist/b` while
+another writes `dist` is a sibling of the parent run under its relative path (`b/x.js.map`), because the parent's
+directory walk covers it; the nested run never sees the parent's files. **Directory identity** uses the canonical
+on-disk spelling (`realpath.native`), so `dist` and `DIST` are one directory on a case-insensitive filesystem.
+**Known limit:** an output that announced itself and then never reaches `writeBundle` (a failed write) keeps its
+announcement until the next `buildStart`; maps another output finds that carry its names are left on disk, not
+reported. A name this output itself emitted is never treated as a sibling's. A rejected inject keeps its ORIGINAL
+error object (a `BugseeCliError` stays one; a frozen one is reported as a new error caused by it); a failed restore
+is appended to the message.
 
 ### Maps that are not the bundle sibling
 

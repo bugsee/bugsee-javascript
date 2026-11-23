@@ -3,7 +3,15 @@
 // required; a build without one is a no-op rather than an error). Pure + injectable for testing.
 
 import { readlinkSync, realpathSync } from 'node:fs';
-import { basename, dirname, join, resolve as resolvePath } from 'node:path';
+import {
+  basename,
+  dirname,
+  isAbsolute,
+  join,
+  relative,
+  resolve as resolvePath,
+  sep,
+} from 'node:path';
 import {
   type AppIdentityDeps,
   appIdentityDefines,
@@ -277,7 +285,7 @@ export function dirKey(dir: string, depth = 0): string {
   const rest: string[] = [];
   for (;;) {
     try {
-      return join(realpathSync(head), ...rest);
+      return join(realpathSync.native(head), ...rest); // native: the canonical spelling (case-folded on APFS/NTFS)
     } catch {
       // A symlink whose target does not exist YET (the build will create it) still names that target.
       const target = depth < 40 ? readLinkTarget(head) : undefined;
@@ -301,6 +309,16 @@ function readLinkTarget(path: string): string | undefined {
   } catch {
     return undefined; // not a symlink (or not there)
   }
+}
+
+/**
+ * The path of `child` relative to `parent` when it is `parent` itself ('') or inside it, else undefined. A parent
+ * output's directory walk also covers the maps of an output written into a nested directory (`dist` and
+ * `dist/b`), so those are siblings too, under their relative path.
+ */
+export function relativeUnder(parent: string, child: string): string | undefined {
+  const rel = relative(parent, child);
+  return rel.startsWith('..') || isAbsolute(rel) ? undefined : rel.split(sep).join('/');
 }
 
 /** The ownFiles of every output of a directory that is pending or running (see {@link runPluginUpload}). */
@@ -356,6 +374,8 @@ async function runPluginUploadInner(
     ownFiles?: readonly string[];
     /** Names other outputs of the same directory announced (their maps are theirs to upload and delete). */
     siblingOwnFiles?: readonly string[];
+    /** An output of this directory that has maps already wrote and finished in this build. */
+    siblingsHaveMaps?: boolean;
     /**
      * The build's own outputs (esbuild's metafile). The run then touches exactly these files, never joins another
      * run of the same directory, and registers from these bundles only.
@@ -414,12 +434,21 @@ async function runPluginUploadInner(
       ...(deps.preStamped === true ? { preStamped: true } : {}),
       ...(deps.stampedBundles !== undefined ? { stampedBundles: deps.stampedBundles } : {}),
       ...(deps.stampedMaps !== undefined ? { stampedMaps: deps.stampedMaps } : {}),
+      ...(deps.siblingsHaveMaps === true ? { siblingsHaveMaps: true } : {}),
       ...(deps.ownFiles !== undefined
         ? {
             ownFiles: deps.ownFiles,
             siblingOwnFiles: [
               ...(deps.siblingOwnFiles ?? []),
-              ...[...(ownersByDir.get(dirKey0) ?? [])].filter((names) => names !== mine).flat(),
+              ...[...ownersByDir].flatMap(([dir, group]) => {
+                const prefix = relativeUnder(dirKey0, dir);
+                return prefix === undefined
+                  ? []
+                  : [...group]
+                      .filter((names) => names !== mine)
+                      .flat()
+                      .map((name) => (prefix === '' ? name : `${prefix}/${name}`));
+              }),
             ],
           }
         : {}),

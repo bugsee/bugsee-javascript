@@ -105,6 +105,8 @@ export interface UploadSourcemapsOptions {
    * maps: each output handles its own, so N outputs into one directory make N uploads, not N times everything.
    */
   siblingOwnFiles?: readonly string[];
+  /** An output of the directory that has maps already finished in this build (so an unmapped one has nothing to do). */
+  siblingsHaveMaps?: boolean;
   /** The in-build stamp's bundle -> map names (relative to `outDir`), for maps the pointer and sibling cannot name. */
   stampedMaps?: Readonly<Record<string, string>>;
   /** Where a non-failing observation goes (default: nowhere — callers that want it pass the notice sink). */
@@ -554,11 +556,17 @@ export async function uploadSourcemaps(
           }
           if (note !== undefined) {
             // The ORIGINAL error object is kept (a BugseeCliError stays one); the restore problem is appended.
+            const message = `${error instanceof Error ? error.message : String(error)}; ${note}`;
             if (error instanceof Error) {
-              error.message = `${error.message}; ${note}`;
+              try {
+                error.message = message;
+              } catch {
+                // a frozen / read-only error: the note must not be lost, so report a new error instead
+                throw new Error(message, { cause: error });
+              }
               throw error;
             }
-            throw new Error(`${String(error)}; ${note}`, { cause: error });
+            throw new Error(message, { cause: error });
           }
         }
         throw error;
@@ -609,6 +617,7 @@ export async function uploadSourcemaps(
       (options.preStamped === true ||
         restoredAny ||
         // a sibling output's maps share the directory: upload only the names that are ours, never the directory
+        options.siblingsHaveMaps === true ||
         (options.siblingOwnFiles?.length ?? 0) > 0) &&
       !dryRun;
     let uploadedMaps: string[] = [];
@@ -669,7 +678,9 @@ export async function uploadSourcemaps(
       }
       // An output with no maps of its own while a sibling output of the directory has some has nothing to
       // do: that is not "this build produced no maps". A lone unmapped output still fails.
-      const siblingHasMaps = (options.siblingOwnFiles ?? []).some((name) => name.endsWith('.map'));
+      const siblingHasMaps =
+        options.siblingsHaveMaps === true ||
+        (options.siblingOwnFiles ?? []).some((name) => name.endsWith('.map'));
       if (deletable.length === 0) {
         if (options.failOnError === true && !(everything.length === 0 && siblingHasMaps)) {
           throw new Error(

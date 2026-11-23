@@ -966,7 +966,9 @@ describe("vite/rollup: without a final bundle the stamp's own names are used unc
 describe('outputs announce their names at generateBundle, so the first write already knows its siblings', () => {
   const hooksOf2 = (kind: 'vite' | 'rollup') =>
     makePlugin({ appToken: 'tok', onNotice: () => undefined })[kind] as unknown as {
-      generateBundle: { handler: (o: object, b: Record<string, unknown>) => Promise<void> };
+      generateBundle: {
+        handler: (o: object, b: Record<string, unknown>, isWrite?: boolean) => Promise<void>;
+      };
       writeBundle: (o: object, b?: object) => Promise<void>;
       buildStart?: () => void;
     };
@@ -998,6 +1000,74 @@ describe('outputs announce their names at generateBundle, so the first write alr
       await h.generateBundle.handler(written, bundleOf('a'));
       await h.writeBundle(written, bundleOf('a'));
       expect(siblingsOf(0)).toEqual([]); // a name this output emitted is never a "sibling's"
+    });
+
+    it(`${kind}: a generate()-only output (isWrite false) is never announced as a sibling`, async () => {
+      uploadSpy.mockClear();
+      const h = hooksOf2(kind);
+      await h.generateBundle.handler({ dir: '/out' }, bundleOf('g'), false);
+      const written = { dir: '/out' };
+      await h.generateBundle.handler(written, bundleOf('w'), true);
+      await h.writeBundle(written, bundleOf('w'));
+      expect(siblingsOf(0)).toEqual([]);
+    });
+
+    it(`${kind}: an output written into a NESTED directory is a sibling under its relative path`, async () => {
+      uploadSpy.mockClear();
+      const h = hooksOf2(kind);
+      const [parent, child] = [{ dir: '/out' }, { dir: '/out/b' }];
+      await h.generateBundle.handler(parent, bundleOf('p'));
+      await h.generateBundle.handler(child, bundleOf('c'));
+      await h.writeBundle(parent, bundleOf('p'));
+      await h.writeBundle(child, bundleOf('c'));
+      expect(siblingsOf(0)?.slice().sort()).toEqual(['b/c.js', 'b/c.js.map']);
+      expect(siblingsOf(1)).toEqual([]); // the child's walk never sees the parent's files
+    });
+
+    it(`${kind}: an unmapped output after a mapped one FINISHED is told a sibling had maps (only for a real write)`, async () => {
+      uploadSpy.mockClear();
+      const h = hooksOf2(kind);
+      const flag = (call: number) =>
+        (uploadSpy.mock.calls[call]?.[2] as { siblingsHaveMaps?: boolean }).siblingsHaveMaps;
+      const [m, u] = [{ dir: '/out' }, { dir: '/out' }];
+      await h.generateBundle.handler(m, bundleOf('m'), true);
+      await h.writeBundle(m, bundleOf('m'));
+      await h.generateBundle.handler(u, { 'u.js': bundleOf('u')['u.js'] }, true);
+      await h.writeBundle(u, { 'u.js': bundleOf('u')['u.js'] });
+      expect(flag(0)).toBeUndefined(); // an output is not its own sibling
+      expect(flag(1)).toBe(true);
+      // a new build forgets it
+      h.buildStart?.();
+      const lone = { dir: '/out' };
+      await h.generateBundle.handler(lone, { 'l.js': bundleOf('l')['l.js'] }, true);
+      await h.writeBundle(lone, { 'l.js': bundleOf('l')['l.js'] });
+      expect(flag(2)).toBeUndefined();
+    });
+
+    it(`${kind}: an output WITHOUT maps does not count as one that had maps; an unrelated directory is no sibling`, async () => {
+      uploadSpy.mockClear();
+      const h = hooksOf2(kind);
+      const flag = (call: number) =>
+        (uploadSpy.mock.calls[call]?.[2] as { siblingsHaveMaps?: boolean }).siblingsHaveMaps;
+      const js = (n: string) => ({ [`${n}.js`]: bundleOf(n)[`${n}.js`] });
+      const [a, b, other, c] = [
+        { dir: '/out' },
+        { dir: '/out' },
+        { dir: '/other' },
+        { dir: '/out' },
+      ];
+      await h.generateBundle.handler(a, js('a'), true);
+      await h.writeBundle(a, js('a'));
+      await h.generateBundle.handler(other, bundleOf('o'), true); // mapped, but another directory
+      await h.generateBundle.handler(b, js('b'), true);
+      await h.writeBundle(b, js('b'));
+      expect(flag(0)).toBeUndefined();
+      expect(flag(1)).toBeUndefined(); // 'a' had no maps, and '/other' is not this directory
+      expect(siblingsOf(1)).toEqual([]); // the unrelated announced output is no sibling
+      await h.writeBundle(other, bundleOf('o'));
+      await h.generateBundle.handler(c, js('c'), true);
+      await h.writeBundle(c, js('c'));
+      expect(flag(3)).toBeUndefined(); // '/other' wrote maps, in a different directory
     });
 
     it(`${kind}: a new build forgets outputs that never wrote (buildStart)`, async () => {

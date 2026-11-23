@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
@@ -60,6 +60,16 @@ describe('dirKey', () => {
     symlinkSync(b, a);
     symlinkSync(a, b);
     expect(typeof dirKey(a)).toBe('string');
+  });
+
+  it('folds case on a case-insensitive filesystem (canonical on-disk spelling)', (ctx) => {
+    const dir = join(root, 'CaseDir');
+    mkdirSync(dir);
+    if (!existsSync(join(root, 'casedir'))) {
+      ctx.skip(); // case-sensitive filesystem: two spellings really are two directories
+    }
+    expect(dirKey(join(root, 'casedir'))).toBe(dirKey(dir));
+    expect(dirKey(join(root, 'CASEDIR', 'sub'))).toBe(join(dirKey(dir), 'sub'));
   });
 
   it('falls back to the resolved path when nothing on the way can be resolved', () => {
