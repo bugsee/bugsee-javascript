@@ -260,6 +260,17 @@ const SCRIPT_FILE = /\.[cm]?js$/i;
  */
 const RESEAL_FILE = /\.(x?html?|[cm]?js)$/i;
 
+/** The files {@link resealIntegrity} may rewrite under `dirs`: pages, server modules, scripts. */
+export async function listResealFiles(dirs: readonly string[]): Promise<string[]> {
+  const found = new Set<string>();
+  for (const dir of dirs) {
+    for (const file of await walkFiles(resolve(dir), RESEAL_FILE)) {
+      found.add(file);
+    }
+  }
+  return [...found];
+}
+
 /** Rounds of re-sealing: a table inside a script changes that script's own hash, which is one more round. */
 const MAX_RESEAL_PASSES = 5;
 

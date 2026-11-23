@@ -1,12 +1,14 @@
 // SM-A2 — orchestrate a source-map upload by driving `bugsee-cli`: inject debug-IDs, upload the maps, then
 // delete the client `.map` files (privacy). Each side-effecting step is behind an injectable seam so the
 // orchestration is unit-tested without a real binary or filesystem.
-import { readdir, unlink } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { readdir, readFile, unlink } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { type RunBugseeCliOptions, runBugseeCli, type SpawnResult } from './run-cli';
 import {
   findIntegrityMismatches,
   findSriProtectedScripts,
+  listResealFiles,
   resealIntegrity,
   type SriProtectedScript,
   snapshotScriptDigests,
@@ -17,6 +19,7 @@ import {
   MAX_WALK_DEPTH,
   NEVER_WALK,
   partitionByKeyed,
+  restoreAtomically,
   type SnapshotTarget,
   type StampSnapshot,
   snapshotStampFiles,
@@ -116,6 +119,8 @@ export interface UploadSourcemapsOptions {
   resealDirs?: readonly string[];
   /** Injectable re-sealer (default {@link resealIntegrity}). */
   reseal?: typeof resealIntegrity;
+  /** Injectable restore of one file from its spilled original, for the re-seal rollback (default: write temp, then rename). */
+  restoreFile?: (spill: string, target: string) => Promise<void>;
   /** Injectable script-digest snapshot taken before the stamp (default {@link snapshotScriptDigests}). */
   snapshotDigests?: typeof snapshotScriptDigests;
   /**
@@ -231,6 +236,7 @@ export async function uploadSourcemaps(
   const onError = options.onError ?? defaultUploadErrorHandler;
 
   let original: StampSnapshot | undefined;
+  let sealOriginal: StampSnapshot | undefined;
   try {
     if (options.preStamped === true) {
       // 0'. Stamped in the build, so this run rewrites nothing and cannot break SRI. What it CAN do is
@@ -309,6 +315,19 @@ export async function uploadSourcemaps(
           ? await (options.snapshotDigests ?? snapshotScriptDigests)([outDir])
           : undefined;
 
+      // 0a'. Everything the stamp AND the re-seal may write — scripts, maps, pages, server modules — so a re-seal
+      //      that fails can put the build back exactly as the bundler emitted it (the stamp's own snapshot below
+      //      does not cover pages or server modules).
+      if (digests !== undefined) {
+        const sealPaths = new Set([
+          ...(await listResealFiles(options.resealDirs ?? [outDir])),
+          ...(files === undefined
+            ? await (options.listMapFiles ?? listMapFiles)(outDir)
+            : [...files.scripts, ...files.maps]),
+        ]);
+        sealOriginal = await snapshotStampFiles({ files: [...sealPaths] }, options.spillRoot);
+      }
+
       // 0b. Take the originals, so a stamp that does not verify can be undone (see below). Not on a dry run:
       //     inject writes nothing, so there is nothing to undo.
       const target: SnapshotTarget =
@@ -364,21 +383,43 @@ export async function uploadSourcemaps(
       //     are, then check. After 1b, so the bytes sealed are the bytes that stayed on disk (a restored file
       //     still matches its original hash and is left alone). Not on a dry run: nothing was written.
       if (digests !== undefined) {
-        await (options.reseal ?? resealIntegrity)(digests, options.resealDirs ?? [outDir]);
-        const broken = await (options.verifySri ?? findIntegrityMismatches)(outDir);
-        if (broken.length > 0) {
-          const [first] = broken as [SriProtectedScript, ...SriProtectedScript[]];
+        let sealFailure: Error | undefined;
+        try {
+          await (options.reseal ?? resealIntegrity)(digests, options.resealDirs ?? [outDir]);
+          const broken = await (options.verifySri ?? findIntegrityMismatches)(outDir);
+          if (broken.length > 0) {
+            const [first] = broken as [SriProtectedScript, ...SriProtectedScript[]];
+            sealFailure = new Error(
+              `${first.script} still does not match the integrity hash ${first.html} pins` +
+                (broken.length > 1 ? ` (and ${broken.length - 1} more)` : '') +
+                ` after the hashes were re-written, so the browser would refuse to run it. A copy of that hash is held in ` +
+                `a form this step does not rewrite (one computed at run time, or a file outside the directories it covers), ` +
+                `which it cannot see. Turn Subresource Integrity off for this build, or do not stamp it.`,
+            );
+          }
+        } catch (error) {
+          sealFailure = error instanceof Error ? error : new Error(String(error));
+        }
+        if (sealFailure !== undefined) {
+          // A page that is blocked, or a build half-sealed, is worse than no source maps. Put every file the stamp
+          // and the re-seal touched back to what the bundler emitted, and upload nothing: the maps belong to bundles
+          // that no longer carry the debug-ID they were keyed by.
+          const { restored, failed } = await restoreChanged(
+            sealOriginal as StampSnapshot,
+            options.restoreFile,
+          );
           const failure = new Error(
-            `${first.script} still does not match the integrity hash ${first.html} pins` +
-              (broken.length > 1 ? ` (and ${broken.length - 1} more)` : '') +
-              ` after the hashes were re-written, so the browser will refuse to run it. A copy of that hash is held in ` +
-              `a form this step does not rewrite (one computed at run time, or a file outside the directories it covers), ` +
-              `which it cannot see. Turn Subresource Integrity off for this build, or do not stamp it.`,
+            `${sealFailure.message}. The build was restored to the bundler's original bytes (${restored.length} file(s)) ` +
+              `and nothing was uploaded` +
+              (failed.length > 0
+                ? `; COULD NOT restore ${failed.map((f) => `${f.path} (${f.error})`).join(', ')}, which are still stamped or half-sealed`
+                : ''),
           );
           if (options.failOnError === true) {
             throw failure;
           }
           onError(failure);
+          return { injected: false, uploaded: false, deletedMaps: [], ...vcsEcho };
         }
       }
     }
@@ -518,6 +559,7 @@ export async function uploadSourcemaps(
     // removing the spill directory can fail (EPERM/EBUSY under antivirus on Windows). Said, not thrown.
     try {
       await original?.dispose();
+      await sealOriginal?.dispose();
     } catch (error) {
       onError(
         new Error(
@@ -526,4 +568,29 @@ export async function uploadSourcemaps(
       );
     }
   }
+}
+
+/** Put back, atomically, every snapshotted file whose bytes are not the original's. Never throws: failures are returned. */
+async function restoreChanged(
+  snapshot: StampSnapshot,
+  restoreFile: (spill: string, target: string) => Promise<void> = restoreAtomically,
+): Promise<{ restored: string[]; failed: { path: string; error: string }[] }> {
+  const restored: string[] = [];
+  const failed: { path: string; error: string }[] = [];
+  for (const [path, entry] of snapshot.entries) {
+    const now = await readFile(path).then(
+      (bytes) => createHash('sha1').update(bytes).digest('hex'),
+      () => undefined,
+    );
+    if (now === entry.hash) {
+      continue;
+    }
+    try {
+      await restoreFile(entry.spill, path);
+      restored.push(path);
+    } catch (error) {
+      failed.push({ path, error: String(error) });
+    }
+  }
+  return { restored, failed };
 }

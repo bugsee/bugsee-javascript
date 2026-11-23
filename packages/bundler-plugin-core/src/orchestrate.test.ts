@@ -950,13 +950,13 @@ describe('uploadSourcemaps with resealSri', () => {
     ]);
   });
 
-  it('reports a page that still does not verify, and uploads anyway (the maps are right, the page is not)', async () => {
+  it('reports a page that still does not verify, restores, and uploads nothing', async () => {
     const { run, calls } = fakeRun();
     const onError = vi.fn();
     await uploadSourcemaps({ ...sealed({ verifySri: async () => [pin] }), run, onError });
     expect(String(onError.mock.calls[0]?.[0])).toContain('index.html');
     expect(String(onError.mock.calls[0]?.[0])).toContain('main.js');
-    expect(calls.map((c) => c.args[0])).toContain('debug-files');
+    expect(calls.map((c) => c.args[0])).not.toContain('debug-files');
   });
 
   it('throws under failOnError when a page still does not verify', async () => {

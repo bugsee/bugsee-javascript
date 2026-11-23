@@ -695,6 +695,24 @@ describe('resealIntegrity', () => {
     expect(files.sort()).toEqual([a, b].sort());
   });
 
+  it('rewrites EVERY occurrence of a digest, in a page and in a server module', async () => {
+    await write(root, 'main.js', 'a();');
+    const old = sha('sha384', 'a();');
+    // Angular emits the same chunk both as a tag and in the import map; the SSR copy repeats the page.
+    const page = `<link rel="modulepreload" href="main.js" integrity="${old}"><script src="main.js" integrity="${old}"></script>`;
+    const html = await write(root, 'index.html', page);
+    const mjs = await write(root, 'index.html.mjs', `export default ${JSON.stringify(page)};`);
+    const before = await snapshotScriptDigests([root]);
+    await write(root, 'main.js', 'a2();');
+    await resealIntegrity(before, [root]);
+    const fresh = sha('sha384', 'a2();');
+    for (const file of [html, mjs]) {
+      const text = await readFile(file, 'utf8');
+      expect(text.split(fresh)).toHaveLength(3);
+      expect(text).not.toContain(old);
+    }
+  });
+
   it('skips a script that is gone, and a directory that is missing', async () => {
     await write(root, 'gone.js', 'x');
     const before = await snapshotScriptDigests([root]);
