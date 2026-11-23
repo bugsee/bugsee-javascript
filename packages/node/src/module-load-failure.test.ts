@@ -409,7 +409,7 @@ describe('probed Node message shapes (v26)', () => {
     expect(frames[0]?.function).toBe('load()');
   });
 
-  it('an unexported subpath from a bare path (no node_modules) keeps the subpath', () => {
+  it('an unexported subpath from a bare path (no node_modules) names its directory', () => {
     expect(
       detectModuleLoadFailure(
         coded(
@@ -417,7 +417,7 @@ describe('probed Node message shapes (v26)', () => {
           'Package subpath \'./x\' is not defined by "exports" in /p/package.json',
         ),
       )?.module,
-    ).toBe('./x');
+    ).toBe('/p/x');
   });
 
   it('require() of an ES module names the module and its requirer', () => {
@@ -491,5 +491,22 @@ describe('probed Node message shapes (v26)', () => {
       ),
     );
     expect(failure).toMatchObject({ module: '/my app/x.mjs', importer: '/my app/z.cjs' });
+  });
+
+  it('names the directory of a package that is not under node_modules (a workspace package)', () => {
+    const main = detectModuleLoadFailure(
+      coded(
+        'ERR_PACKAGE_PATH_NOT_EXPORTED',
+        'No "exports" main defined in /repo/packages/foo/package.json imported from /repo/a.mjs',
+      ),
+    );
+    expect(main?.module).toBe('/repo/packages/foo');
+    const sub = detectModuleLoadFailure(
+      coded(
+        'ERR_PACKAGE_PATH_NOT_EXPORTED',
+        'Package subpath \'./sub\' is not defined by "exports" in /repo/packages/foo/package.json',
+      ),
+    );
+    expect(sub?.module).toBe('/repo/packages/foo/sub');
   });
 });

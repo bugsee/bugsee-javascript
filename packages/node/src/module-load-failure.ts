@@ -45,6 +45,8 @@ const NOT_EXPORTED = /^Package subpath '([^']+)'/;
 // Either separator: on Windows the path is `C:\app\node_modules\@scope\pkg\package.json`.
 const PACKAGE_OF_JSON = /node_modules[\\/]((?:@[^\\/\n]+[\\/])?[^\\/\n]+)[\\/]package\.json/;
 // `No \"exports\" main defined in /app/node_modules/pkg/package.json [imported from ...]`: the package root, with no subpath.
+// A package that is not under `node_modules` (a symlinked workspace package resolves to its real path): its directory.
+const PACKAGE_DIR = / in ([^\n]*?)[\\/]package\.json/;
 const NO_EXPORTS_MAIN = /^No "exports" main defined in /;
 // `Package import specifier "#x" is not defined in package /app/package.json imported from /app/y.mjs`
 const IMPORT_NOT_DEFINED = /^Package import specifier "([^"]+)"/;
@@ -108,12 +110,20 @@ function toPath(location: string): string {
   }
 }
 
-/** The array's strings, each element read through `prop` so a throwing index getter costs that element, not the report. */
+/** The package a `package.json` path in the message belongs to: its name under `node_modules`, else its directory. */
+function packageOf(message: string): string | undefined {
+  const named = PACKAGE_OF_JSON.exec(message);
+  if (named !== null) return slashed(named[1] as string);
+  const dir = PACKAGE_DIR.exec(message)?.[1];
+  return dir === undefined || dir === '' ? undefined : slashed(dir);
+}
+
 /** A package name with the platform separator normalized to `/`. */
 function slashed(name: string): string {
   return name.replace(/\\/g, '/');
 }
 
+/** The array's strings, each element read through `prop` so a throwing index getter costs that element, not the report. */
 function stringList(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   const out: string[] = [];
@@ -188,17 +198,13 @@ export function detectModuleLoadFailure(value: unknown): ModuleLoadFailure | und
   const url = str(value, 'url');
   const requireEsm = REQUIRE_ESM.exec(message);
   const exported = NOT_EXPORTED.exec(message);
-  const exportedIn = exported === null ? null : PACKAGE_OF_JSON.exec(message);
-  const noMain = NO_EXPORTS_MAIN.test(message) ? PACKAGE_OF_JSON.exec(message) : null;
   let exportedModule: string | undefined;
-  if (exported !== null) {
-    const subpath = exported[1] as string;
+  if (exported !== null || NO_EXPORTS_MAIN.test(message)) {
+    const pkg = packageOf(message);
+    const subpath = exported === null ? undefined : (exported[1] as string).replace(/^\.\//, '');
+    // The package name when it sits in `node_modules`, else its directory; the bare subpath only when nothing names the package.
     exportedModule =
-      exportedIn === null
-        ? subpath
-        : `${slashed(exportedIn[1] as string)}/${subpath.replace(/^\.\//, '')}`;
-  } else if (noMain !== null) {
-    exportedModule = slashed(noMain[1] as string);
+      pkg === undefined ? exported?.[1] : subpath === undefined ? pkg : `${pkg}/${subpath}`;
   }
   const module =
     str(value, 'specifier') ??
