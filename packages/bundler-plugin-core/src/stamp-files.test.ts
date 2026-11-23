@@ -350,6 +350,24 @@ describe('verifyStampedOnDisk', () => {
     await writeFile(join(dir, 'a.js.map'), stampedMap);
     expect(await verifyStampedOnDisk([join(dir, 'a.js'), join(dir, 'missing.js')])).toEqual([]);
   });
+  it('the sibling fallback is really used: a pointer at a missing file, an UNSTAMPED <bundle>.map beside it', async () => {
+    await writeFile(join(dir, 'a.js'), `a();\n//# sourceMappingURL=gone.map\n${STAMP}`);
+    await writeFile(join(dir, 'a.js.map'), plainMap);
+    expect((await verifyStampedOnDisk([join(dir, 'a.js')])).map((i) => i.name)).toEqual([
+      join(dir, 'a.js.map'),
+    ]);
+  });
+
+  it('a pointer at an existing map wins, and a missing sibling is no problem', async () => {
+    await writeFile(join(dir, 'a.js'), `a();\n//# sourceMappingURL=real.map\n${STAMP}`);
+    await writeFile(join(dir, 'real.map'), plainMap);
+    expect((await verifyStampedOnDisk([join(dir, 'a.js')])).map((i) => i.name)).toEqual([
+      join(dir, 'real.map'),
+    ]);
+    await writeFile(join(dir, 'real.map'), stampedMap);
+    expect(await verifyStampedOnDisk([join(dir, 'a.js')])).toEqual([]);
+  });
+
   it('a bundle with no map at all is left alone', async () => {
     await writeFile(join(dir, 'a.js'), 'a();\n');
     expect(await verifyStampedOnDisk([join(dir, 'a.js')])).toEqual([]);

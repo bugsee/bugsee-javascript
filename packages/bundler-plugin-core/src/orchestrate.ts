@@ -422,6 +422,16 @@ export async function uploadSourcemaps(
     onError(error);
     return { injected: false, uploaded: false, deletedMaps: [], ...vcsEcho };
   } finally {
-    await original?.dispose();
+    // Cleanup must never fail a build whose upload already succeeded, nor mask the error being reported:
+    // removing the spill directory can fail (EPERM/EBUSY under antivirus on Windows). Said, not thrown.
+    try {
+      await original?.dispose();
+    } catch (error) {
+      onError(
+        new Error(
+          `could not remove the temporary spill directory of the originals: ${String(error)}`,
+        ),
+      );
+    }
   }
 }

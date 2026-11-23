@@ -245,6 +245,14 @@ beside them is not mistaken for a miss. A stamped build is also re-checked again
 its HTML (`findIntegrityMismatches`, `sri.ts`): any `<script integrity>` / `<link rel=modulepreload integrity>` whose
 hash no longer matches the emitted bytes is reported (a warning; thrown only under `failOnError`).
 
+**Known limits of the on-disk verification** (accepted, no code change): the post-emit snapshot walk stops at
+a depth of 6 while inject stamps deeper files (those are stamped but neither verified nor restorable); the walk
+is unfenced when the output directory is a project directory reached from a different working directory (the
+project-root refusal compares against the cwd); and `realpath` does not normalise case on case-insensitive file
+systems, so the cwd-equals-output check can miss a differently-cased spelling of the same directory. A spill
+directory that cannot be removed (EPERM/EBUSY) is reported, never thrown. Windows paths resolve a custom map
+name through the native path API (the in-memory asset names use posix).
+
 ### Map deletion
 
 `.map` files are deleted (default) only after a **confirmed** upload: after `debug-files upload` returned success,

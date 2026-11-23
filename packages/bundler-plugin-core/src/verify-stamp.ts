@@ -162,6 +162,8 @@ export function verifyStamp(
   before: ReadonlyMap<string, Buffer>,
   after: ReadonlyMap<string, Buffer>,
   parser: (code: string) => boolean = parseScript,
+  /** The path implementation the names follow: posix for bundler asset names, the native one for disk paths. */
+  api: Pick<typeof posix, 'dirname' | 'join'> = posix,
 ): StampIssue[] {
   const issues: StampIssue[] = [];
   const changed = (name: string): boolean => {
@@ -184,7 +186,7 @@ export function verifyStamp(
     ids.set(name, id);
     mapOf.set(
       name,
-      resolveMapName(name, (after.get(name) as Buffer).toString('utf8'), (n) => after.has(n)),
+      resolveMapName(name, (after.get(name) as Buffer).toString('utf8'), (n) => after.has(n), api),
     );
     for (const reason of reasons) {
       issues.push({ name, reason });

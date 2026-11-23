@@ -1,3 +1,4 @@
+import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   formatIssues,
@@ -429,5 +430,28 @@ describe('custom map names (sourcemapFileName / Rolldown)', () => {
       ]);
     expect(verifyStampedPairs(files(stampedMap()))).toEqual([]);
     expect(verifyStampedPairs(files(mapJson())).map((i) => i.name)).toEqual(['/o/maps/a.map']);
+  });
+});
+
+describe('verifyStamp with a native path API (Windows paths)', () => {
+  it('still resolves a custom-named map from the pointer, so a map without the bundle id is flagged', () => {
+    const code = 'x();\n//# sourceMappingURL=maps/a.map\n';
+    const [bundle, map] = ['C:\\out\\a.js', 'C:\\out\\maps\\a.map'];
+    const before = new Map([
+      [bundle, buf(code)],
+      [map, buf(mapJson())],
+    ]);
+    const bad = new Map([
+      [bundle, buf(code + STUB)],
+      [map, buf(mapJson())],
+    ]);
+    expect(verifyStamp(before, bad, undefined, path.win32).map((i) => i.name)).toEqual([map]);
+    // The default (posix) API cannot follow that pointer, which is why callers on native paths pass theirs.
+    expect(verifyStamp(before, bad)).toEqual([]);
+    const good = new Map([
+      [bundle, buf(code + STUB)],
+      [map, buf(stampedMap())],
+    ]);
+    expect(verifyStamp(before, good, undefined, path.win32)).toEqual([]);
   });
 });

@@ -258,7 +258,7 @@ export async function verifyAndRestore(
         now.set(map, mapNow);
       }
     }
-    issues.push(...verifyStamp(before, now, options.parse));
+    issues.push(...verifyStamp(before, now, options.parse, path));
   }
   for (const file of changed) {
     if (file.endsWith('.map') && !paired.has(file)) {
@@ -267,6 +267,7 @@ export async function verifyAndRestore(
           new Map([[file, await original(file)]]),
           new Map([[file, (await read(file)) as Buffer]]),
           options.parse,
+          path,
         ),
       );
     }
