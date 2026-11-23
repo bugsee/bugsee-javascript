@@ -16,11 +16,52 @@ pnpm add @bugsee/bugsee @bugsee/angular
 yarn add @bugsee/bugsee @bugsee/angular
 ```
 
-Peer dependencies: `@angular/core` >= 16 and `@angular/router` >= 16 (both optional).
+Peer dependencies: `@angular/core` >= 16 and `@angular/router` >= 16 (both optional). `@angular-devkit/schematics` and `@schematics/angular` (>= 16.1, optional) are only used by `ng add` and are already in every Angular workspace.
 
-## Usage
+## Quick start: `ng add`
 
-Launch Bugsee as early as possible, at the top of your entry module. In the browser `launch()` returns a Promise of the client. Await it only if you need the client right away.
+```sh
+ng add @bugsee/angular
+```
+
+It asks for your app token and then, in the workspace's application:
+
+- turns on hidden script source maps in the production configuration of `angular.json` (`"sourceMap": { "scripts": true, "styles": false, "hidden": true }`), unless it already produces maps;
+- launches the SDK in `main.ts`, before the bootstrap;
+- registers `BugseeErrorHandler` as your `ErrorHandler` (standalone `app.config.ts` or `AppModule`);
+- adds a `build:bugsee` script, and keeps the token for it in `.env.bugsee-build-plugin` (added to `.gitignore`).
+
+Where it cannot find your bootstrap it changes no source and prints the lines to add by hand. Running it again changes nothing. With several applications pass `--project <name>`.
+
+## Source maps
+
+Build for release with the script it added:
+
+```sh
+npm run build:bugsee      # ng build --configuration production && bugsee-angular-upload --configuration production
+```
+
+`bugsee-angular-upload` stamps debug-IDs into `dist/<project>/browser`, uploads the maps, registers the build and removes the local maps, so a crash from the shipped bundle shows your original source. Set `BUGSEE_APP_TOKEN` (or keep the env file) where you run it. A plain `ng build` does not upload.
+
+You can also run it by hand after any `ng build` (`bugsee-angular-upload --help` lists the options: `--project`, `--configuration`, `--dist`, `--dry-run`, `--keep-maps`, `--fail-on-error`, …), or call it from code:
+
+```ts
+import { uploadAngularSourcemaps } from "@bugsee/angular/sourcemaps";
+
+await uploadAngularSourcemaps({ project: "my-app", configuration: "production" });
+```
+
+It works with the esbuild `application` builder and the webpack `browser` builder. Notes:
+
+- `subresourceIntegrity: true` is supported: after stamping, the integrity hashes in `index.html`, in the import map and in the SSR server modules are re-written to match, so the page keeps loading.
+- A build with a service worker (`ngsw.json` in the output) is not stamped, since the service worker pins a hash of every file; nothing is uploaded for it.
+- Only the browser output is uploaded; errors from an SSR server are reported by the Node SDK.
+
+Details and the measurements behind them: [source maps](https://github.com/bugsee/bugsee-javascript/blob/main/docs/source-maps-usage.md).
+
+## Usage by hand
+
+`ng add` does this for you. To do it yourself, launch Bugsee as early as possible, at the top of your entry module. In the browser `launch()` returns a Promise of the client. Await it only if you need the client right away.
 
 ```ts
 // main.ts
