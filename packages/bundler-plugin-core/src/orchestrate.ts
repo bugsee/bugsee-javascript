@@ -639,8 +639,10 @@ export async function uploadSourcemaps(
       // walk are never uploaded but embed the source, so they are deleted with the uploaded ones.
       // Sorted here, so the CLI batches and the notice are stable whatever order a walk returns.
       const siblings = ownedBy(outDir, options.siblingOwnFiles ?? []);
+      const mineByName = ownedBy(outDir, options.ownFiles ?? []);
       const everything = [...(await (options.listUploadMaps ?? listOutputMaps)(outDir))]
-        .filter((map) => !siblings(map))
+        // (own wins: a name in both lists is this output's)
+        .filter((map) => mineByName(map) || !siblings(map))
         .sort();
       const { deletable, kept } = await (options.partitionMaps ?? partitionByKeyed)(
         everything.filter(isUploadableMap),

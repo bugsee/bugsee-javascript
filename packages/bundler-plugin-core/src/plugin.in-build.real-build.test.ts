@@ -1226,3 +1226,23 @@ describeReal('several Rollup outputs written concurrently into one directory', (
     expect(requests.length - before).toBeGreaterThanOrEqual(1);
   });
 });
+
+describeReal('Rollup generate() before write() into the same directory', () => {
+  it('the written output still uploads and deletes its own maps (a generated-only output is not a sibling)', async () => {
+    const app = makeApp('rollup-generate-then-write', { lazy: false });
+    const before = requests.length;
+    const errors: unknown[] = [];
+    const bundle = await rollup({
+      input: join(app.dir, 'index.js'),
+      plugins: [
+        bugseeRollupPlugin({ ...pluginOptions(), onError: (e: unknown) => errors.push(e) }),
+      ],
+    });
+    await bundle.generate({ dir: app.out, sourcemap: true }); // e.g. to measure size: never written
+    await bundle.write({ dir: app.out, sourcemap: true });
+    await bundle.close();
+    expect(errors.map(String)).toEqual([]);
+    expect(requests.length).toBeGreaterThan(before);
+    expect((readdirSync(app.out) as string[]).filter((f) => f.endsWith('.map'))).toEqual([]);
+  });
+});

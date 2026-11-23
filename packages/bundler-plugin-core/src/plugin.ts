@@ -615,9 +615,13 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
       const stamp = stampedOutputs.get(output);
       stampedOutputs.delete(output);
       const group = announced.get(outDir);
+      // A name THIS output emitted is never a sibling's: a leftover announcement from `bundle.generate()` (which
+      // never writes) has the same names and must not hide this output's own maps.
+      const mine = new Set(Object.keys(bundle ?? {}));
       const siblings = [...(group ?? [])]
         .filter(([other]) => other !== output)
-        .flatMap(([, names]) => names);
+        .flatMap(([, names]) => names)
+        .filter((name) => !mine.has(name));
       group?.delete(output);
       if (group?.size === 0) {
         announced.delete(outDir);

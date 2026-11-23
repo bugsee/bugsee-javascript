@@ -1850,6 +1850,26 @@ describe('round-17 hardening: failed restore after a rejected inject, sibling ou
     ).rejects.toThrow(/cli died[\s\S]*COULD NOT restore/);
   });
 
+  it("a name that is BOTH this output's own and listed as a sibling's is this output's (own wins)", async () => {
+    await writeFile(join(dir, 'a.js.map'), keyed);
+    const calls: string[][] = [];
+    await uploadSourcemaps({
+      ...base,
+      outDir: dir,
+      run: async (args) => {
+        calls.push(args);
+        return ok(args);
+      },
+      preStamped: true,
+      verifySri: async () => [],
+      ownFiles: ['a.js.map'],
+      siblingOwnFiles: ['a.js.map'],
+      onNotice: () => undefined,
+    });
+    expect(calls.find((c) => c[0] === 'debug-files')).toContain(join(dir, 'a.js.map'));
+    expect(await readdir(dir)).not.toContain('a.js.map'); // uploaded and deleted
+  });
+
   it('a map owned by a SIBLING output is neither uploaded by this one nor noticed as foreign', async () => {
     await writeFile(join(dir, 'a.js.map'), keyed);
     await writeFile(join(dir, 'b.js.map'), keyed); // the sibling output's

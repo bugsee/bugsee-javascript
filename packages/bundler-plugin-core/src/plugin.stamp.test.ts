@@ -990,6 +990,16 @@ describe('outputs announce their names at generateBundle, so the first write alr
       expect(siblingsOf(1)).toEqual([]);
     });
 
+    it(`${kind}: an output that only GENERATED (bundle.generate never writes) cannot hide this one's own maps`, async () => {
+      uploadSpy.mockClear();
+      const h = hooksOf2(kind);
+      await h.generateBundle.handler({ dir: '/out' }, bundleOf('a')); // generate(): same names, never written
+      const written = { dir: '/out' };
+      await h.generateBundle.handler(written, bundleOf('a'));
+      await h.writeBundle(written, bundleOf('a'));
+      expect(siblingsOf(0)).toEqual([]); // a name this output emitted is never a "sibling's"
+    });
+
     it(`${kind}: a new build forgets outputs that never wrote (buildStart)`, async () => {
       uploadSpy.mockClear();
       const h = hooksOf2(kind);
