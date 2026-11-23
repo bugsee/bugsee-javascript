@@ -281,13 +281,19 @@ refused and the build falls back to stamping after emit. Covered by real Rollup,
   bundles are stamped like `.js` (the CLI does).
 - After the bundler wrote an in-build stamp, the on-disk re-check uses the build's own bundle -> map names (from
   the store), so a moved map that neither its pointer nor its sibling name can reach is still checked.
-- **One deletion rule for every path:** a map is deleted only when it carries the debug-id this build stamped
-  and was uploaded (confirmed), wherever it is, at any depth; plus this build's own stylesheet / declaration
-  maps. Those never-uploaded maps are deleted only OUTSIDE `node_modules`, `src`, `test(s)`, `__tests__` and
-  dot-directories (foreign files an ordinary output directory can hold; the CLI's directory scan does reach
-  them, so the scan is not the reference), and an unkeyed map in such a directory is not reported either. The
-  post-emit path uses the same walk as the pre-stamped path (the whole output directory, fenced only at a
-  project root). The esbuild `files` path deletes exactly its own listed files.
+- **One deletion rule for every path, by IDENTITY not by directory name.** The plugin knows the names its build
+  emitted (`ownFiles`, relative to the output directory: the final bundle's keys at Vite/Rollup `writeBundle`,
+  the compilation's assets at webpack/Rspack `afterEmit`; the esbuild path deletes exactly its listed files).
+  A map is deleted only if THIS build emitted it: a stylesheet / declaration map iff it is in `ownFiles`, a keyed
+  script map iff it was uploaded (confirmed) AND is in `ownFiles`. Anything else is foreign, whatever directory
+  it is in or called (a `public/` copy, a stale file, `src/old.d.ts.map`): never deleted. A foreign KEYED map is
+  still uploaded (as the CLI's directory scan did) and left on disk with a notice. Names are compared
+  normalised (separators, a leading `./`), case-exact. Only when the build's names are unknown (a directory run
+  with no bundler output to ask) does the directory-name fence (`node_modules`, `src`, `test(s)`, `__tests__`,
+  dot-directories) apply, as the fallback; an unkeyed map in such a directory is never reported. The post-emit
+  path uses the same whole-directory walk as the pre-stamped path (fenced only at a project root).
+- An outside-the-output map is reported with how to fix it: emit the maps inside the output directory, or upload
+  them yourself with bugsee-cli.
 
 ### Uploading a pre-stamped directory
 

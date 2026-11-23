@@ -623,6 +623,7 @@ describe('stampAssets — result details', () => {
     expect(error).toBeInstanceOf(StampVerificationError);
     expect(error.message).toContain('outside the output directory');
     expect(error.unreachableMap).toBe(true);
+    expect(error.message).toContain('bugsee-cli');
     expect(store.updates).toEqual([]);
   });
 
@@ -656,5 +657,7 @@ describe('stampAssets — a store whose map is named outside the output', () => 
     };
     const error = (await stampAssets(store).catch((e: unknown) => e)) as StampVerificationError;
     expect(error.message).toContain('lies outside the output directory');
+    expect(error.message).toContain('inside the output directory');
+    expect(error.message).toContain('bugsee-cli');
   });
 });

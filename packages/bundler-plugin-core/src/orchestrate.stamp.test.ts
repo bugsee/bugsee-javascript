@@ -916,3 +916,100 @@ describe("the on-disk re-check uses the build's own bundle -> map names", () => 
     }
   });
 });
+
+describe('ownFiles: only what THIS build emitted is deleted', () => {
+  let dir: string;
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'bugsee-own-'));
+  });
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+  const keyed = JSON.stringify({ debugId: ID });
+  const ok = async (): Promise<SpawnResult> => ({ code: 0, stdout: '', stderr: '' });
+  const put = async (rel: string, content: string): Promise<void> => {
+    await mkdir(join(dir, rel, '..'), { recursive: true });
+    await writeFile(join(dir, rel), content);
+  };
+  const left = async (): Promise<string[]> =>
+    ((await readdir(dir, { recursive: true })) as string[])
+      .filter((f) => f.endsWith('.map'))
+      .sort();
+
+  const modes = [
+    ['pre-stamped', { preStamped: true, verifySri: async () => [] }],
+    ['post-emit', { findSri: async () => [] }],
+  ] as const;
+  for (const [mode, extra] of modes) {
+    it(`${mode}: own css/declaration maps under src/ are deleted, foreign ones (even outside fenced names) and foreign keyed maps stay, and the keyed leftover is said`, async () => {
+      await put('src/a.js.map', keyed); // own, keyed
+      await put('src/style.css.map', '{}'); // own, never uploaded
+      await put('src/a.d.ts.map', '{}'); // own, never uploaded
+      await put('vendor/bootstrap.css.map', '{}'); // foreign (copied from publicDir)
+      await put('x.js.map', keyed); // foreign but keyed: uploaded as the CLI did, NOT deleted
+      await put('node_modules/pkg/style.css.map', '{}'); // foreign
+      await put('src/old.d.ts.map', '{}'); // foreign, in a name that looks like ours
+      const notices: string[] = [];
+      await uploadSourcemaps({
+        ...base,
+        outDir: dir,
+        run: ok,
+        ownFiles: ['src/a.js.map', 'src\\style.css.map', './src/a.d.ts.map'],
+        onNotice: (m) => notices.push(m),
+        onError: () => undefined,
+        ...extra,
+      });
+      expect(await left()).toEqual([
+        'node_modules/pkg/style.css.map',
+        'src/old.d.ts.map',
+        'vendor/bootstrap.css.map',
+        'x.js.map',
+      ]);
+      expect(notices.join('\n')).toContain('x.js.map');
+      expect(notices.join('\n')).toContain('not produced by this build');
+    });
+  }
+
+  it('says it on console.warn when no notice sink is given', async () => {
+    await put('x.js.map', keyed);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      await uploadSourcemaps({
+        ...base,
+        outDir: dir,
+        run: ok,
+        ownFiles: [],
+        findSri: async () => [],
+      });
+      expect(String(warn.mock.calls[0]?.[0])).toContain('not produced by this build');
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('without ownFiles the name fence still applies (post-emit CLI directory mode)', async () => {
+    await put('assets/a.js.map', keyed);
+    await put('assets/a.css.map', '{}');
+    await put('src/old.css.map', '{}');
+    await uploadSourcemaps({ ...base, outDir: dir, run: ok, findSri: async () => [] });
+    expect(await left()).toEqual(['src/old.css.map']);
+  });
+
+  it('the esbuild/files path is unchanged: it deletes exactly its listed files', async () => {
+    await put('a.js.map', keyed);
+    await put('a.css.map', '{}');
+    await put('other.css.map', '{}');
+    await uploadSourcemaps({
+      ...base,
+      outDir: dir,
+      run: ok,
+      ownFiles: [],
+      files: {
+        scripts: [join(dir, 'a.js')],
+        maps: [join(dir, 'a.js.map')],
+        stylesheetMaps: [join(dir, 'a.css.map')],
+      },
+    });
+    expect(await left()).toEqual(['other.css.map']);
+  });
+});

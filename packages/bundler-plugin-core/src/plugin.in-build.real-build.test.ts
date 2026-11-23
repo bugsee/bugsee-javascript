@@ -847,3 +847,83 @@ describeReal('Rspack: a source map the stamp cannot reach', () => {
     ).toEqual([]);
   });
 });
+
+// Identity, not directory names: this build's own css/declaration maps are deleted wherever they are (even under
+// dist/src from preserveModules), and files it did not emit are never deleted, even under an innocent name.
+describeReal('ownership: only what this build emitted is deleted', () => {
+  const seed = (out: string, rels: string[]): void => {
+    for (const rel of rels) {
+      mkdirSync(join(out, rel, '..'), { recursive: true });
+      writeFileSync(join(out, rel), '{}');
+    }
+  };
+  const mapsLeft = (out: string): string[] =>
+    (readdirSync(out, { recursive: true }) as string[]).filter((f) => f.endsWith('.map')).sort();
+  const emitExtraMaps = (names: string[]) => ({
+    name: 'emit-extra-maps',
+    generateBundle(this: { emitFile(f: object): void }) {
+      for (const fileName of names) {
+        this.emitFile({ type: 'asset', fileName, source: '{}' });
+      }
+    },
+  });
+
+  it('Rollup preserveModules: dist/src/** css + declaration maps of THIS build are deleted; seeded foreign ones survive', async () => {
+    const app = makeApp('rollup-own', { lazy: false });
+    const foreign = ['node_modules/pkg/style.css.map', '.cache/x.d.ts.map', 'src/old.d.ts.map'];
+    seed(app.out, foreign);
+    const before = requests.length;
+    const bundle = await rollup({
+      input: join(app.dir, 'index.js'),
+      plugins: [
+        bugseeRollupPlugin(pluginOptions()),
+        emitExtraMaps(['src/style.css.map', 'src/a.d.ts.map']),
+      ],
+    });
+    await bundle.write({
+      dir: app.out,
+      sourcemap: true,
+      preserveModules: true,
+      entryFileNames: 'src/[name].js',
+    });
+    await bundle.close();
+    expect(requests.length).toBeGreaterThan(before);
+    expect(mapsLeft(app.out)).toEqual([...foreign].sort());
+  });
+
+  it('Vite 8: foreign public/vendor/bootstrap.css.map and a foreign KEYED public/x.js.map are not deleted', async () => {
+    const app = makeApp('vite-own', { lazy: false });
+    mkdirSync(join(app.dir, 'public', 'vendor'), { recursive: true });
+    writeFileSync(join(app.dir, 'public', 'vendor', 'bootstrap.css.map'), '{}');
+    writeFileSync(
+      join(app.dir, 'public', 'x.js.map'),
+      '{"version":3,"debugId":"b039c7fb-d958-5fe6-b76f-136179e9a728"}',
+    );
+    const notices: string[] = [];
+    const before = requests.length;
+    await viteBuild(viteConfig(app, [bugseeVite({ onNotice: (m: string) => notices.push(m) })]));
+    expect(requests.length).toBeGreaterThan(before);
+    expect(mapsLeft(app.out)).toEqual(['vendor/bootstrap.css.map', 'x.js.map']);
+    expect(notices.join('\n')).toContain('x.js.map');
+  });
+
+  it("Rspack: a pre-seeded foreign css map survives, this build's own js map is deleted", async () => {
+    const app = makeApp('rspack-own', { lazy: false });
+    seed(app.out, ['vendor/foreign.css.map', 'src/old.d.ts.map']);
+    const before = requests.length;
+    const compile = await new Promise<void>((resolve, reject) => {
+      const compiler = rspack({
+        context: app.dir,
+        mode: 'production',
+        entry: join(app.dir, 'index.js'),
+        devtool: 'source-map',
+        output: { path: app.out },
+        plugins: [bugseeRspackPlugin(pluginOptions())],
+      });
+      compiler.run((err) => compiler.close(() => (err ? reject(err) : resolve())));
+    });
+    void compile;
+    expect(requests.length).toBeGreaterThan(before);
+    expect(mapsLeft(app.out)).toEqual(['src/old.d.ts.map', 'vendor/foreign.css.map']);
+  });
+});

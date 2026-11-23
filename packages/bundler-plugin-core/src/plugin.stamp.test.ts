@@ -544,3 +544,45 @@ describe('a map the stamp can never reach is not retried after emit (that would 
     });
   }
 });
+
+describe("the plugin hands the build's emitted names to the upload (ownFiles)", () => {
+  it('vite/rollup: the final bundle at writeBundle', async () => {
+    for (const kind of ['vite', 'rollup'] as const) {
+      uploadSpy.mockClear();
+      const p = makePlugin({ appToken: 'tok' })[kind] as unknown as {
+        writeBundle: (o: object, b?: object) => Promise<void>;
+      };
+      await p.writeBundle({ dir: '/out' }, { 'a.js': {}, 'src/a.css.map': {} });
+      expect((uploadSpy.mock.calls[0]?.[2] as { ownFiles?: string[] }).ownFiles).toEqual([
+        'a.js',
+        'src/a.css.map',
+      ]);
+      uploadSpy.mockClear();
+      await p.writeBundle({ dir: '/out' });
+      expect((uploadSpy.mock.calls[0]?.[2] as { ownFiles?: string[] }).ownFiles).toBeUndefined();
+    }
+  });
+
+  for (const hook of ['rspack', 'webpack'] as const) {
+    it(`${hook}: the compilation assets at afterEmit`, async () => {
+      const after: Array<(c?: unknown) => Promise<void>> = [];
+      const compiler = {
+        options: { output: { path: '/o' }, mode: 'production', devtool: 'source-map' },
+        hooks: {
+          afterEmit: {
+            tapPromise: (_n: string, fn: (c?: unknown) => Promise<void>) => after.push(fn),
+          },
+        },
+      };
+      (makePlugin({ appToken: 'tok' }, hook)[hook] as (c: unknown) => void)(compiler);
+      await after[0]?.({ getAssets: () => [{ name: 'main.js' }, { name: 'maps/main.js.map' }] });
+      expect((uploadSpy.mock.calls[0]?.[2] as { ownFiles?: string[] }).ownFiles).toEqual([
+        'main.js',
+        'maps/main.js.map',
+      ]);
+      uploadSpy.mockClear();
+      await after[0]?.();
+      expect((uploadSpy.mock.calls[0]?.[2] as { ownFiles?: string[] }).ownFiles).toBeUndefined();
+    });
+  }
+});

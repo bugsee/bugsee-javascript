@@ -476,6 +476,8 @@ describe('pointers with whitespace, and pointers that leave the output', () => {
     expect(issues).toHaveLength(1);
     expect(issues[0]).toMatchObject({ name: 'js/a.js' });
     expect(issues[0]?.reason).toContain('outside the output directory');
+    expect(issues[0]?.reason).toContain('Emit the maps inside the output directory');
+    expect(issues[0]?.reason).toContain('bugsee-cli');
   });
 
   it('does not flag a dangling pointer that stays inside the output, a remote or data: one, or a bundle with no pointer', () => {

@@ -12,6 +12,7 @@ import {
   listOutputMaps,
   MAX_WALK_DEPTH,
   NEVER_WALK,
+  ownedBy,
   partitionByKeyed,
   type SnapshotTarget,
   type StampSnapshot,
@@ -90,6 +91,12 @@ export interface UploadSourcemapsOptions {
    * missed. Without it the re-check has nothing to name and does not run.
    */
   stampedBundles?: readonly string[];
+  /**
+   * The names this build emitted (relative to `outDir`). A stylesheet / declaration map is deleted only if it is
+   * among them, and a keyed script map only if it is among them too; anything else is foreign, left alone, and
+   * said. Without it (a directory run where the output is not known) the directory-name fence applies.
+   */
+  ownFiles?: readonly string[];
   /** The in-build stamp's bundle -> map names (relative to `outDir`), for maps the pointer and sibling cannot name. */
   stampedMaps?: Readonly<Record<string, string>>;
   /** Where a non-failing observation goes (default: nowhere — callers that want it pass the notice sink). */
@@ -402,9 +409,10 @@ export async function uploadSourcemaps(
       // Only THIS build's own stylesheet / declaration maps are deleted: never one under node_modules, src,
       // test or a dot-directory (foreign files this build did not produce), and an unkeyed map there is
       // not worth a notice either.
-      const ownMap = (map: string): boolean => !isFencedPath(relative(outDir, map));
-      unuploadableMaps = everything.filter((map) => !isUploadableMap(map) && ownMap(map));
-      const noticed = kept.filter(ownMap);
+      const notFenced = (map: string): boolean => !isFencedPath(relative(outDir, map));
+      // (ownership is applied once, when deciding what to delete)
+      unuploadableMaps = everything.filter((map) => !isUploadableMap(map));
+      const noticed = kept.filter(notFenced);
       if (noticed.length > 0) {
         (options.onNotice ?? ((m: string) => console.warn(`[bugsee] ${m}`)))(
           `${noticed.length} source map(s) in ${outDir} have no readable debug-ID, so they were not uploaded (left on disk untouched): ${noticed.join(', ')}`,
@@ -458,6 +466,11 @@ export async function uploadSourcemaps(
       // its candidates here.
       let deletable: string[];
       let kept: string[] = [];
+      const own = ownedBy(outDir, options.ownFiles);
+      // A keyed script map is deleted only if this build emitted it (when the build's names are known); a
+      // stylesheet / declaration map only if it is this build's (by name, or the directory fence as fallback).
+      const mayDelete = (map: string): boolean =>
+        isUploadableMap(map) ? options.ownFiles === undefined || own(map) : own(map);
       if (explicitUpload) {
         deletable = uploadedMaps.length > 0 ? [...uploadedMaps, ...unuploadableMaps] : [];
       } else {
@@ -467,12 +480,20 @@ export async function uploadSourcemaps(
             : [...files.maps, ...(files.stylesheetMaps ?? [])],
         ));
         if (files === undefined) {
-          // A directory walk also sees foreign files: a stylesheet/declaration map in a fenced directory is
-          // not this build's to delete, and an unkeyed map there is not this build's to report.
-          const own = (map: string): boolean => !isFencedPath(relative(outDir, map));
-          deletable = deletable.filter((map) => isUploadableMap(map) || own(map));
-          kept = kept.filter(own);
+          // A directory walk also sees foreign files; an unkeyed map in a fenced directory is not reported.
+          kept = kept.filter((map) => !isFencedPath(relative(outDir, map)));
         }
+      }
+      // Directory runs only: the explicit `files` path deletes exactly the files it was given.
+      let foreign: string[] = [];
+      if (files === undefined) {
+        foreign = deletable.filter((map) => isUploadableMap(map) && !mayDelete(map));
+        deletable = deletable.filter(mayDelete);
+      }
+      if (foreign.length > 0) {
+        (options.onNotice ?? ((m: string) => console.warn(`[bugsee] ${m}`)))(
+          `${foreign.length} keyed source map(s) in ${outDir} were not produced by this build, so they were left on disk (uploaded, not deleted): ${foreign.join(', ')}`,
+        );
       }
       deletedMaps = await (options.deleteMapFiles ?? defaultDeleteMapFiles)(outDir, deletable);
       if (kept.length > 0) {

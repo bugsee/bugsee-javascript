@@ -74,7 +74,9 @@ interface WebpackCompilerLike {
   /** The base directory of the build (webpack's `context`, default the cwd). */
   context?: string;
   hooks: {
-    afterEmit: { tapPromise: (name: string, fn: () => Promise<void>) => void };
+    afterEmit: {
+      tapPromise: (name: string, fn: (compilation?: AssetNamesLike) => Promise<void>) => void;
+    };
     /** webpack 5 only. */
     thisCompilation?: {
       tap: (name: string, fn: (compilation: WebpackCompilationLike) => void) => void;
@@ -280,6 +282,17 @@ function esbuildOutputDir(options: EsbuildBuildLike['initialOptions']): string |
   }
 }
 
+/** The compilation handed to `afterEmit`: enough to list every asset this build emitted. */
+interface AssetNamesLike {
+  getAssets?(): ReadonlyArray<{ name: string }>;
+}
+
+/** The names this build emitted, as the `ownFiles` the upload deletes by (absent when not known). */
+const ownFilesOf = (compilation: AssetNamesLike | undefined): { ownFiles?: string[] } => {
+  const assets = compilation?.getAssets?.();
+  return assets === undefined ? {} : { ownFiles: assets.map((asset) => asset.name) };
+};
+
 /** What an in-build stamp reports: whether it took, and which bundles it wrote (relative to the output). */
 interface InBuildStamp {
   preStamped: boolean;
@@ -480,6 +493,8 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
   const uploadForOutput = async (
     output: OutputLike,
     bundler: BundlerBuildContext,
+    /** The final bundle at writeBundle: every name this build emitted. */
+    bundle?: object,
   ): Promise<void> => {
     const outDir = resolveOutputDir(output);
     if (outDir !== undefined) {
@@ -490,6 +505,7 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
       }
       await runPluginUpload(forOutput(outDir), outDir, {
         bundler,
+        ...(bundle !== undefined ? { ownFiles: Object.keys(bundle) } : {}),
         ...(stamp?.preStamped === true
           ? {
               preStamped: true,
@@ -558,7 +574,8 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
         viteBuild = { isProduction: config.isProduction, configuration: config.mode };
       },
       generateBundle: generateBundleHook,
-      writeBundle: (output: OutputLike) => uploadForOutput(output, viteBuild),
+      writeBundle: (output: OutputLike, bundle?: object) =>
+        uploadForOutput(output, viteBuild, bundle),
     },
     rollup: {
       // Rollup has no `define`: bake the constants into each rendered chunk (with a source map), from the same
@@ -597,7 +614,7 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
         unbakedOutDirs.clear();
       },
       generateBundle: generateBundleHook,
-      writeBundle: (output: OutputLike) => uploadForOutput(output, {}),
+      writeBundle: (output: OutputLike, bundle?: object) => uploadForOutput(output, {}, bundle),
     },
     esbuild: {
       // esbuild's `define` is a plain string map; a key the user already set is kept.
@@ -730,7 +747,7 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
           'Rspack `devtool` is off, so no source maps are emitted and there is nothing to upload. Set `devtool: "source-map"` for builds you want symbolicated (ignore this if you emit maps another way).',
         );
       }
-      compiler.hooks.afterEmit.tapPromise(name, async () => {
+      compiler.hooks.afterEmit.tapPromise(name, async (compilation?: AssetNamesLike) => {
         const dir = compiler.options.output?.path;
         const bundler = webpackBuild(compiler.options.mode);
         // Only `development` is skipped: `mode: 'none'` is a legitimate release setting (own minification).
@@ -741,7 +758,11 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
         ) {
           const stamp = preStamped();
           if (stamp.abandoned !== true) {
-            await runPluginUpload(forOutput(dir), dir, { bundler, ...stamp });
+            await runPluginUpload(forOutput(dir), dir, {
+              bundler,
+              ...ownFilesOf(compilation),
+              ...stamp,
+            });
           }
         }
       });
@@ -758,13 +779,14 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
       // THE SRI FIX on webpack 5: stamp inside the compilation (see tapProcessAssetsStamp).
       const preStamped = tapProcessAssetsStamp(compiler);
 
-      compiler.hooks.afterEmit.tapPromise(name, async () => {
+      compiler.hooks.afterEmit.tapPromise(name, async (compilation?: AssetNamesLike) => {
         const dir = compiler.options.output?.path;
         if (typeof dir === 'string' && dir !== '') {
           const stamp = preStamped();
           if (stamp.abandoned !== true) {
             await runPluginUpload(forOutput(dir), dir, {
               bundler: webpackBuild(compiler.options.mode),
+              ...ownFilesOf(compilation),
               ...stamp,
             });
           }

@@ -206,7 +206,7 @@ export function verifyStamp(
       // never reaches its map. Refused, so the caller falls back (post-emit) or restores.
       issues.push({
         name,
-        reason: `its source map (${target}) lies outside the output directory, so it cannot be stamped with the bundle`,
+        reason: `its source map (${target}) lies outside the output directory, so it cannot be stamped with the bundle. Emit the maps inside the output directory, or upload them yourself with bugsee-cli (sourcemaps inject, then debug-files upload).`,
         outside: true,
       });
     }

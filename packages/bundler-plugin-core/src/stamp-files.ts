@@ -23,7 +23,7 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import path, { dirname, join, resolve, sep } from 'node:path';
+import path, { dirname, join, posix, relative, resolve, sep } from 'node:path';
 import {
   localPointerTarget,
   resolveMapName,
@@ -70,6 +70,24 @@ export function isFencedPath(relative: string): boolean {
     .split(/[\\/]/)
     .slice(0, -1)
     .some((segment) => NEVER_WALK.has(segment) || segment.startsWith('.'));
+}
+
+/**
+ * Whether a file under `outDir` is one THIS build emitted. By IDENTITY: the names the bundler reports for its
+ * own output (relative to the output directory; separators and a leading `./` normalised, case exact), not
+ * by what a directory is called. A foreign file can sit anywhere, under any name. With no names (a directory
+ * run where the build's output is not known) it falls back to the directory-name fence.
+ */
+export function ownedBy(
+  outDir: string,
+  ownFiles: readonly string[] | undefined,
+): (file: string) => boolean {
+  if (ownFiles === undefined) {
+    return (file) => !isFencedPath(relative(outDir, file));
+  }
+  const normal = (name: string): string => posix.normalize(name.replace(/\\/g, '/'));
+  const owned = new Set(ownFiles.map(normal));
+  return (file) => owned.has(normal(relative(outDir, file)));
 }
 
 /** What inject can change: the scripts it stamps and the maps it pairs with them. */

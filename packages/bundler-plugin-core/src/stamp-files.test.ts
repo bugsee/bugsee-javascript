@@ -18,6 +18,7 @@ import {
   isProjectRootOrAbove,
   isUploadableMap,
   listOutputMaps,
+  ownedBy,
   partitionByKeyed,
   restoreAtomically,
   snapshotStampFiles,
@@ -550,6 +551,56 @@ describe('verifyAndRestore — a dangling pointer is not an outside map', () => 
     await writeFile(join(dir, 'out', 'a.js'), original);
     const snap = await snapshotStampFiles({ dir: join(dir, 'out') });
     await writeFile(join(dir, 'out', 'a.js'), `${original}${STAMP}`);
+    expect(await verifyAndRestore(snap)).toEqual({ issues: [], restored: [], failed: [] });
+    await snap.dispose();
+  });
+});
+
+describe('ownedBy — is this file one THIS build emitted?', () => {
+  it('matches by identity: normalised separators, ./ prefixes, exact case', () => {
+    const own = ownedBy('/o/dist', ['src/style.css.map', './assets\\a.d.ts.map', 'Case.js.map']);
+    expect(own('/o/dist/src/style.css.map')).toBe(true);
+    expect(own('/o/dist/assets/a.d.ts.map')).toBe(true);
+    expect(own('/o/dist/case.js.map')).toBe(false); // case-sensitive
+    expect(own('/o/dist/Case.js.map')).toBe(true);
+    expect(own('/o/dist/src/old.d.ts.map')).toBe(false); // there, but not emitted by this build
+    expect(own('/o/dist/node_modules/p/style.css.map')).toBe(false);
+  });
+  it('an empty set owns nothing', () => {
+    expect(ownedBy('/o', [])('/o/a.css.map')).toBe(false);
+  });
+  it('without a set it falls back to the directory-name fence', () => {
+    const own = ownedBy('/o/dist', undefined);
+    expect(own('/o/dist/src/a.css.map')).toBe(false);
+    expect(own('/o/dist/.cache/a.css.map')).toBe(false);
+    expect(own('/o/dist/assets/a.css.map')).toBe(true);
+  });
+});
+
+describe('an uppercase A.JS / A.JS.map pair goes through snapshot, verify and restore', () => {
+  it('is snapshotted, and a bad stamp is restored with its map', async () => {
+    const original = 'a();\n//# sourceMappingURL=A.JS.map\n';
+    await writeFile(join(dir, 'A.JS'), original);
+    await writeFile(join(dir, 'A.JS.map'), plainMap);
+    const snap = await snapshotStampFiles({ dir });
+    expect([...snap.entries.keys()].map((k) => k.slice(dir.length + 1)).sort()).toEqual([
+      'A.JS',
+      'A.JS.map',
+    ]);
+    await writeFile(join(dir, 'A.JS'), `${original}{{${STAMP}`);
+    await writeFile(join(dir, 'A.JS.map'), stampedMap);
+    const { restored } = await verifyAndRestore(snap);
+    expect(restored).toEqual([join(dir, 'A.JS'), join(dir, 'A.JS.map')]);
+    expect(await readFile(join(dir, 'A.JS'), 'utf8')).toBe(original);
+    await snap.dispose();
+  });
+  it('a faithful stamp of the pair verifies', async () => {
+    const original = 'a();\n//# sourceMappingURL=A.JS.map\n';
+    await writeFile(join(dir, 'A.JS'), original);
+    await writeFile(join(dir, 'A.JS.map'), plainMap);
+    const snap = await snapshotStampFiles({ dir });
+    await writeFile(join(dir, 'A.JS'), `${original}${STAMP}`);
+    await writeFile(join(dir, 'A.JS.map'), stampedMap);
     expect(await verifyAndRestore(snap)).toEqual({ issues: [], restored: [], failed: [] });
     await snap.dispose();
   });

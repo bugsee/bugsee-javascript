@@ -108,7 +108,7 @@ export async function stampAssets(
           name: map,
           reason: staysInside(map)
             ? `the map of ${bundle} cannot be staged for stamping (not a .map file)`
-            : `the map of ${bundle} lies outside the output directory, so it cannot be stamped with the bundle`,
+            : `the map of ${bundle} lies outside the output directory, so it cannot be stamped with the bundle. Emit the maps inside the output directory, or upload them yourself with bugsee-cli (sourcemaps inject, then debug-files upload).`,
           ...(staysInside(map) ? {} : { outside: true as const }),
         },
       ]);
