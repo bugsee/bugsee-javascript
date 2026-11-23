@@ -61,6 +61,7 @@ export {
 export {
   findIntegrityMismatches,
   findSriProtectedScripts,
+  findStaleDigests,
   findStaleServiceWorkerEntries,
   listResealFiles,
   resealIntegrity,

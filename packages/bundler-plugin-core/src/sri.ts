@@ -374,6 +374,46 @@ export async function resealIntegrity(
   return { files: [...rewritten] };
 }
 
+/**
+ * Files under `dirs` that STILL hold an old digest of a script that has changed since `before`: a copy the swap
+ * did not fix (the check {@link resealIntegrity} is verified by, over every directory it was given, not just the one
+ * the pages are read from). Empty means every copy it could see was brought up to date.
+ */
+export async function findStaleDigests(
+  before: ScriptDigests,
+  dirs: readonly string[],
+): Promise<{ file: string; script: string }[]> {
+  const tokens: { token: string; script: string }[] = [];
+  for (const [script, old] of before) {
+    let bytes: Buffer;
+    try {
+      bytes = await readFile(script);
+    } catch {
+      continue;
+    }
+    const now = digestsOf(bytes);
+    for (const alg of SRI_ALGORITHMS) {
+      if (now[alg] !== old[alg]) {
+        tokens.push({ token: `${alg}-${old[alg]}`, script });
+      }
+    }
+  }
+  const stale: { file: string; script: string }[] = [];
+  if (tokens.length === 0) {
+    return stale;
+  }
+  for (const file of await listResealFiles(dirs)) {
+    const text = await readFile(file, 'utf8');
+    for (const { token, script } of tokens) {
+      if (text.includes(token)) {
+        stale.push({ file, script });
+        break;
+      }
+    }
+  }
+  return stale;
+}
+
 const escapeRegExp = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 interface ManifestEntry {

@@ -8,6 +8,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
+  findStaleDigests,
   findStaleServiceWorkerEntries,
   listResealFiles,
   resealIntegrity,
@@ -35,6 +36,46 @@ const write = async (rel: string, body: string) => {
   await writeFile(full, body, 'utf8');
   return full;
 };
+
+describe('findStaleDigests', () => {
+  it('reports every file under the directories that still holds the old digest of a changed script', async () => {
+    await write('browser/main.js', 'a();');
+    await write('browser/keep.js', 'k();');
+    const page = `<script integrity="sha384-${sha('sha384', 'a();')}"></script>`;
+    const html = await write('browser/index.html', page);
+    const mjs = await write(
+      'server/assets/index.html.mjs',
+      `export default ${JSON.stringify(page)};`,
+    );
+    await write('server/notes.txt', page);
+    const before = await snapshotScriptDigests([join(root, 'browser')]);
+    await write('browser/main.js', 'a();\n//# debugId=x');
+    const stale = await findStaleDigests(before, [root]);
+    expect(stale.map((s) => s.file).sort()).toEqual([html, mjs].sort());
+    expect(stale[0]?.script).toBe(join(root, 'browser/main.js'));
+    await resealIntegrity(before, [root]);
+    expect(await findStaleDigests(before, [root])).toEqual([]);
+  });
+
+  it('says nothing when no script changed, or a changed script is gone', async () => {
+    await write('browser/main.js', 'a();');
+    await write('browser/index.html', `sha384-${sha('sha384', 'a();')}`);
+    const before = await snapshotScriptDigests([join(root, 'browser')]);
+    expect(await findStaleDigests(before, [root])).toEqual([]);
+    await rm(join(root, 'browser/main.js'));
+    expect(await findStaleDigests(before, [root])).toEqual([]);
+  });
+
+  it('checks every algorithm', async () => {
+    await write('a.js', 'a();');
+    const before = await snapshotScriptDigests([root]);
+    await write('a.js', 'b();');
+    for (const alg of ['sha256', 'sha512']) {
+      const page = await write(`p-${alg}.html`, `${alg}-${sha(alg, 'a();')}`);
+      expect((await findStaleDigests(before, [root])).map((s) => s.file)).toContain(page);
+    }
+  });
+});
 
 describe('service worker manifests', () => {
   it('re-computes the hash of a file that was stamped or re-sealed, leaving the formatting alone', async () => {

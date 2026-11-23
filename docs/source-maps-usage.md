@@ -213,7 +213,7 @@ esbuild `application` builder (the default since 17, output in `dist/<project>/b
 - **A build with a service worker works.** `ngsw.json` (one per locale for a localized build) lists the SHA-1 of every
   file it caches and the service worker rejects a changed one, so after stamping the step re-computes those entries
   and checks them; if one cannot be reconciled it restores the build and uploads nothing.
-- **If the output moved** (`ng build --output-path other`), pass `--output-path other` (or `--dist <browser dir>`; on an SSR build `--dist` also re-seals the sibling `server/` directory when it sits inside the project). A
+- **If the output moved** (`ng build --output-path other`), pass `--output-path other` (or `--dist <browser dir>`). When the output is named by its browser directory (also `browser/<locale>`) and a sibling `server/` exists inside the project, the whole output root is re-sealed, because the server embeds the page; if the output root is the project root itself (or outside it) the tool says it cannot, and you should build into its own directory and use `--output-path`. A
   problem locating the output is printed and the command exits 0, so it cannot fail a pipeline whose build
   succeeded; `--fail-on-error` makes it exit non-zero.
 - **Only `browser/` is uploaded.** An SSR server bundle's errors are reported by the Node SDK.

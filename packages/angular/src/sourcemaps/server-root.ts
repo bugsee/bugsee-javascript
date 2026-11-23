@@ -1,0 +1,57 @@
+// An SSR build's server modules embed the page, SRI hashes included, so re-sealing the browser directory alone leaves
+// the server serving stale hashes (measured: every script blocked). When the output is named by its browser directory
+// (`--dist`, or `--output-path` pointing at it) the output ROOT has to be found from it.
+import { lstatSync } from 'node:fs';
+import * as path from 'node:path';
+
+type PathApi = Pick<typeof path, 'relative' | 'isAbsolute' | 'sep' | 'join' | 'dirname'>;
+
+/** Whether `dir` is strictly below `root` (not equal to it, not above it, not on another drive). */
+export function isStrictlyInside(dir: string, root: string, api: PathApi = path): boolean {
+  const rel = api.relative(root, dir);
+  return rel !== '' && rel !== '..' && !rel.startsWith(`..${api.sep}`) && !api.isAbsolute(rel);
+}
+
+const isRealDirectory = (p: string): boolean => {
+  try {
+    const info = lstatSync(p);
+    return info.isDirectory(); // lstat does not follow a symlink, so a symlinked server/ is not a directory here
+  } catch {
+    return false;
+  }
+};
+
+/** How far above the output directory the root is looked for: `browser/` -> root, `browser/<locale>/` -> two. */
+const MAX_LEVELS_UP = 2;
+
+export type ServerRoot = { root: string } | { notice: string } | undefined;
+
+/**
+ * The output root of the SSR build `outDir` belongs to: the nearest ancestor (at most {@link MAX_LEVELS_UP} up) that
+ * has both a `browser/` containing `outDir` and a real (not symlinked) `server/`. Requiring the `browser/` sibling
+ * keeps an unrelated `server/` from becoming the scope. A root that is the project itself, or outside it, is NOT
+ * returned (re-sealing a project root, or someone else's directory, is not this tool's call): a notice says so.
+ */
+export function findServerRoot(outDir: string, cwd: string, api: PathApi = path): ServerRoot {
+  let root = api.dirname(outDir);
+  for (let level = 0; level < MAX_LEVELS_UP; level++, root = api.dirname(root)) {
+    const browser = api.join(root, 'browser');
+    const within = outDir === browser || isStrictlyInside(outDir, browser, api);
+    if (!within || !isRealDirectory(api.join(root, 'server'))) {
+      continue;
+    }
+    if (isStrictlyInside(root, cwd, api)) {
+      return { root };
+    }
+    return {
+      notice:
+        `found ${api.join(root, 'server')} next to the browser output, which embeds the page's integrity hashes, but ` +
+        (root === cwd
+          ? 'the output root is the project root'
+          : 'the output root is outside the project') +
+        `, so it was not re-sealed and a server-rendered page may keep stale hashes. Build into its own directory and ` +
+        `pass --output-path <that directory>.`,
+    };
+  }
+  return undefined;
+}

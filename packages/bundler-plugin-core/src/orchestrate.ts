@@ -9,6 +9,7 @@ import { type RunBugseeCliOptions, runBugseeCli, type SpawnResult } from './run-
 import {
   findIntegrityMismatches,
   findSriProtectedScripts,
+  findStaleDigests,
   findStaleServiceWorkerEntries,
   listResealFiles,
   resealIntegrity,
@@ -138,6 +139,8 @@ export interface UploadSourcemapsOptions {
   snapshotDigests?: typeof snapshotScriptDigests;
   /** Injectable check that service worker manifests match their files after the re-seal (default {@link findStaleServiceWorkerEntries}). */
   verifyServiceWorker?: typeof findStaleServiceWorkerEntries;
+  /** Injectable check that no old digest survives anywhere the re-seal covers (default {@link findStaleDigests}). */
+  verifyDigests?: typeof findStaleDigests;
   /**
    * FAIL the build when `bugsee-cli` fails. Default `false`.
    *
@@ -593,6 +596,20 @@ export async function uploadSourcemaps(
                   (stale.length > 1 ? ` (and ${stale.length - 1} more)` : '') +
                   ` after the hashes were re-written, so the service worker would treat the app as corrupt and stop serving it`,
               );
+            } else {
+              // Every directory the re-seal covers, not only the one the pages are scanned in: an SSR build's server
+              // modules hold a copy of the page that findIntegrityMismatches (HTML under outDir) cannot see.
+              const left = await (options.verifyDigests ?? findStaleDigests)(
+                digests,
+                options.resealDirs ?? [outDir],
+              );
+              if (left.length > 0) {
+                sealFailure = new Error(
+                  `${left[0]?.file} still holds the old integrity hash of ${left[0]?.script}` +
+                    (left.length > 1 ? ` (and ${left.length - 1} more file(s))` : '') +
+                    ` after the hashes were re-written, so a page served from it would be blocked by the browser`,
+                );
+              }
             }
           }
         } catch (error) {

@@ -307,8 +307,10 @@ export function ngAdd(options: Schema = {}): Rule {
     const located = await locate(tree, options.project);
     const trimmed = options.appToken?.trim();
     const token = trimmed === undefined || trimmed === '' ? undefined : trimmed;
-    if (token !== undefined && /[\r\n]/.test(token)) {
-      throw new SchematicsException('The app token must not contain a line break.');
+    if (token !== undefined && /[\s"'`#\\]/.test(token)) {
+      throw new SchematicsException(
+        'The app token must not contain whitespace, a line break, quotes, backticks, backslashes or #.',
+      );
     }
     return chain([
       enableSourceMaps(located.name),

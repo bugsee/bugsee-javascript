@@ -10,6 +10,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { uploadSourcemaps } from './orchestrate';
 import { resolveBugseeCli, runBugseeCli } from './run-cli';
+import { resealIntegrity } from './sri';
 
 const cli = resolveBugseeCli();
 const probe = cli.endsWith('.js')
@@ -189,6 +190,36 @@ describeReal('uploadSourcemaps re-seal rollback', () => {
     expect(String(errors[0])).toContain('ngsw.json');
     expect(String(errors[0])).toContain('/main.js');
     expect(String(errors[0])).toMatch(/restored/);
+  });
+
+  it('restores everything when an old digest is still present in the server modules after the re-seal', async () => {
+    const { out, server } = build();
+    const before = snapshot(out, server);
+    const { opts, calls, errors } = options(out, server, {
+      verifyDigests: async () => [
+        { file: join(server, 'index.html.mjs'), script: join(out, 'main.js') },
+      ],
+    });
+    const result = await uploadSourcemaps(opts);
+    expect(snapshot(out, server)).toEqual(before);
+    expect(calls).not.toContain('upload');
+    expect(result).toMatchObject({ injected: false, uploaded: false });
+    expect(String(errors[0])).toContain('index.html.mjs');
+    expect(String(errors[0])).toMatch(/restored/);
+  });
+
+  it('rolls back when the server copy of the page was not re-sealed (the browser pages alone look fine)', async () => {
+    const { out, server } = build();
+    const before = snapshot(out, server);
+    const { opts, calls, errors } = options(out, server, {
+      // Re-seals the browser directory only, so index.html verifies but the server module keeps the old digest.
+      reseal: (digests: Parameters<typeof resealIntegrity>[0]) => resealIntegrity(digests, [out]),
+    });
+    const result = await uploadSourcemaps(opts);
+    expect(snapshot(out, server)).toEqual(before);
+    expect(calls).not.toContain('upload');
+    expect(result).toMatchObject({ injected: false, uploaded: false });
+    expect(String(errors[0])).toContain('index.html.mjs');
   });
 
   it('seals a build with a real service worker manifest (control)', async () => {

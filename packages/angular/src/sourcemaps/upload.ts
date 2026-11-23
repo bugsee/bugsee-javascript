@@ -10,7 +10,7 @@
 // script is re-written wherever it appears (`resealSri`, bundler-plugin-core), and a build that cannot be re-sealed
 // is restored. Measured on real @angular/build 22.3 and build-angular 19.2 builds; see docs/design/source-maps.md §7.1.
 import { existsSync, readdirSync } from 'node:fs';
-import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
+import { join, relative, resolve } from 'node:path';
 import {
   type BugseePluginOptions,
   type EnvRecord,
@@ -23,6 +23,7 @@ import {
   runPluginUpload,
 } from '@bugsee/bundler-plugin-core';
 import { type AngularOutput, resolveAngularOutput } from './output';
+import { findServerRoot } from './server-root';
 
 export interface AngularUploadOptions extends BugseePluginOptions {
   /** Workspace directory (angular.json is looked for here and above). Default: the working directory. */
@@ -153,42 +154,30 @@ export async function uploadAngularSourcemaps(
   };
   let located: AngularOutput | undefined;
   let outDir: string;
+  // The output ROOT whose pages must be re-sealed: an SSR build's server modules embed the page.
+  let resealRoot: string | undefined;
+  const probeServerRoot = (): void => {
+    const found = findServerRoot(outDir, cwd);
+    if (found !== undefined && 'root' in found) {
+      resealRoot = found.root;
+    } else if (found !== undefined) {
+      say(found.notice);
+    }
+  };
   if (options.dist !== undefined) {
     outDir = resolve(cwd, options.dist);
-    // An SSR build's server modules embed the page, hashes included, so its output ROOT must be re-sealed too. Only
-    // when the sibling server/ exists and the root is inside the project (never the project root itself, or above).
-    const root = dirname(outDir);
-    const inside = relative(cwd, root);
-    if (
-      existsSync(join(root, 'server')) &&
-      inside !== '' &&
-      !inside.startsWith('..') &&
-      !isAbsolute(inside)
-    ) {
-      located = {
-        project: options.project ?? '',
-        builder: undefined,
-        layout: 'application',
-        configuration: options.configuration,
-        baseDir: root,
-        browserDir: outDir,
-        serverDir: join(root, 'server'),
-      };
-    }
+    probeServerRoot();
   } else if (options.outputPath !== undefined) {
-    // `ng build --output-path <base>`: the base of an application build (browser/ and server/ below it), or the
-    // browser directory itself for a flat one.
+    // `ng build --output-path <base>`: the base of an application build (browser/ and server/ below it), or a
+    // browser directory itself.
     const base = resolve(cwd, options.outputPath);
-    outDir = existsSync(join(base, 'browser')) ? join(base, 'browser') : base;
-    located = {
-      project: options.project ?? '',
-      builder: undefined,
-      layout: outDir === base ? 'flat' : 'application',
-      configuration: options.configuration,
-      baseDir: base,
-      browserDir: outDir,
-      ...(outDir === base ? {} : { serverDir: join(base, 'server') }),
-    };
+    if (existsSync(join(base, 'browser'))) {
+      outDir = join(base, 'browser');
+      resealRoot = existsSync(join(base, 'server')) ? base : undefined;
+    } else {
+      outDir = base;
+      probeServerRoot();
+    }
   } else {
     try {
       located = resolveAngularOutput({
@@ -204,6 +193,10 @@ export async function uploadAngularSourcemaps(
       );
     }
     outDir = located.browserDir;
+    resealRoot =
+      located.serverDir !== undefined && existsSync(located.serverDir)
+        ? located.baseDir
+        : undefined;
   }
   const configuration = located?.configuration ?? options.configuration;
 
@@ -230,16 +223,12 @@ export async function uploadAngularSourcemaps(
     );
   }
 
-  const server = located?.serverDir;
   const run = deps.runPluginUpload ?? runPluginUpload;
   const result = await run(resolved, outDir, {
     // Only acts when the build pins script hashes; then inject runs with --allow-sri and the page is re-sealed.
     resealSri: true,
     // The server modules of an SSR build embed the page, hashes included.
-    resealDirs:
-      located !== undefined && server !== undefined && existsSync(server)
-        ? [located.baseDir]
-        : [outDir],
+    resealDirs: [resealRoot ?? outDir],
     bundler: { isProduction, ...(configuration !== undefined ? { configuration } : {}) },
     ownFiles: ownFilesOf(outDir),
   });
