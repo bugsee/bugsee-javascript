@@ -10,6 +10,7 @@ export {
   findPackageVersion,
 } from './app-identity';
 export { deriveBuildUuid } from './build-id';
+export { loadBuildPluginEnv, mergeBuildPluginEnv } from './env-file';
 export {
   defaultDeleteMapFiles,
   type RunFn,
@@ -36,8 +37,11 @@ export {
 } from './register-build';
 export {
   type BugseePluginOptions,
+  notify,
   type PluginRunResult,
+  type ResolvedIdentity,
   type ResolvedPluginOptions,
+  resolveIdentity,
   resolvePluginOptions,
   runPluginUpload,
 } from './resolve';
@@ -52,6 +56,7 @@ export {
   type SpawnResult,
   spawnProcess,
 } from './run-cli';
+export { type AssetStore, type StampAssetsOptions, stampAssets } from './stamp-assets';
 export {
   isWorkingTreeDirty,
   type ResolveVcsMetadataOptions,
