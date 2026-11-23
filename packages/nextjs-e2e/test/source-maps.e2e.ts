@@ -80,7 +80,16 @@ interface Spec {
   nextConfig?: string;
   /** Pre-seed FOREIGN source-map files (stylesheet and declaration maps nothing in this build produced). */
   seedForeign?: boolean;
+  /** Make `bugsee-cli sourcemaps inject` fail for the IN-BUILD stamp only (the post-emit one reaches the real CLI). */
+  failInBuildStamp?: boolean;
 }
+
+/** The real bugsee-cli binary, as the core resolves it. */
+const realCli = (
+  createRequire(join(pkgDir, '..', 'bundler-plugin-core', 'package.json'))('@bugsee/cli') as {
+    binaryPath(): string;
+  }
+).binaryPath();
 
 /** Where the foreign files are written, relative to the dist dir, and what they contain. */
 const FOREIGN = [
@@ -180,6 +189,20 @@ export default withBugsee(
 );
 `,
   );
+  const stub = join(dir, 'cli-stub.js');
+  if (spec.failInBuildStamp) {
+    writeFileSync(
+      stub,
+      `const { spawnSync } = require('node:child_process');
+const args = process.argv.slice(2);
+if (args[0] === 'sourcemaps' && args[1] === 'inject' && String(args[2]).includes('bugsee-stamp-')) {
+  process.stderr.write('stub: the in-build inject is refused\\n');
+  process.exit(11);
+}
+process.exit(spawnSync(${JSON.stringify(realCli)}, args, { stdio: 'inherit' }).status ?? 1);
+`,
+    );
+  }
   const before = bodies.length;
   // Asynchronous on purpose: the mock collector lives in THIS process, and a blocking spawn would starve it.
   const child = spawn(
@@ -187,7 +210,12 @@ export default withBugsee(
     [join(modules, 'next', 'dist', 'bin', 'next'), 'build', ...spec.args],
     {
       cwd: dir,
-      env: { ...process.env, NEXT_TELEMETRY_DISABLED: '1', NODE_OPTIONS: `--import ${tsxLoader}` },
+      env: {
+        ...process.env,
+        NEXT_TELEMETRY_DISABLED: '1',
+        NODE_OPTIONS: `--import ${tsxLoader}`,
+        ...(spec.failInBuildStamp ? { BUGSEE_CLI_PATH: stub } : {}),
+      },
     },
   );
   let log = '';
@@ -497,6 +525,30 @@ describe('withBugsee — Subresource Integrity', () => {
     expect(built.uploads).toEqual([]);
     // Unstamped, so the page's hashes still match.
     for (const bundle of clientBundles(built.dir)) {
+      expect(debugIdOf(bundle), bundle).toBeUndefined();
+    }
+    expectRuns(await openInBrowser(built.dir), { stamped: false });
+    // Bugsee did not turn browser maps on for a build it cannot upload for: none are written, none are public.
+    expect(maps(join(built.dir, '.next', 'static'))).toEqual([]);
+  });
+
+  it('webpack: a failed in-build stamp does NOT fall back to stamping the written files of an SRI build', async () => {
+    const built = await build({
+      name: 'sri-webpack-fallback',
+      next: 'next16',
+      args: ['--webpack'],
+      options: 'failOnError: false,',
+      nextConfig: "experimental: { sri: { algorithm: 'sha256' } },",
+      failInBuildStamp: true,
+    });
+    expect(built.status, built.log.split('\n').slice(-40).join('\n')).toBe(0);
+    expect(built.log).toMatch(/falling back to stamping after emit/);
+    expect(built.log).toMatch(/stamping after emit.*was skipped/s);
+    expect(built.uploads).toEqual([]);
+    // Nothing was rewritten, so the pinned hashes still describe the bytes on disk and the page runs.
+    for (const bundle of walk(join(built.dir, '.next', 'static')).filter((f) =>
+      f.endsWith('.js'),
+    )) {
       expect(debugIdOf(bundle), bundle).toBeUndefined();
     }
     expectRuns(await openInBrowser(built.dir), { stamped: false });

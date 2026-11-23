@@ -44,6 +44,8 @@ export interface BugseeNextContext {
   serverSourceMaps: boolean;
   /** Whether server/edge maps are deleted after a confirmed upload. */
   deleteServerMaps: boolean;
+  /** The app uses `experimental.sri` (set by `withBugsee` from the Next config it wraps). */
+  sri?: boolean;
   /** A notice said once per distinct text (a no-op when `silent`). */
   say(message: string): void;
 }
@@ -53,12 +55,22 @@ export interface ContextDeps {
   env?: Record<string, string | undefined>;
 }
 
+/** A short stable key for a notice text (djb2). */
+function noticeKey(text: string): string {
+  let hash = 5381;
+  for (const char of text) {
+    hash = ((hash << 5) + hash + char.charCodeAt(0)) | 0;
+  }
+  return (hash >>> 0).toString(36);
+}
+
 /** Resolve the integration's context for `projectDir`. Never throws. */
 export function createBugseeContext(
   options: WithBugseeOptions,
   projectDir: string,
   deps: ContextDeps = {},
 ): BugseeNextContext {
+  const env = deps.env ?? process.env;
   const said = new Set<string>();
   // `text` already carries the `[bugsee]` prefix: that is what the core hands an `onNotice` sink.
   const emit = (text: string): void => {
@@ -66,6 +78,15 @@ export function createBugseeContext(
       return;
     }
     said.add(text);
+    // Next loads the config in more than one process (the main one and its build workers), so the same notice
+    // would print once per process. The environment is inherited by the workers it spawns afterwards, so it
+    // carries "already said" across them.
+    const key = noticeKey(text);
+    const seen = (env.__BUGSEE_NOTICED ?? '').split(',');
+    if (seen.includes(key)) {
+      return;
+    }
+    env.__BUGSEE_NOTICED = [...seen.filter(Boolean), key].join(',');
     try {
       (options.onNotice ?? console.warn)(text);
     } catch {
@@ -78,9 +99,9 @@ export function createBugseeContext(
   if (problem !== undefined) {
     sink(problem);
   }
-  const env = mergeBuildPluginEnv(deps.env ?? process.env, values);
-  const base = resolvePluginOptions(options, env);
-  const identity = resolveIdentity(options, env, projectDir);
+  const merged = mergeBuildPluginEnv(env, values);
+  const base = resolvePluginOptions(options, merged);
+  const identity = resolveIdentity(options, merged, projectDir);
   return {
     resolved: {
       ...base,

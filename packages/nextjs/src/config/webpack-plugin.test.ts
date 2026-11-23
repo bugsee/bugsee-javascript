@@ -118,6 +118,7 @@ const deps = (over: WebpackPluginDeps = {}): WebpackPluginDeps => ({
   stamp: vi.fn(async () => ({ stamped: [], maps: {}, bundles: 1 })),
   upload: vi.fn(async () => undefined),
   exists: vi.fn(async () => true),
+  hasSriManifest: vi.fn(async () => false),
   ...over,
 });
 
@@ -603,5 +604,52 @@ describe('createNextWebpackPlugin: the new core contract', () => {
     const c = fakeCompilation({ 'static/a.js?h': 'x', 'static/a.js.map?h': 'm' });
     await fake.emit(c.compilation);
     expect(seen).toEqual(['/out/.next/static/a.js', '/out/.next/static/a.js.map']);
+  });
+});
+
+describe('createNextWebpackPlugin: the post-emit fallback on an SRI build', () => {
+  const failing = () =>
+    vi.fn(async () => {
+      throw new Error('inject broke');
+    });
+  const run = async (ctx: BugseeNextContext, d: WebpackPluginDeps) => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const fake = fakeCompiler();
+    createNextWebpackPlugin(ctx, 'client', d).apply(fake.compiler);
+    const c = fakeCompilation({ 'a.js': 'x', 'a.js.map': 'm' });
+    fake.startCompilation(c.compilation);
+    await c.run();
+    await fake.emit(c.compilation);
+    warn.mockRestore();
+  };
+
+  it('does not stamp the written files when the app uses SRI (the config says so)', async () => {
+    const ctx = context({}, { sri: true });
+    const d = deps({ stamp: failing() });
+    await run(ctx, d);
+    expect(d.upload).not.toHaveBeenCalled();
+    expect(ctx.say).toHaveBeenCalledWith(expect.stringContaining('Subresource Integrity'));
+    expect(ctx.say).toHaveBeenCalledWith(expect.stringContaining('client build'));
+  });
+
+  it('nor when Next\u2019s integrity manifest sits next to the output', async () => {
+    const ctx = context();
+    const d = deps({ stamp: failing(), hasSriManifest: vi.fn(async () => true) });
+    await run(ctx, d);
+    expect(d.upload).not.toHaveBeenCalled();
+    expect(d.hasSriManifest).toHaveBeenCalledWith('/out/.next/server/chunks');
+  });
+
+  it('still falls back without SRI', async () => {
+    const d = deps({ stamp: failing() });
+    await run(context(), d);
+    expect(d.upload).toHaveBeenCalledTimes(1);
+  });
+
+  it('uploads a stamp that took, SRI or not (it ran before anything hashed)', async () => {
+    const d = deps();
+    await run(context({}, { sri: true }), d);
+    expect(d.upload).toHaveBeenCalledTimes(1);
+    expect(d.hasSriManifest).not.toHaveBeenCalled();
   });
 });

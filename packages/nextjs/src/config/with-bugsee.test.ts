@@ -429,3 +429,48 @@ describe('withBugsee: the project directory', () => {
     expect(d.ctx.say).not.toHaveBeenCalled();
   });
 });
+
+describe('withBugsee: browser maps are forced on only when an upload can happen', () => {
+  const turbo = (over: WithBugseeDeps = {}, ctx = context()) =>
+    deps(ctx, { env: { TURBOPACK: '1' }, ...over });
+  const SRI = { experimental: { sri: { algorithm: 'sha256' } } };
+
+  it('forces them on for webpack, SRI or not (it stamps inside the build)', () => {
+    expect(apply({}, deps()).productionBrowserSourceMaps).toBe(true);
+    expect(apply(SRI, deps()).productionBrowserSourceMaps).toBe(true);
+  });
+
+  it('leaves them alone for Turbopack + SRI: nothing would be uploaded, and the maps would be public', () => {
+    const ctx = context();
+    const out = apply(SRI, turbo({}, ctx));
+    expect(out.productionBrowserSourceMaps).toBeUndefined();
+    expect(out.compiler?.runAfterProductionCompile).toBeUndefined();
+    expect(ctx.say).toHaveBeenCalledWith(expect.stringContaining('Subresource Integrity'));
+    expect(ctx.say).toHaveBeenCalledWith(expect.stringContaining('publicly served'));
+  });
+
+  it('leaves them alone on a Next that has no post-build hook', () => {
+    const ctx = context();
+    const out = apply({}, turbo({ nextVersion: () => '15.3.8' }, ctx));
+    expect(out.productionBrowserSourceMaps).toBeUndefined();
+    expect(ctx.say).toHaveBeenCalledWith(
+      expect.stringContaining('did not turn browser source maps on'),
+    );
+  });
+
+  it('still forces them on for Turbopack when the upload is possible', () => {
+    expect(apply({}, turbo()).productionBrowserSourceMaps).toBe(true);
+    expect(apply({}, turbo({ nextVersion: () => undefined })).productionBrowserSourceMaps).toBe(
+      true,
+    );
+  });
+
+  it('keeps what the app set, whatever the build', () => {
+    expect(
+      apply({ ...SRI, productionBrowserSourceMaps: true }, turbo()).productionBrowserSourceMaps,
+    ).toBe(true);
+    expect(apply({ productionBrowserSourceMaps: false }, turbo()).productionBrowserSourceMaps).toBe(
+      false,
+    );
+  });
+});

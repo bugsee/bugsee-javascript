@@ -514,7 +514,9 @@ measured). Only bundles that have a map are stamped on Turbopack, and bundles ar
 A map carries one debug-ID (the hash of bundle + map), so such bundles are left unstamped (a notice counts them) and
 their shared map stays on disk, unuploaded; they are Turbopack's runtime, not the app.
 
-**Composition.** The app's `webpack` function runs first (sync or async) and its result is extended; its
+**SRI fallback guard.** A webpack in-build stamp that failed falls back (core) to stamping the written files; on an SRI build that rewrites bytes Next already pinned (measured: Chromium blocked every script). The per-compilation plugin therefore skips the fallback and the upload when `experimental.sri` is set or Next's integrity manifest sits next to the output (`sri.ts`, shared with the Turbopack step), with a notice. `productionBrowserSourceMaps` is forced on only when this build can upload (not Turbopack + SRI, not Turbopack < 15.4.0), so an upload that cannot happen never leaves Bugsee-requested public maps. Notices are said once per `next build` across Next's processes (`__BUGSEE_NOTICED` in the environment).
+
+**Composition.** The app's `webpack` function runs first and its result is extended (Next itself rejects an async one, measured on 16.4.6); its
 `compiler.runAfterProductionCompile` runs before ours; its `compiler.define` keys win; `productionBrowserSourceMaps`
 is respected when set. Without a token the integration changes nothing Next emits.
 

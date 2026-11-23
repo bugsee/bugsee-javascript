@@ -86,13 +86,13 @@ CommonJS works as well: `const { withBugsee } = require("@bugsee/nextjs/config")
 
 What it does, for a production build:
 
-- Turns on `productionBrowserSourceMaps` (only when you did not set it) so the browser bundles have maps to upload.
+- Turns on `productionBrowserSourceMaps` (only when you did not set it, and only when this build can actually upload: not for Turbopack with `experimental.sri`, not for Turbopack on Next older than 15.4.0) so the browser bundles have maps to upload. Where it cannot upload it leaves the option as you set it and says so.
 - **webpack**: adds one Bugsee plugin to each of the client, server and edge compilations. Each stamps a debug ID into its bundles inside the build (before Subresource Integrity hashes are taken) and, after emit, uploads the maps of exactly the files that compilation wrote.
 - **Turbopack**: has no plugin API, so the upload runs from Next's `compiler.runAfterProductionCompile` hook (Next 15.4.0 or later): after Turbopack wrote `.next` and before Next generates the static pages, it stamps the written bundles with the real `bugsee-cli sourcemaps inject` (verified, and undone if a stamp does not verify), uploads the maps and removes them.
 - Deletes the browser maps (`.next/static/**/*.map`, which `next start` and CDNs serve publicly) after a confirmed upload. Server and edge maps stay on disk (`deleteServerMaps` to remove them).
 - Bakes `appVersion` / `appBuild` into every bundle (`compiler.define`) for the runtime SDK.
 
-Your own config is kept: your `webpack` function runs first (sync or async) and its result is extended, your `compiler.runAfterProductionCompile` runs before ours, `compiler.define` keys you set win, and `productionBrowserSourceMaps: false` is respected. `next dev`, `next start` and `next export` are not touched.
+Your own config is kept: your `webpack` function runs first and its result is extended (Next itself needs a synchronous `webpack` function; an async one fails in Next 16), your `compiler.runAfterProductionCompile` runs before ours, `compiler.define` keys you set win, and `productionBrowserSourceMaps: false` is respected. `next dev`, `next start` and `next export` are not touched.
 
 Options are those of the Bugsee bundler plugins (`appToken`, `appVersion`, `appBuild`, `endpoint`, `deleteMaps`, `dryRun`, `failOnError`, `stripSourcesContent`, `disabled`, `vcs`, `commit`, `registerBuild`, `onError`, `onNotice`, see `@bugsee/webpack-plugin`), plus:
 
@@ -112,7 +112,7 @@ Things to know:
 - `compiler.define` (the baked version and build) needs Next 15.1.0 or later; the Turbopack upload needs 15.4.0 or later.
 - `@bugsee/nextjs` depends on `@bugsee/bundler-plugin-core` (which brings `@bugsee/cli`, acorn, magic-string and unplugin) so that `withBugsee` works with no extra install. Only `next.config` loads it; your app bundles never import it. Making it an optional peer would force every user of the config to install it by hand and break `next build` out of the box, so it stays a regular dependency.
 
-Turbopack and Subresource Integrity: Turbopack hashes its output (`experimental.sri`) before the post-build hook runs, so stamping afterwards would make the browser refuse your scripts. An SRI build under Turbopack is therefore left exactly as Next wrote it, with a notice, and no maps are uploaded; build with `--webpack` to upload maps for an SRI build (webpack stamps before the hashes are taken).
+Turbopack and Subresource Integrity: Turbopack hashes its output (`experimental.sri`) before the post-build hook runs, so stamping afterwards would make the browser refuse your scripts. An SRI build under Turbopack is therefore left exactly as Next wrote it, with a notice, and no maps are uploaded; build with `--webpack` to upload maps for an SRI build (webpack stamps before the hashes are taken). On webpack with `experimental.sri`, if the in-build stamp itself fails, the fallback of stamping the written files is skipped (it would invalidate the pinned hashes) and nothing is uploaded for that compilation, with a notice; the browser maps then stay in `.next/static`, publicly served.
 
 ## Options
 

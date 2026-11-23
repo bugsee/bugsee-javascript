@@ -19,6 +19,7 @@ import {
 } from '@bugsee/bundler-plugin-core';
 import { type BuildFiles, partitionBuildFiles } from './build-files';
 import type { BugseeNextContext } from './context';
+import { FALLBACK_SRI_NOTICE, sriManifestNear } from './sri';
 
 /** Which of Next's three webpack compilations a plugin instance serves. */
 export type NextCompilationKind = 'client' | 'server' | 'edge';
@@ -65,6 +66,8 @@ export interface WebpackPluginDeps {
   upload?: typeof runPluginUpload;
   /** Whether a path exists on disk (default `fs.stat`). */
   exists?: (path: string) => Promise<boolean>;
+  /** Whether Next's integrity manifest sits next to this output (default: looks on disk). */
+  hasSriManifest?: (outDir: string) => Promise<boolean>;
 }
 
 const PLUGIN = 'bugsee-next';
@@ -173,6 +176,7 @@ export function createNextWebpackPlugin(
   const stamp = deps.stamp ?? stampAssets;
   const upload = deps.upload ?? runPluginUpload;
   const exists = deps.exists ?? fileExists;
+  const hasSriManifest = deps.hasSriManifest ?? ((dir: string) => sriManifestNear(dir));
   const { resolved } = context;
   // Only the browser compilation registers the build (once per `next build`), and only it follows the client
   // deletion policy: `.next/static` is public, `.next/server` is not.
@@ -252,6 +256,13 @@ export function createNextWebpackPlugin(
           return;
         }
         if (state.abandoned === true) {
+          return;
+        }
+        // The in-build stamp is SRI-safe (it runs before anything hashes). Its fallback, stamping the written
+        // files, is not: it would invalidate the hashes Next already pinned, and the browser would refuse the
+        // scripts (measured). Nothing is rewritten, so nothing is uploaded.
+        if (!state.preStamped && (context.sri === true || (await hasSriManifest(outDir)))) {
+          context.say(FALLBACK_SRI_NOTICE(kind));
           return;
         }
         const emitted: string[] = [];

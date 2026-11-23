@@ -8,11 +8,11 @@
 // hashes BEFORE this hook runs (measured, Next 16.4.6: appending a byte to a chunk in the hook makes every
 // `integrity` the page carries wrong), so stamping afterwards would ship a page whose scripts the browser
 // refuses to run. That build is left exactly as Next wrote it, and the notice says why.
-import { stat } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { type ResolvedPluginOptions, runPluginUpload } from '@bugsee/bundler-plugin-core';
 import { type BuildFiles, collectBuildFiles } from './build-files';
 import type { BugseeNextContext } from './context';
+import { isFile, SRI_MANIFEST, TURBOPACK_SRI_NOTICE } from './sri';
 
 /** What Next hands `compiler.runAfterProductionCompile`. */
 export interface PostBuildMetadata {
@@ -26,17 +26,6 @@ export interface PostBuildDeps {
   collect?: (dir: string) => Promise<BuildFiles>;
   exists?: (path: string) => Promise<boolean>;
 }
-
-async function fileExists(path: string): Promise<boolean> {
-  try {
-    return (await stat(path)).isFile();
-  } catch {
-    return false;
-  }
-}
-
-/** Where Next records the integrity hashes it pinned (`experimental.sri`). */
-const SRI_MANIFEST = join('server', 'subresource-integrity-manifest.json');
 
 /** Stamp, upload and delete for a finished Turbopack build. Skips (and says why) when it cannot be done safely. */
 export async function runPostBuild(
@@ -71,13 +60,11 @@ async function postBuild(
   const { resolved } = context;
   const upload = deps.upload ?? runPluginUpload;
   const collect = deps.collect ?? collectBuildFiles;
-  const exists = deps.exists ?? fileExists;
+  const exists = deps.exists ?? isFile;
   const distDir = resolve(metadata.projectDir, metadata.distDir);
 
-  if (await exists(join(distDir, SRI_MANIFEST))) {
-    context.say(
-      'this build uses Subresource Integrity (`experimental.sri`). Turbopack hashes its output before the post-build hook runs, so stamping debug-IDs now would make the browser refuse the scripts. Source maps were NOT uploaded and the build was left unmodified. Build with `next build --webpack` to upload source maps for an SRI build.',
-    );
+  if (context.sri === true || (await exists(join(distDir, SRI_MANIFEST)))) {
+    context.say(TURBOPACK_SRI_NOTICE);
     return;
   }
 

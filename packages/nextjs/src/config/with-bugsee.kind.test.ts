@@ -5,9 +5,11 @@ import { withBugsee } from './with-bugsee';
 // The compilation kind Next's webpack function is called with decides which policy a plugin instance gets
 // (browser maps are public and deleted, server maps are kept), so it is pinned here at the seam.
 const created = vi.hoisted(() => [] as string[]);
+const contexts = vi.hoisted(() => [] as Array<{ sri?: boolean }>);
 vi.mock('./webpack-plugin', () => ({
-  createNextWebpackPlugin: (_context: unknown, kind: string) => {
+  createNextWebpackPlugin: (context: { sri?: boolean }, kind: string) => {
     created.push(kind);
+    contexts.push(context);
     return { apply: () => undefined };
   },
 }));
@@ -20,10 +22,10 @@ const context = {
 } as unknown as BugseeNextContext;
 
 type Webpack = (config: object, options: object) => unknown;
-const webpackOf = (): Webpack =>
+const webpackOf = (config: object = {}): Webpack =>
   (
     withBugsee(
-      {},
+      config,
       {},
       { env: {}, cwd: () => '/app', createContext: () => context, nextVersion: () => '16.4.6' },
     ) as { webpack: Webpack }
@@ -40,5 +42,17 @@ describe('withBugsee: which compilation a plugin is made for', () => {
     created.length = 0;
     webpackOf()({}, { dev: false, ...options });
     expect(created).toEqual([kind]);
+  });
+});
+
+describe('withBugsee: the SRI flag reaches the plugins', () => {
+  it('marks the context when the app uses experimental.sri, and only then', () => {
+    contexts.length = 0;
+    webpackOf({ experimental: { sri: { algorithm: 'sha256' } } })(
+      {},
+      { dev: false, isServer: false },
+    );
+    webpackOf()({}, { dev: false, isServer: false });
+    expect(contexts.map((c) => c.sri === true)).toEqual([true, false]);
   });
 });

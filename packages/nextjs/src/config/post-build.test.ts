@@ -133,6 +133,15 @@ describe('runPostBuild', () => {
     expect(ctx.say).toHaveBeenCalledWith(expect.stringContaining('Subresource Integrity'));
   });
 
+  it('leaves the build alone, without looking at the disk, when the config says SRI', async () => {
+    const ctx = context({}, { sri: true });
+    const d = deps({ '/app/.next/static': files('c') });
+    await runPostBuild(ctx, metadata, d);
+    expect(d.exists).not.toHaveBeenCalled();
+    expect(d.upload).not.toHaveBeenCalled();
+    expect(ctx.say).toHaveBeenCalledWith(expect.stringContaining('publicly served'));
+  });
+
   it('uses the real upload, collector and filesystem when none are injected', async () => {
     const ctx = context();
     // Nothing exists under this directory: no SRI manifest, no files, so no upload, only the notice.

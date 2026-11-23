@@ -130,4 +130,23 @@ describe('createBugseeContext', () => {
     expect(createBugseeContext({}, dir).resolved.appToken).toBe('ambient');
     vi.unstubAllEnvs();
   });
+
+  it('says a notice once across processes that share the environment (Next loads the config in workers)', () => {
+    const env: Record<string, string | undefined> = {};
+    const seen: string[] = [];
+    const make = () => createBugseeContext({ onNotice: (m) => seen.push(m) }, dir, { env });
+    make().say('only once');
+    make().say('only once');
+    make().say('but this is new');
+    expect(seen).toEqual(['[bugsee] only once', '[bugsee] but this is new']);
+  });
+
+  it('does not use up a notice that was silenced', () => {
+    const env: Record<string, string | undefined> = {};
+    createBugseeContext({ silent: true }, dir, { env }).say('quiet');
+    expect(env.__BUGSEE_NOTICED).toBeUndefined();
+    const seen: string[] = [];
+    createBugseeContext({ onNotice: (m) => seen.push(m) }, dir, { env }).say('quiet');
+    expect(seen).toEqual(['[bugsee] quiet']);
+  });
 });

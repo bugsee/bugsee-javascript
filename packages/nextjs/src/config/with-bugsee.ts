@@ -12,6 +12,7 @@ import { createRequire } from 'node:module';
 import { join, resolve } from 'node:path';
 import { type BugseeNextContext, createBugseeContext, type WithBugseeOptions } from './context';
 import { type PostBuildMetadata, runPostBuild } from './post-build';
+import { NO_HOOK_NOTICE, TURBOPACK_SRI_NOTICE } from './sri';
 import { createNextWebpackPlugin, type NextCompilationKind } from './webpack-plugin';
 
 /** The Next config shapes this accepts. Structural: `next` is not a dependency. */
@@ -94,13 +95,20 @@ function compilationKind(next: { isServer?: boolean; nextRuntime?: string }): Ne
 /** Build the extended config for one resolved context. */
 function extendConfig<C extends NextConfigObject>(
   config: C,
-  context: BugseeNextContext,
+  baseContext: BugseeNextContext,
   turbopack: boolean,
   nextVersion: string | undefined,
   projectDir: string,
 ): C {
+  const sri = Boolean(config.experimental?.sri);
+  const context: BugseeNextContext = sri ? { ...baseContext, sri: true } : baseContext;
   const { resolved } = context;
   const next: NextConfigObject = { ...config };
+  // Whether this build has a way to upload at all: webpack always does (it stamps inside the build, SRI included);
+  // Turbopack needs the post-build hook (Next >= 15.4.0) and cannot stamp an SRI build.
+  const noHook =
+    turbopack && nextVersion !== undefined && !versionAtLeast(nextVersion, MIN_TURBOPACK_HOOK);
+  const uploadAvailable = !turbopack || (!noHook && !sri);
 
   // The app's version and build, baked into every bundle (browser, node, edge) for the runtime SDK to read.
   // `compiler.define` applies to all three; `defineServer` must NOT repeat the keys (measured, Next 15.5: it
@@ -125,9 +133,10 @@ function extendConfig<C extends NextConfigObject>(
     next.compiler = compiler;
   }
 
-  // Browser maps are what Bugsee symbolicates browser crashes with. Forced on only when nothing says otherwise,
-  // and only here, where a token means they will be uploaded and then removed from `.next/static`.
-  if (config.productionBrowserSourceMaps === undefined) {
+  // Browser maps are what Bugsee symbolicates browser crashes with. Forced on only when nothing says otherwise AND
+  // an upload is possible for this build: they are written to `.next/static`, which is served publicly, and only a
+  // confirmed upload removes them. If the upload cannot happen, the app's own setting stands.
+  if (config.productionBrowserSourceMaps === undefined && uploadAvailable) {
     next.productionBrowserSourceMaps = true;
   }
 
@@ -157,10 +166,10 @@ function extendConfig<C extends NextConfigObject>(
   }
 
   if (turbopack) {
-    if (nextVersion !== undefined && !versionAtLeast(nextVersion, MIN_TURBOPACK_HOOK)) {
-      context.say(
-        `Next ${nextVersion} builds with Turbopack but has no post-build hook to upload from; source maps were NOT uploaded. Upgrade to Next 15.4.0 or later, or build with webpack.`,
-      );
+    if (noHook) {
+      context.say(NO_HOOK_NOTICE(nextVersion as string));
+    } else if (sri) {
+      context.say(TURBOPACK_SRI_NOTICE);
     } else {
       const userHook = config.compiler?.runAfterProductionCompile as
         | ((metadata: PostBuildMetadata) => Promise<void>)
