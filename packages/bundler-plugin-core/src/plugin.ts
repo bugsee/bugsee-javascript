@@ -59,7 +59,12 @@ interface WebpackCompilationLike {
     };
   };
   getAssets(): ReadonlyArray<{ name: string }>;
-  getAsset(name: string): { source: { buffer(): Buffer } } | undefined;
+  getAsset(name: string):
+    | {
+        source: { buffer(): Buffer };
+        info?: { related?: { sourceMap?: string | string[] | null } };
+      }
+    | undefined;
   updateAsset(name: string, source: unknown): void;
 }
 
@@ -69,7 +74,9 @@ interface WebpackCompilerLike {
   /** The base directory of the build (webpack's `context`, default the cwd). */
   context?: string;
   hooks: {
-    afterEmit: { tapPromise: (name: string, fn: () => Promise<void>) => void };
+    afterEmit: {
+      tapPromise: (name: string, fn: (compilation?: AssetNamesLike) => Promise<void>) => void;
+    };
     /** webpack 5 only. */
     thisCompilation?: {
       tap: (name: string, fn: (compilation: WebpackCompilationLike) => void) => void;
@@ -185,15 +192,50 @@ function unreadableIdentityNotices(
   return notices;
 }
 
-/** A compilation's asset table as the core's `AssetStore`. */
+/**
+ * An asset name without its `?query`. Measured on real Rspack builds: webpack/Rspack drop `?...` when they write
+ * a file (`x.js?h` is written as `x.js`) and KEEP `#` (`a#1.js` is written as `a#1.js`), so only `?` is cut.
+ */
+const withoutQuery = (name: string): string => name.replace(/\?.*$/, '');
+
+/**
+ * A compilation's asset table as the core's `AssetStore`.
+ *
+ * Asset names can carry a `?query` (`[name].js?[contenthash]`) that the file on disk does not, and inject
+ * matches by extension, so the store presents (and stages) the QUERY-FREE name and maps it back to the real
+ * asset name for every read and write. Two assets that would collide once cleaned keep their real names.
+ */
 function webpackAssetStore(
   compilation: WebpackCompilationLike,
   RawSource: new (buffer: Buffer) => unknown,
 ): AssetStore {
+  const real = new Map<string, string>();
+  const refresh = (): void => {
+    real.clear();
+    const counts = new Map<string, number>();
+    const names = compilation.getAssets().map((asset) => asset.name);
+    for (const name of names) {
+      counts.set(withoutQuery(name), (counts.get(withoutQuery(name)) ?? 0) + 1);
+    }
+    for (const name of names) {
+      const clean = withoutQuery(name);
+      real.set(counts.get(clean) === 1 ? clean : name, name);
+    }
+  };
+  const realName = (name: string): string => real.get(name) ?? name;
   return {
-    names: () => compilation.getAssets().map((asset) => asset.name),
-    read: (name) => compilation.getAsset(name)?.source.buffer() ?? Buffer.alloc(0),
-    update: (name, content) => compilation.updateAsset(name, new RawSource(content)),
+    names: () => {
+      refresh();
+      return [...real.keys()];
+    },
+    read: (name) => compilation.getAsset(realName(name))?.source.buffer() ?? Buffer.alloc(0),
+    update: (name, content) => compilation.updateAsset(realName(name), new RawSource(content)),
+    // The compilation records which asset is a bundle's source map (SourceMapDevToolPlugin: info.related).
+    mapOf: (name) => {
+      const related = compilation.getAsset(realName(name))?.info?.related?.sourceMap;
+      const map = Array.isArray(related) ? related[0] : related;
+      return map === undefined || map === null ? undefined : withoutQuery(map);
+    },
   };
 }
 
@@ -270,10 +312,24 @@ function esbuildOutputDir(options: EsbuildBuildLike['initialOptions']): string |
   }
 }
 
+/** The compilation handed to `afterEmit`: enough to list every asset this build emitted. */
+interface AssetNamesLike {
+  getAssets?(): ReadonlyArray<{ name: string }>;
+}
+
+/** The names this build emitted, as the `ownFiles` the upload deletes by (absent when not known). */
+const ownFilesOf = (compilation: AssetNamesLike | undefined): { ownFiles?: string[] } => {
+  const assets = compilation?.getAssets?.();
+  return assets === undefined ? {} : { ownFiles: assets.map((asset) => asset.name) };
+};
+
 /** What an in-build stamp reports: whether it took, and which bundles it wrote (relative to the output). */
 interface InBuildStamp {
   preStamped: boolean;
   stampedBundles?: string[];
+  stampedMaps?: Record<string, string>;
+  /** A map lies outside the output: nothing was stamped and stamping after emit would half-stamp, so skip it. */
+  abandoned?: boolean;
 }
 
 export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefined> = (
@@ -374,24 +430,40 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
   // what lets the upload skip the post-emit inject (and its SRI refusal). A failure is contained and
   // NOT silent about what happens next: the post-emit path takes over and still carries the refusal, so a
   // failed in-build stamp degrades to the old safe behaviour rather than to a page nobody checked.
-  const stampInBuild = async (store: AssetStore): Promise<InBuildStamp> => {
+  const stampInBuild = async (
+    store: AssetStore,
+    /** Every name the build emitted (default: what the store lists). */
+    emitted: string[] = store.names(),
+  ): Promise<InBuildStamp> => {
     try {
-      const { stamped } = await stampAssets(store, { dryRun: resolved.dryRun });
+      const { stamped, maps, bundles } = await stampAssets(store, { dryRun: resolved.dryRun });
+      // Never claim a stamp that staged nothing while the build emitted scripts: the post-emit path (which
+      // reads real file names off the disk) has to run, and it is said.
+      const scripts = emitted.filter((name) => /\.[cm]?js(\?|$)/i.test(name));
+      if (bundles === 0 && scripts.length > 0) {
+        say(
+          `no debug-ID could be stamped inside the build (none of its ${scripts.length} script asset(s), e.g. ${scripts[0]}, matched), so stamping after emit instead.`,
+        );
+        return { preStamped: false };
+      }
       // Stamped on a dry run too: the preview must follow the path the real run takes, and the real run
       // would not refuse an SRI build — it would stamp it here.
-      return { preStamped: true, stampedBundles: stamped };
+      return { preStamped: true, stampedBundles: stamped, stampedMaps: maps };
     } catch (error) {
       if (resolved.failOnError) {
         throw error;
       }
+      const abandoned = (error as { unreachableMap?: boolean } | null)?.unreachableMap === true;
       (
         resolved.onError ??
         ((e: unknown) =>
           console.warn(
-            `[bugsee] in-build debug-ID stamping failed; falling back to stamping after emit: ${String(e)}`,
+            abandoned
+              ? `[bugsee] debug-IDs were NOT stamped, and stamping after emit would half-stamp this build: ${String(e)}`
+              : `[bugsee] in-build debug-ID stamping failed; falling back to stamping after emit: ${String(e)}`,
           ))
       )(error);
-      return { preStamped: false };
+      return { preStamped: false, ...(abandoned ? { abandoned: true } : {}) };
     }
   };
 
@@ -451,7 +523,7 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
       );
       return;
     }
-    stampedOutputs.set(output, await stampInBuild(rollupAssetStore(bundle)));
+    stampedOutputs.set(output, await stampInBuild(rollupAssetStore(bundle), Object.keys(bundle)));
   };
   // Not `order: 'pre'` by taste: Vite builds `index.html` (and runs `transformIndexHtml`, where an SRI
   // plugin hashes the chunks) in its own generateBundle, so ours must run first. Plugins sharing the
@@ -464,15 +536,25 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
   const uploadForOutput = async (
     output: OutputLike,
     bundler: BundlerBuildContext,
+    /** The final bundle at writeBundle: every name this build emitted. */
+    bundle?: object,
   ): Promise<void> => {
     const outDir = resolveOutputDir(output);
     if (outDir !== undefined) {
       const stamp = stampedOutputs.get(output);
       stampedOutputs.delete(output);
+      if (stamp?.abandoned === true) {
+        return;
+      }
       await runPluginUpload(forOutput(outDir), outDir, {
         bundler,
+        ...(bundle !== undefined ? { ownFiles: Object.keys(bundle) } : {}),
         ...(stamp?.preStamped === true
-          ? { preStamped: true, stampedBundles: stamp.stampedBundles }
+          ? {
+              preStamped: true,
+              stampedBundles: stamp.stampedBundles,
+              stampedMaps: stamp.stampedMaps,
+            }
           : {}),
       });
     }
@@ -535,7 +617,8 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
         viteBuild = { isProduction: config.isProduction, configuration: config.mode };
       },
       generateBundle: generateBundleHook,
-      writeBundle: (output: OutputLike) => uploadForOutput(output, viteBuild),
+      writeBundle: (output: OutputLike, bundle?: object) =>
+        uploadForOutput(output, viteBuild, bundle),
     },
     rollup: {
       // Rollup has no `define`: bake the constants into each rendered chunk (with a source map), from the same
@@ -574,7 +657,7 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
         unbakedOutDirs.clear();
       },
       generateBundle: generateBundleHook,
-      writeBundle: (output: OutputLike) => uploadForOutput(output, {}),
+      writeBundle: (output: OutputLike, bundle?: object) => uploadForOutput(output, {}, bundle),
     },
     esbuild: {
       // esbuild's `define` is a plain string map; a key the user already set is kept.
@@ -707,7 +790,7 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
           'Rspack `devtool` is off, so no source maps are emitted and there is nothing to upload. Set `devtool: "source-map"` for builds you want symbolicated (ignore this if you emit maps another way).',
         );
       }
-      compiler.hooks.afterEmit.tapPromise(name, async () => {
+      compiler.hooks.afterEmit.tapPromise(name, async (compilation?: AssetNamesLike) => {
         const dir = compiler.options.output?.path;
         const bundler = webpackBuild(compiler.options.mode);
         // Only `development` is skipped: `mode: 'none'` is a legitimate release setting (own minification).
@@ -716,7 +799,14 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
           dir !== '' &&
           !skipDevelopment(compiler.options.mode !== 'development', 'Rspack')
         ) {
-          await runPluginUpload(forOutput(dir), dir, { bundler, ...preStamped() });
+          const stamp = preStamped();
+          if (stamp.abandoned !== true) {
+            await runPluginUpload(forOutput(dir), dir, {
+              bundler,
+              ...ownFilesOf(compilation),
+              ...stamp,
+            });
+          }
         }
       });
     },
@@ -732,13 +822,17 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
       // THE SRI FIX on webpack 5: stamp inside the compilation (see tapProcessAssetsStamp).
       const preStamped = tapProcessAssetsStamp(compiler);
 
-      compiler.hooks.afterEmit.tapPromise(name, async () => {
+      compiler.hooks.afterEmit.tapPromise(name, async (compilation?: AssetNamesLike) => {
         const dir = compiler.options.output?.path;
         if (typeof dir === 'string' && dir !== '') {
-          await runPluginUpload(forOutput(dir), dir, {
-            bundler: webpackBuild(compiler.options.mode),
-            ...preStamped(),
-          });
+          const stamp = preStamped();
+          if (stamp.abandoned !== true) {
+            await runPluginUpload(forOutput(dir), dir, {
+              bundler: webpackBuild(compiler.options.mode),
+              ...ownFilesOf(compilation),
+              ...stamp,
+            });
+          }
         }
       });
     },

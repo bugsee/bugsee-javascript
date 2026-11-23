@@ -17,6 +17,8 @@ export interface StampIssue {
   /** The asset, as named in the staged set (its path relative to the output root). */
   name: string;
   reason: string;
+  /** The asset's source map lies outside the output: no later attempt can stamp it either. */
+  outside?: true;
 }
 
 /** The first few issues as one line, for an error message. */
@@ -30,10 +32,10 @@ export function formatIssues(issues: readonly StampIssue[]): string {
 }
 
 /** What inject stamps (`.js`/`.cjs`/`.mjs`); the map of `x.js` is `x.js.map`. */
-const BUNDLE = /\.[cm]?js$/;
+const BUNDLE = /\.[cm]?js$/i;
 
 /** A source-map pointer comment, `//# sourceMappingURL=…` or the legacy `//@` spelling. */
-const SOURCE_MAPPING_URL = /^[ \t]*\/\/[#@][ \t]*sourceMappingURL=(\S*)[ \t]*$/gm;
+const SOURCE_MAPPING_URL = /^[ \t]*\/\/[#@][ \t]*sourceMappingURL=(.*?)[ \t\r]*$/gm;
 
 /**
  * Whether `code` is syntactically valid JavaScript, as a module or as a classic script.
@@ -83,19 +85,33 @@ export function resolveMapName(
   exists: (candidate: string) => boolean,
   api: Pick<typeof posix, 'dirname' | 'join'> = posix,
 ): string {
-  const pointer = lastSourceMappingUrl(text);
-  if (pointer !== undefined && !/^([a-z][a-z0-9+.-]*:|\/)/i.test(pointer)) {
-    try {
-      const candidate = api.join(api.dirname(name), decodeURI(pointer));
-      if (exists(candidate)) {
-        return candidate;
-      }
-    } catch {
-      // malformed escape: not a name we can follow
-    }
-  }
-  return `${name}.map`;
+  const candidate = localPointerTarget(name, text, api);
+  return candidate !== undefined && exists(candidate) ? candidate : `${name}.map`;
 }
+
+/**
+ * Where a bundle's LOCAL `sourceMappingURL` points, resolved from the bundle's directory (and
+ * percent-decoded). Undefined for no pointer, a remote or `data:` one, a root-absolute one, or a malformed
+ * escape. The pointer is read to the end of the line: a bundler can emit an unencoded space.
+ */
+export function localPointerTarget(
+  name: string,
+  text: string,
+  api: Pick<typeof posix, 'dirname' | 'join'> = posix,
+): string | undefined {
+  const pointer = lastSourceMappingUrl(text);
+  if (pointer === undefined || pointer === '' || /^([a-z][a-z0-9+.-]*:|\/)/i.test(pointer)) {
+    return undefined;
+  }
+  try {
+    return api.join(api.dirname(name), decodeURI(pointer));
+  } catch {
+    return undefined;
+  }
+}
+
+/** Whether a relative path climbs out of its root (`../x`). */
+const escapesRoot = (relative: string): boolean => /^\.\.([\\/]|$)/.test(relative);
 
 /** Reasons a changed bundle is not a faithful stamp of `before`. */
 function bundleIssues(
@@ -184,6 +200,16 @@ export function verifyStamp(
       parser,
     );
     ids.set(name, id);
+    const target = localPointerTarget(name, (after.get(name) as Buffer).toString('utf8'), api);
+    if (target !== undefined && escapesRoot(target)) {
+      // The map is outside what is staged: inject cannot stamp it, so this bundle would carry an id that
+      // never reaches its map. Refused, so the caller falls back (post-emit) or restores.
+      issues.push({
+        name,
+        reason: `its source map (${target}) lies outside the output directory, so it cannot be stamped with the bundle. Emit the maps inside the output directory, or upload them yourself with bugsee-cli (sourcemaps inject, then debug-files upload).`,
+        outside: true,
+      });
+    }
     mapOf.set(
       name,
       resolveMapName(name, (after.get(name) as Buffer).toString('utf8'), (n) => after.has(n), api),
@@ -235,14 +261,18 @@ export function verifyStamp(
  * map must carry a debugId comment, and the map the SAME id, or the build ships bytes that look stamped
  * and cannot be symbolicated. Bundles without a map are left alone (nothing to match).
  */
-export function verifyStampedPairs(files: ReadonlyMap<string, Buffer>): StampIssue[] {
+export function verifyStampedPairs(
+  files: ReadonlyMap<string, Buffer>,
+  /** The build's own bundle -> map mapping, where the pointer and sibling cannot say. */
+  known: ReadonlyMap<string, string> = new Map(),
+): StampIssue[] {
   const issues: StampIssue[] = [];
   for (const [name, bytes] of files) {
     if (!BUNDLE.test(name)) {
       continue;
     }
     const text = bytes.toString('utf8');
-    const map = resolveMapName(name, text, (n) => files.has(n), path);
+    const map = known.get(name) ?? resolveMapName(name, text, (n) => files.has(n), path);
     const mapBytes = files.get(map);
     if (mapBytes === undefined) {
       continue;

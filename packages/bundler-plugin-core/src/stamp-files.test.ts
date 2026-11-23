@@ -14,9 +14,11 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
+  isFencedPath,
   isProjectRootOrAbove,
   isUploadableMap,
-  listUploadableMaps,
+  listOutputMaps,
+  ownedBy,
   partitionByKeyed,
   restoreAtomically,
   snapshotStampFiles,
@@ -403,8 +405,25 @@ describe('partitionByKeyed — any uploadable map needs a key, whatever it is ca
   });
 });
 
-describe('listUploadableMaps', () => {
-  it('lists every uploadable map of the whole output directory (any name, src/ and dot-dirs included), sorted', async () => {
+describe('partitionByKeyed — a map that cannot be read is not "gone"', () => {
+  it('keeps (never silently drops) a map that fails to read with anything but ENOENT', async () => {
+    await writeFile(join(dir, 'locked.js.map'), stampedMap);
+    await chmod(join(dir, 'locked.js.map'), 0o000);
+    try {
+      const { deletable, kept } = await partitionByKeyed([
+        join(dir, 'locked.js.map'),
+        join(dir, 'vanished.js.map'),
+      ]);
+      expect(kept).toEqual([join(dir, 'locked.js.map')]);
+      expect(deletable).toEqual([]); // the vanished one is neither kept nor deleted
+    } finally {
+      await chmod(join(dir, 'locked.js.map'), 0o644);
+    }
+  });
+});
+
+describe('listOutputMaps', () => {
+  it('lists EVERY map of the whole output directory (any name, src/ and dot-dirs included), sorted, stylesheet and declaration maps too', async () => {
     await mkdir(join(dir, 'src'));
     await mkdir(join(dir, '.hidden'));
     await mkdir(join(dir, 'test'));
@@ -415,8 +434,10 @@ describe('listUploadableMaps', () => {
     await writeFile(join(dir, 'c.css.map'), '{}');
     await writeFile(join(dir, 'd.d.ts.map'), '{}');
     await writeFile(join(dir, 'e.js'), 'x');
-    expect((await listUploadableMaps(dir)).map((f) => f.slice(dir.length + 1))).toEqual([
+    expect((await listOutputMaps(dir)).map((f) => f.slice(dir.length + 1))).toEqual([
       '.hidden/b.mjs.map',
+      'c.css.map',
+      'd.d.ts.map',
       'index.map',
       'src/a.js.map',
       'test/t.map',
@@ -429,11 +450,196 @@ describe('listUploadableMaps', () => {
     await writeFile(join(dir, 'ok.map'), '{}');
     process.chdir(dir);
     try {
-      expect((await listUploadableMaps(dir)).map((f) => f.slice(dir.length + 1))).toEqual([
-        'ok.map',
-      ]);
+      expect((await listOutputMaps(dir)).map((f) => f.slice(dir.length + 1))).toEqual(['ok.map']);
     } finally {
       process.chdir(start);
     }
+  });
+});
+
+describe('depth: an ordinary output directory is walked to any depth (the CLI scan and inject have no cap)', () => {
+  const deepDir = async (levels: number): Promise<string> => {
+    let d = dir;
+    for (let i = 0; i < levels; i++) {
+      d = join(d, `d${i}`);
+      await mkdir(d);
+    }
+    return d;
+  };
+  it('lists a map 8 levels down and snapshots + restores the bundle beside it', async () => {
+    const deep = await deepDir(8);
+    await writeFile(join(deep, 'deep.js.map'), '{}');
+    await writeFile(join(deep, 'deep.js'), 'a();\n');
+    expect(await listOutputMaps(dir)).toEqual([join(deep, 'deep.js.map')]);
+    const snap = await snapshotStampFiles({ dir });
+    expect(snap.entries.has(join(deep, 'deep.js'))).toBe(true);
+    await writeFile(join(deep, 'deep.js'), `a();\n{{${STAMP}`);
+    expect((await verifyAndRestore(snap)).restored).toEqual([
+      join(deep, 'deep.js'),
+      join(deep, 'deep.js.map'),
+    ]);
+    await snap.dispose();
+  });
+  it('at a PROJECT ROOT the depth cap still bounds the walk', async () => {
+    const start = process.cwd();
+    const deep = await deepDir(8);
+    await writeFile(join(deep, 'deep.js.map'), '{}');
+    process.chdir(dir);
+    try {
+      expect(await listOutputMaps(dir)).toEqual([]);
+    } finally {
+      process.chdir(start);
+    }
+  });
+});
+
+describe("isFencedPath — directories that are not this build's output", () => {
+  it('is true when any directory segment is a never-walk name or a dot-directory', () => {
+    for (const rel of [
+      'node_modules/p/a.css.map',
+      'a/src/b.d.ts.map',
+      '.cache/x.map',
+      'x/.well-known/y.map',
+      'test/t.map',
+      '__tests__/a.map',
+    ]) {
+      expect(isFencedPath(rel), rel).toBe(true);
+    }
+    for (const rel of ['a.css.map', 'assets/a.css.map', 'srcs/a.map', 'a/b/.hidden.map']) {
+      expect(isFencedPath(rel), rel).toBe(false);
+    }
+  });
+});
+
+describe('verifyAndRestore — a map that lives OUTSIDE the snapshotted output', () => {
+  it('flags and restores a stamped bundle whose pointer reaches a map outside the directory', async () => {
+    await mkdir(join(dir, 'out', 'js'), { recursive: true });
+    await mkdir(join(dir, 'maps'));
+    await writeFile(join(dir, 'maps', 'a.js.map'), plainMap);
+    const original = 'a();\n//# sourceMappingURL=../../maps/a.js.map\n';
+    await writeFile(join(dir, 'out', 'js', 'a.js'), original);
+    const snap = await snapshotStampFiles({ dir: join(dir, 'out') });
+    await writeFile(join(dir, 'out', 'js', 'a.js'), `${original}${STAMP}`);
+    const { issues, restored } = await verifyAndRestore(snap);
+    expect(issues[0]?.reason).toContain('outside the output directory');
+    expect(restored).toEqual([join(dir, 'out', 'js', 'a.js')]);
+    expect(await readFile(join(dir, 'out', 'js', 'a.js'), 'utf8')).toBe(original);
+    await snap.dispose();
+  });
+});
+
+describe("verifyStampedOnDisk — the build's own bundle -> map mapping", () => {
+  it('checks a map the pointer and sibling both miss (Rollup moved map), and flags a lost id', async () => {
+    await mkdir(join(dir, 'js'));
+    await mkdir(join(dir, 'maps'));
+    await writeFile(join(dir, 'js', 'a.js'), `a();\n//# sourceMappingURL=a.map\n${STAMP}`);
+    await writeFile(join(dir, 'maps', 'a.js.map'), plainMap);
+    const hint = new Map([[join(dir, 'js', 'a.js'), join(dir, 'maps', 'a.js.map')]]);
+    expect(await verifyStampedOnDisk([join(dir, 'js', 'a.js')])).toEqual([]); // without the hint: blind
+    expect((await verifyStampedOnDisk([join(dir, 'js', 'a.js')], hint)).map((i) => i.name)).toEqual(
+      [join(dir, 'maps', 'a.js.map')],
+    );
+    await writeFile(join(dir, 'maps', 'a.js.map'), stampedMap);
+    expect(await verifyStampedOnDisk([join(dir, 'js', 'a.js')], hint)).toEqual([]);
+  });
+});
+
+describe('verifyAndRestore — a dangling pointer is not an outside map', () => {
+  it('raises nothing for a pointer at a file that does not exist anywhere', async () => {
+    const original = 'a();\n//# sourceMappingURL=../../nowhere/a.js.map\n';
+    await mkdir(join(dir, 'out'));
+    await writeFile(join(dir, 'out', 'a.js'), original);
+    const snap = await snapshotStampFiles({ dir: join(dir, 'out') });
+    await writeFile(join(dir, 'out', 'a.js'), `${original}${STAMP}`);
+    expect(await verifyAndRestore(snap)).toEqual({ issues: [], restored: [], failed: [] });
+    await snap.dispose();
+  });
+});
+
+describe('ownedBy — is this file one THIS build emitted?', () => {
+  it('matches by identity: normalised separators, ./ prefixes, exact case', () => {
+    const own = ownedBy('/o/dist', ['src/style.css.map', './assets\\a.d.ts.map', 'Case.js.map']);
+    expect(own('/o/dist/src/style.css.map')).toBe(true);
+    expect(own('/o/dist/assets/a.d.ts.map')).toBe(true);
+    expect(own('/o/dist/case.js.map')).toBe(false); // case-sensitive
+    expect(own('/o/dist/Case.js.map')).toBe(true);
+    expect(own('/o/dist/src/old.d.ts.map')).toBe(false); // there, but not emitted by this build
+    expect(own('/o/dist/node_modules/p/style.css.map')).toBe(false);
+  });
+  it('an empty set owns nothing', () => {
+    expect(ownedBy('/o', [])('/o/a.css.map')).toBe(false);
+  });
+  it('without a set it falls back to the directory-name fence', () => {
+    const own = ownedBy('/o/dist', undefined);
+    expect(own('/o/dist/src/a.css.map')).toBe(false);
+    expect(own('/o/dist/.cache/a.css.map')).toBe(false);
+    expect(own('/o/dist/assets/a.css.map')).toBe(true);
+  });
+});
+
+describe('an uppercase A.JS / A.JS.map pair goes through snapshot, verify and restore', () => {
+  it('is snapshotted, and a bad stamp is restored with its map', async () => {
+    const original = 'a();\n//# sourceMappingURL=A.JS.map\n';
+    await writeFile(join(dir, 'A.JS'), original);
+    await writeFile(join(dir, 'A.JS.map'), plainMap);
+    const snap = await snapshotStampFiles({ dir });
+    expect([...snap.entries.keys()].map((k) => k.slice(dir.length + 1)).sort()).toEqual([
+      'A.JS',
+      'A.JS.map',
+    ]);
+    await writeFile(join(dir, 'A.JS'), `${original}{{${STAMP}`);
+    await writeFile(join(dir, 'A.JS.map'), stampedMap);
+    const { restored } = await verifyAndRestore(snap);
+    expect(restored).toEqual([join(dir, 'A.JS'), join(dir, 'A.JS.map')]);
+    expect(await readFile(join(dir, 'A.JS'), 'utf8')).toBe(original);
+    await snap.dispose();
+  });
+  it('a faithful stamp of the pair verifies', async () => {
+    const original = 'a();\n//# sourceMappingURL=A.JS.map\n';
+    await writeFile(join(dir, 'A.JS'), original);
+    await writeFile(join(dir, 'A.JS.map'), plainMap);
+    const snap = await snapshotStampFiles({ dir });
+    await writeFile(join(dir, 'A.JS'), `${original}${STAMP}`);
+    await writeFile(join(dir, 'A.JS.map'), stampedMap);
+    expect(await verifyAndRestore(snap)).toEqual({ issues: [], restored: [], failed: [] });
+    await snap.dispose();
+  });
+});
+
+// GROUND TRUTH (real builds): webpack/Rspack drop `?...` when they write a file (`x.js.map?h` -> `x.js.map`) and KEEP
+// `#` (`a#1.js` is written as `a#1.js`). Rollup/Vite write every name literally, `?` and `#` included
+// (`index.js?v=1` -> `index.js?v=1`).
+describe('ownedBy — what the bundlers really write', () => {
+  it('matches a webpack ?query own-name to the file on disk without the query, and a literal name to itself', () => {
+    const own = ownedBy('/o/dist', ['main.js.map?abc123', 'index.js?v=1', 'index.js?v=1.map']);
+    expect(own('/o/dist/main.js.map')).toBe(true); // webpack: query dropped
+    expect(own('/o/dist/index.js?v=1')).toBe(true); // Rollup: written literally
+    expect(own('/o/dist/index.js?v=1.map')).toBe(true);
+    expect(own('/o/dist/index.js?old')).toBe(false); // a stale foreign sibling is not this build's
+    expect(own('/o/dist/other.js.map')).toBe(false);
+  });
+  it('treats # as part of the name: a#1 is not a#2, and x#old is not x#new', () => {
+    const own = ownedBy('/o/dist', ['main#new.js.map', 'a#1.js']);
+    expect(own('/o/dist/main#new.js.map')).toBe(true);
+    expect(own('/o/dist/main#old.js.map')).toBe(false);
+    expect(own('/o/dist/main.js.map')).toBe(false);
+    expect(own('/o/dist/a#1.js')).toBe(true);
+    expect(own('/o/dist/a#2.js')).toBe(false);
+    expect(own('/o/dist/a')).toBe(false); // nothing is cut at the #
+  });
+});
+
+describe('ownedBy — Windows separators and ./ prefixes (win32 path API, on any host)', () => {
+  it('matches own names written with / or \\ or a leading ./ against win32 disk paths', async () => {
+    const { win32 } = await import('node:path');
+    const own = ownedBy('C:\\o\\dist', ['src/a.css.map', './b.css.map', 'c\\d.css.map'], win32);
+    expect(own('C:\\o\\dist\\src\\a.css.map')).toBe(true);
+    expect(own('C:\\o\\dist\\b.css.map')).toBe(true);
+    expect(own('C:\\o\\dist\\c\\d.css.map')).toBe(true);
+    expect(own('C:\\o\\dist\\src\\other.css.map')).toBe(false);
+    // the directory-name fallback uses the same API
+    const fenced = ownedBy('C:\\o\\dist', undefined, win32);
+    expect(fenced('C:\\o\\dist\\node_modules\\p\\a.css.map')).toBe(false);
+    expect(fenced('C:\\o\\dist\\assets\\a.css.map')).toBe(true);
   });
 });

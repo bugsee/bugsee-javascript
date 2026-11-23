@@ -455,3 +455,50 @@ describe('verifyStamp with a native path API (Windows paths)', () => {
     expect(verifyStamp(before, good, undefined, path.win32)).toEqual([]);
   });
 });
+
+describe('pointers with whitespace, and pointers that leave the output', () => {
+  it('reads a sourceMappingURL with spaces to the end of the line (an unencoded pointer is still a pointer)', () => {
+    expect(
+      resolveMapName(
+        'j s/a.js',
+        'x\n//# sourceMappingURL=../my maps/a.map  \n',
+        (n) => n === 'my maps/a.map',
+      ),
+    ).toBe('my maps/a.map');
+  });
+
+  it('flags a stamped bundle whose pointer resolves OUTSIDE the staged output (a silent half-stamp otherwise)', () => {
+    const code = 'x();\n//# sourceMappingURL=../../maps/a.js.map\n';
+    const issues = verifyStamp(
+      new Map([['js/a.js', buf(code)]]),
+      new Map([['js/a.js', buf(code + STUB)]]),
+    );
+    expect(issues).toHaveLength(1);
+    expect(issues[0]).toMatchObject({ name: 'js/a.js' });
+    expect(issues[0]?.reason).toContain('outside the output directory');
+    expect(issues[0]?.reason).toContain('Emit the maps inside the output directory');
+    expect(issues[0]?.reason).toContain('bugsee-cli');
+  });
+
+  it('does not flag a dangling pointer that stays inside the output, a remote or data: one, or a bundle with no pointer', () => {
+    for (const pointer of [
+      'gone.map',
+      'https://cdn.test/a.map',
+      'data:application/json;base64,e30=',
+      '/abs/a.map',
+    ]) {
+      const code = `x();\\n//# sourceMappingURL=${pointer}\\n`;
+      expect(
+        verifyStamp(new Map([['js/a.js', buf(code)]]), new Map([['js/a.js', buf(code + STUB)]])),
+      ).toEqual([]);
+    }
+  });
+
+  it('treats an uppercase .JS bundle as a bundle (inject stamps it too)', () => {
+    const issues = verifyStamp(
+      new Map([['A.JS', buf('a();\n')]]),
+      new Map([['A.JS', buf('a();\n{{')]]),
+    );
+    expect(issues.length).toBeGreaterThan(0);
+  });
+});

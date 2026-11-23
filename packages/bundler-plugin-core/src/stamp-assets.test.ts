@@ -321,7 +321,7 @@ describe('stampAssets — verifying the stamp before it is written back', () => 
     const store = memoryStore({ 'a.js': 'a();\n' });
     await expect(
       stampAssets(store, { dryRun: true, run: inject((_p, c) => `${c}{{\n`) }),
-    ).resolves.toEqual({ stamped: [] });
+    ).resolves.toEqual({ stamped: [], maps: {}, bundles: 1 });
   });
 
   it('uses an injected parser', async () => {
@@ -480,5 +480,209 @@ describe('rollupUnstampableMaps — chunks whose map cannot be stamped in memory
         'a.css': { type: 'chunk', fileName: 'a.css', code: '', map: {} },
       }),
     ).toEqual([]);
+  });
+});
+
+describe('stampAssets — a map that is not the bundle sibling (sourcemapFileNames moved it)', () => {
+  const chunk = (fileName: string, code: string, extra: object = {}) => ({
+    type: 'chunk' as const,
+    fileName,
+    code,
+    map: { version: 3 },
+    ...extra,
+  });
+  const asset = (fileName: string, source: string) => ({
+    type: 'asset' as const,
+    fileName,
+    source,
+  });
+  const MAP = '{"version":3,"file":"a.js","sources":["a.ts"],"names":[],"mappings":"AAAA"}';
+  const moved = () => ({
+    'js/a.js': chunk('js/a.js', 'console.log(1);\n//# sourceMappingURL=a.js.map\n', {
+      sourcemapFileName: 'maps/a.js.map',
+    }),
+    'maps/a.js.map': asset('maps/a.js.map', MAP),
+  });
+
+  it('stamps the bundle AND its moved map with the same id, through the real bugsee-cli', async () => {
+    const bundle = moved();
+    const result = await stampAssets(rollupAssetStore(bundle));
+    const id = readDebugId(bundle['js/a.js'].code);
+    expect(id).toMatch(/^[0-9a-f-]{36}$/);
+    expect(JSON.parse(bundle['maps/a.js.map'].source).debugId).toBe(id);
+    expect(result.stamped).toEqual(['js/a.js']);
+  });
+
+  it('stages the map as the bundle sibling (that is how inject pairs them), and writes it back at its real name', async () => {
+    const seen: string[] = [];
+    const bundle = moved();
+    await stampAssets(rollupAssetStore(bundle), {
+      run: async (args) => {
+        const { readdir, writeFile, readFile } = await import('node:fs/promises');
+        const { join } = await import('node:path');
+        const root = args[2] as string;
+        for (const dir of ['js']) {
+          for (const f of await readdir(join(root, dir))) {
+            seen.push(`${dir}/${f}`);
+          }
+        }
+        await writeFile(
+          join(root, 'js/a.js'),
+          `${await readFile(join(root, 'js/a.js'), 'utf8')};1;\n${STAMP_COMMENT}\n`,
+        );
+        await writeFile(
+          join(root, 'js/a.js.map'),
+          MAP.replace(/\}$/, `,"debugId":"b039c7fb-d958-5fe6-b76f-136179e9a728"}`),
+        );
+        return { code: 0, stdout: '', stderr: '' };
+      },
+    });
+    expect(seen.sort()).toEqual(['js/a.js', 'js/a.js.map']);
+    expect(bundle['maps/a.js.map'].source).toContain('debugId');
+  });
+
+  it('refuses (before inject) when the sibling name is already taken by another asset', async () => {
+    const run = vi.fn(async () => ({ code: 0, stdout: '', stderr: '' }));
+    const bundle = { ...moved(), 'js/a.js.map': asset('js/a.js.map', '{}') };
+    await expect(stampAssets(rollupAssetStore(bundle), { run })).rejects.toThrow(/js\/a\.js\.map/);
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  it('refuses a stamped bundle whose map cannot be staged at all (not a .map name): never a silent half-stamp', async () => {
+    const bundle = {
+      'a.js': chunk('a.js', 'x();\n', { sourcemapFileName: 'maps/a.json' }),
+      'maps/a.json': asset('maps/a.json', MAP),
+    };
+    const run = vi.fn(async () => ({ code: 0, stdout: '', stderr: '' }));
+    const error = (await stampAssets(rollupAssetStore(bundle), { run }).catch(
+      (e: unknown) => e,
+    )) as StampVerificationError;
+    expect(error).toBeInstanceOf(StampVerificationError);
+    expect(error.message).toContain('maps/a.json');
+  });
+
+  it('a store with no mapOf behaves exactly as before', async () => {
+    const store = memoryStore({
+      'a.js': 'x()\n//# sourceMappingURL=a.js.map',
+      'a.js.map': '{"version":3,"sources":["x.ts"],"names":[],"mappings":"AAAA"}',
+    });
+    await stampAssets(store);
+    expect(JSON.parse(store.assets.get('a.js.map') as string).debugId).toMatch(/^[0-9a-f-]{36}$/);
+  });
+
+  it('rollupAssetStore.mapOf names the map asset of a chunk, or nothing', () => {
+    const store = rollupAssetStore({
+      ...moved(),
+      'b.js': chunk('b.js', 'x'),
+      'c.js': chunk('c.js', 'x'),
+      'c.js.map': asset('c.js.map', '{}'),
+      'logo.png': asset('logo.png', 'x'),
+    });
+    expect(store.mapOf?.('js/a.js')).toBe('maps/a.js.map');
+    expect(store.mapOf?.('b.js')).toBeUndefined(); // no map asset
+    expect(store.mapOf?.('c.js')).toBe('c.js.map');
+    expect(store.mapOf?.('logo.png')).toBeUndefined(); // not a chunk
+    expect(store.mapOf?.('nope.js')).toBeUndefined();
+  });
+});
+
+describe('stampAssets — result details', () => {
+  const run = async (args: string[]) => {
+    const { readdir, readFile, writeFile } = await import('node:fs/promises');
+    const { join } = await import('node:path');
+    const root = args[2] as string;
+    for (const f of await readdir(root)) {
+      if (f.endsWith('.js')) {
+        await writeFile(
+          join(root, f),
+          `${await readFile(join(root, f), 'utf8')};1;\n${STAMP_COMMENT}\n`,
+        );
+      }
+    }
+    return { code: 0, stdout: '', stderr: '' };
+  };
+
+  it('lists the stamped bundles SORTED whatever order the store names them in', async () => {
+    const store = memoryStore({ 'c.js': 'c\n', 'a.js': 'a\n', 'b.js': 'b\n' });
+    expect((await stampAssets(store, { run })).stamped).toEqual(['a.js', 'b.js', 'c.js']);
+  });
+
+  it('stages and stamps an UPPERCASE .JS bundle (the CLI stamps it too)', async () => {
+    const store = memoryStore({
+      'A.JS': 'x();\n//# sourceMappingURL=A.JS.map\n',
+      'A.JS.map': '{"version":3,"sources":["a.ts"],"names":[],"mappings":"AAAA"}',
+    });
+    const result = await stampAssets(store);
+    expect(result.stamped).toEqual(['A.JS']);
+    expect(readDebugId(store.assets.get('A.JS') as string)).toMatch(/^[0-9a-f-]{36}$/);
+  });
+
+  it('refuses a stamped bundle whose map pointer leaves the output (never a silent half-stamp)', async () => {
+    const store = memoryStore({ 'js/a.js': 'x();\n//# sourceMappingURL=../../maps/a.js.map\n' });
+    const error = (await stampAssets(store).catch((e: unknown) => e)) as StampVerificationError;
+    expect(error).toBeInstanceOf(StampVerificationError);
+    expect(error.message).toContain('outside the output directory');
+    expect(error.unreachableMap).toBe(true);
+    expect(error.message).toContain('bugsee-cli');
+    expect(store.updates).toEqual([]);
+  });
+
+  it('result.maps: bundle -> its real map name', async () => {
+    const bundle = {
+      'js/a.js': {
+        type: 'chunk' as const,
+        fileName: 'js/a.js',
+        code: 'x();\n',
+        map: {},
+        sourcemapFileName: 'maps/a.js.map',
+      },
+      'maps/a.js.map': {
+        type: 'asset' as const,
+        fileName: 'maps/a.js.map',
+        source: '{"version":3,"sources":["a.ts"],"names":[],"mappings":"AAAA"}',
+      },
+      'b.js': { type: 'chunk' as const, fileName: 'b.js', code: 'y();\n', map: null },
+    };
+    const result = await stampAssets(rollupAssetStore(bundle));
+    expect(result.maps).toEqual({ 'js/a.js': 'maps/a.js.map' });
+    expect(result.stamped).toEqual(['b.js', 'js/a.js']);
+  });
+});
+
+describe('stampAssets — a store whose map is named outside the output', () => {
+  it('says so (outside the output directory) rather than a generic staging failure', async () => {
+    const store = {
+      ...memoryStore({ 'js/a.js': 'x();\n' }),
+      mapOf: () => '../maps/a.js.map',
+    };
+    const error = (await stampAssets(store).catch((e: unknown) => e)) as StampVerificationError;
+    expect(error.message).toContain('lies outside the output directory');
+    expect(error.message).toContain('inside the output directory');
+    expect(error.message).toContain('bugsee-cli');
+  });
+});
+
+describe('stampAssets — how many bundles it staged', () => {
+  const run = async () => ({ code: 0, stdout: '', stderr: '' });
+  it('is 0 for an asset it cannot match', async () => {
+    expect((await stampAssets(memoryStore({ 'a.css': 'x' }), { run })).bundles).toBe(0);
+    expect((await stampAssets(memoryStore({ 'main.js?h': 'x' }), { run })).bundles).toBe(0);
+  });
+  it('counts the BUNDLES staged, not the maps staged with them (real bugsee-cli)', async () => {
+    const MAP = '{"version":3,"sources":["x.ts"],"names":[],"mappings":"AAAA"}';
+    const store = memoryStore({
+      'a.js': 'a();\n//# sourceMappingURL=a.js.map\n',
+      'a.js.map': MAP,
+      'b.mjs': 'b();\n//# sourceMappingURL=b.mjs.map\n',
+      'b.mjs.map': MAP,
+      'c.css': 'c{}',
+    });
+    const result = await stampAssets(store);
+    expect(result.bundles).toBe(2); // four assets were staged
+    expect(result.stamped).toEqual(['a.js', 'b.mjs']);
+  });
+  it('a dry run reports the count too', async () => {
+    const store = memoryStore({ 'a.js': 'a\n', 'a.js.map': '{}', 'b.js': 'b\n' });
+    expect((await stampAssets(store, { run, dryRun: true })).bundles).toBe(2);
   });
 });

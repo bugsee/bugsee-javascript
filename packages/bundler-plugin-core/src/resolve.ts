@@ -283,6 +283,10 @@ export async function runPluginUpload(
     resealDirs?: readonly string[];
     /** The bundles the in-build stamp wrote (relative to the output directory), for the on-disk re-check. */
     stampedBundles?: readonly string[];
+    /** The in-build stamp's bundle -> map names, for the on-disk re-check. */
+    stampedMaps?: Readonly<Record<string, string>>;
+    /** The names this build emitted (relative to the output directory): what it may delete. */
+    ownFiles?: readonly string[];
     /**
      * The build's own outputs (esbuild's metafile). The run then touches exactly these files, never joins another
      * run of the same directory, and registers from these bundles only.
@@ -329,6 +333,8 @@ export async function runPluginUpload(
       // build that did not take the in-build path.
       ...(deps.preStamped === true ? { preStamped: true } : {}),
       ...(deps.stampedBundles !== undefined ? { stampedBundles: deps.stampedBundles } : {}),
+      ...(deps.stampedMaps !== undefined ? { stampedMaps: deps.stampedMaps } : {}),
+      ...(deps.ownFiles !== undefined ? { ownFiles: deps.ownFiles } : {}),
       ...(deps.files !== undefined ? { files: deps.files } : {}),
       ...(deps.resealSri === true ? { resealSri: true } : {}),
       ...(deps.resealDirs !== undefined ? { resealDirs: deps.resealDirs } : {}),
