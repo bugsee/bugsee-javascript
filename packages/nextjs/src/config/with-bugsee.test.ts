@@ -114,9 +114,17 @@ describe('withBugsee: composition', () => {
   it('hands Next the RAW value: Next JSON-encodes every define itself (a JSON string would arrive quoted)', () => {
     const out = apply(
       {},
-      deps(context({ identityDefines: { __BUGSEE_APP_VERSION__: '"a\\"b"', RAW: 'not json' } })),
+      deps(
+        context({
+          identityDefines: { __BUGSEE_APP_VERSION__: '"a\\"b"', RAW: 'not json', NUM: '42' },
+        }),
+      ),
     );
-    expect(out.compiler.define).toEqual({ __BUGSEE_APP_VERSION__: 'a"b', RAW: 'not json' });
+    expect(out.compiler.define).toEqual({
+      __BUGSEE_APP_VERSION__: 'a"b',
+      RAW: 'not json',
+      NUM: '42',
+    });
   });
 
   it('adds no define when no identity was found', () => {

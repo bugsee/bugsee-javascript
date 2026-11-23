@@ -97,14 +97,15 @@ async function fileExists(path: string): Promise<boolean> {
  */
 const withoutQuery = (name: string): string => name.replace(/\?.*$/, '');
 
-const strictUtf8 = new TextDecoder('utf-8', { fatal: true });
-/** Whether `bytes` are valid UTF-8 text (an asset with no content counts as text). */
-function isText(bytes: Buffer | undefined): boolean {
+/** Strict, BOM-preserving UTF-8: a lenient decode would silently corrupt an asset. */
+const utf8 = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
+
+/** The text of an asset's bytes, or a refusal: bytes that are not valid UTF-8 never become a source. */
+function asText(name: string, content: Buffer): string {
   try {
-    strictUtf8.decode(bytes);
-    return true;
+    return utf8.decode(content);
   } catch {
-    return false;
+    throw new Error(`${name} is not valid UTF-8, so it cannot be stamped as a text source`);
   }
 }
 
@@ -136,14 +137,7 @@ export function nextAssetStore(
     }
     for (const name of names) {
       const clean = up(withoutQuery(name));
-      // A string source cannot carry bytes that are not UTF-8 without corrupting them, so such an asset is not
-      // offered for stamping at all (a map that is not text refuses the whole stamp).
-      if (isText(compilation.getAsset(name)?.source.buffer())) {
-        actual.set(counts.get(clean) === 1 ? clean : up(name), name);
-      } else if (/\.map(\?|$)/.test(name)) {
-        // A map left out would leave its bundle stamped with an id the map never got.
-        throw new Error(`${name} is not valid UTF-8, so it cannot be stamped as text`);
-      }
+      actual.set(counts.get(clean) === 1 ? clean : up(name), name);
     }
   };
   const real = (name: string): string => actual.get(name) ?? name;
@@ -156,8 +150,11 @@ export function nextAssetStore(
     // A STRING source on purpose: the stamp runs before webpack's RealContentHashPlugin renames `[contenthash]`
     // chunks, and that plugin rewrites the hashed names inside string sources only. A Buffer would keep the
     // pre-rename chunk URLs (measured on real Next builds: every lazy chunk 404s, ChunkLoadError).
+    // Asked by the stamp for every asset BEFORE anything is written, so a bad asset refuses the whole stamp
+    // instead of leaving half of it applied.
+    check: (name, content) => void asText(name, content),
     update: (name, content) =>
-      compilation.updateAsset(real(name), new RawSource(content.toString('utf8'))),
+      compilation.updateAsset(real(name), new RawSource(asText(name, content))),
     mapOf: (name) => {
       const related = compilation.getAsset(real(name))?.info?.related?.sourceMap;
       const map = Array.isArray(related) ? related[0] : related;

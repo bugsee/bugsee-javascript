@@ -420,21 +420,22 @@ describe('nextAssetStore: sources webpack can still rewrite', () => {
     expect(store.get('static/a.js')?.toString('utf8')).toBe('new \u00e9 text');
   });
 
-  it('does not offer an asset whose bytes are not valid UTF-8 (a string source would corrupt it)', () => {
-    const { compilation, store } = fakeCompilation({ 'a.js': 'ok', 'b.js': 'x' });
-    store.set('b.js', Buffer.from([0xff, 0xfe, 0x00, 0x80]));
-    expect(nextAssetStore(compilation, RawSource).names()).toEqual(['a.js']);
+  it('refuses bytes that are not valid UTF-8 up front (a string source would corrupt them)', () => {
+    const { compilation } = fakeCompilation({ 'a.js': 'ok' });
+    const assets = nextAssetStore(compilation, RawSource);
+    expect(() => assets.check?.('a.js', Buffer.from([0xff, 0xfe, 0x00, 0x80]))).toThrow(
+      /not valid UTF-8/,
+    );
+    expect(() => assets.update('a.js', Buffer.from([0xff, 0xfe]))).toThrow(/not valid UTF-8/);
+    expect(compilation.updateAsset).not.toHaveBeenCalled();
+    expect(() => assets.check?.('a.js', Buffer.from('fine \u00e9'))).not.toThrow();
   });
 
-  it('a bundle whose map cannot be offered refuses the whole stamp instead of half-stamping', async () => {
-    const { compilation, store } = fakeCompilation(
-      { 'a.js': 'x', 'a.js.map': 'm' },
-      { 'a.js': 'a.js.map' },
-    );
-    store.set('a.js.map', Buffer.from([0xff, 0xfe]));
+  it('keeps a byte-order mark instead of dropping it', () => {
+    const { compilation, store } = fakeCompilation({ 'b.js': 'y' });
     const assets = nextAssetStore(compilation, RawSource);
-    const { stampAssets } = await import('@bugsee/bundler-plugin-core');
-    await expect(stampAssets(assets, { dryRun: true })).rejects.toThrow();
+    assets.update('b.js', Buffer.from('\ufeffwith bom'));
+    expect(store.get('b.js')?.toString('utf8')).toBe('\ufeffwith bom');
   });
 });
 
