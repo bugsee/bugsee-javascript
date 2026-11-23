@@ -603,3 +603,455 @@ describeReal('a stylesheet map beside the stamped maps (Rspack, [file].map)', ()
     expect(out.files.filter((f) => f.endsWith('.map'))).toEqual([]);
   });
 });
+
+// A map can be MOVED by `sourcemapFileNames` (another directory of the output). inject pairs a staged bundle
+// with its map by the sourceMappingURL comment or the sibling name, so the stamp must make the pairing work
+// for any location, or the bundle is stamped with an id that is never uploaded and the map is left behind.
+describeReal('maps moved to another directory (sourcemapFileNames: "maps/[name].js.map")', () => {
+  const shapes = [
+    ['same directory tree, maps/ beside the bundles', {}],
+    [
+      'bundles in js/, maps in maps/',
+      { entryFileNames: 'js/[name].js', chunkFileNames: 'js/[name].js' },
+    ],
+  ] as const;
+  for (const failOnError of [true, false]) {
+    for (const [shape, extraOutput] of shapes) {
+      const tag = `${shape}, failOnError ${failOnError}`;
+      const check = (out: string, before: number, notices: string[], errors: unknown[]): void => {
+        const files = readdirSync(out, { recursive: true }) as string[];
+        expect(errors.map(String)).toEqual([]);
+        expect(notices.join('\n')).not.toContain('not part of this build');
+        expect(requests.length, 'uploaded').toBeGreaterThan(before);
+        expect(
+          files.filter((f) => f.endsWith('.map')),
+          'maps deleted after the upload',
+        ).toEqual([]);
+        const bundles = files.filter((f) => /\.[cm]?js$/.test(f));
+        expect(bundles.length).toBeGreaterThan(0);
+        for (const bundle of bundles) {
+          expect(readFileSync(join(out, bundle), 'utf8'), bundle).toMatch(
+            /\/\/# debugId=[0-9a-f-]{36}/,
+          );
+        }
+      };
+
+      it(`Rollup (${tag})`, async () => {
+        const app = makeApp(`rollup-moved-${shape.length}-${failOnError}`, { lazy: false });
+        const before = requests.length;
+        const [notices, errors]: [string[], unknown[]] = [[], []];
+        const bundle = await rollup({
+          input: join(app.dir, 'index.js'),
+          plugins: [
+            bugseeRollupPlugin({
+              ...pluginOptions(),
+              failOnError,
+              onNotice: (m: string) => notices.push(m),
+              onError: (e: unknown) => errors.push(e),
+            }),
+          ],
+        });
+        await bundle.write({
+          dir: app.out,
+          sourcemap: true,
+          sourcemapFileNames: 'maps/[name].js.map',
+          ...extraOutput,
+        });
+        await bundle.close();
+        check(app.out, before, notices, errors);
+      });
+
+      for (const [label, build] of [
+        ['Vite 8 (Rolldown)', viteBuild],
+        ['Vite 7 (Rollup)', vite7Build],
+      ] as const) {
+        it(`${label} (${tag})`, async () => {
+          const app = makeApp(
+            `vite-moved-${label.replace(/\W+/g, '')}-${shape.length}-${failOnError}`,
+            { lazy: false },
+          );
+          const before = requests.length;
+          const [notices, errors]: [string[], unknown[]] = [[], []];
+          await build(
+            viteConfig(
+              app,
+              [
+                bugseeVite({
+                  failOnError,
+                  onNotice: (m: string) => notices.push(m),
+                  onError: (e: unknown) => errors.push(e),
+                }),
+              ],
+              {
+                rollupOptions: {
+                  output: { sourcemapFileNames: 'maps/[name].js.map', ...extraOutput },
+                },
+              },
+            ),
+          );
+          check(app.out, before, notices, errors);
+        });
+      }
+    }
+  }
+});
+
+// The CLI's directory scan has no depth limit and inject stamps a bundle however deep it is.
+describeReal('a bundle deeper than the walk depth cap', () => {
+  it('Rollup: entryFileNames a/b/c/d/e/f/g/[name].js is stamped, uploaded and its map deleted', async () => {
+    const app = makeApp('rollup-deep', { lazy: false });
+    const before = requests.length;
+    const [notices, errors]: [string[], unknown[]] = [[], []];
+    const bundle = await rollup({
+      input: join(app.dir, 'index.js'),
+      plugins: [
+        bugseeRollupPlugin({
+          ...pluginOptions(),
+          onNotice: (m: string) => notices.push(m),
+          onError: (e: unknown) => errors.push(e),
+        }),
+      ],
+    });
+    await bundle.write({
+      dir: app.out,
+      sourcemap: true,
+      entryFileNames: 'a/b/c/d/e/f/g/[name].js',
+    });
+    await bundle.close();
+    expect(errors.map(String)).toEqual([]);
+    expect(notices).toEqual([]);
+    expect(requests.length).toBeGreaterThan(before);
+    const files = readdirSync(app.out, { recursive: true }) as string[];
+    expect(files.filter((f) => f.endsWith('.map'))).toEqual([]);
+    expect(readFileSync(join(app.out, 'a/b/c/d/e/f/g/index.js'), 'utf8')).toMatch(/debugId=/);
+  });
+});
+
+// Maps this build did not produce, in directories that are not its output, must survive (the CLI's directory
+// scan reaches them; deleting them is not this build's business).
+describeReal('foreign css/declaration maps in an existing output directory', () => {
+  it("Rollup: dist/node_modules, src, dot-dirs are untouched; this build's own maps are gone", async () => {
+    const app = makeApp('rollup-foreign', { lazy: false });
+    const foreign = [
+      'node_modules/pkg/style.css.map',
+      'node_modules/pkg/types.d.ts.map',
+      '.cache/x.d.ts.map',
+      'src/old.d.ts.map',
+    ];
+    for (const rel of foreign) {
+      mkdirSync(join(app.out, rel, '..'), { recursive: true });
+      writeFileSync(join(app.out, rel), '{}');
+    }
+    const before = requests.length;
+    const bundle = await rollup({
+      input: join(app.dir, 'index.js'),
+      plugins: [bugseeRollupPlugin(pluginOptions())],
+    });
+    await bundle.write({ dir: app.out, sourcemap: true });
+    await bundle.close();
+    expect(requests.length).toBeGreaterThan(before);
+    const left = (readdirSync(app.out, { recursive: true }) as string[])
+      .filter((f) => f.endsWith('.map'))
+      .sort();
+    expect(left).toEqual([...foreign].sort());
+  });
+});
+
+// A map the bundle points at but that cannot be stamped with it (outside the output, or an unencoded space) must
+// never leave a stamped bundle whose id never reaches its map: the stamp is refused/restored and reported.
+describeReal('Rspack: a source map the stamp cannot reach', () => {
+  const build = (
+    app: { dir: string; out: string },
+    output: object,
+    filename: string,
+    failOnError: boolean,
+    errors: unknown[],
+  ) =>
+    new Promise<{ errors: unknown[] }>((resolve, reject) => {
+      const compiler = rspack({
+        context: app.dir,
+        mode: 'production',
+        entry: join(app.dir, 'index.js'),
+        devtool: false,
+        output: { path: app.out, ...output },
+        plugins: [
+          new rspack.SourceMapDevToolPlugin({ filename }),
+          bugseeRspackPlugin({
+            ...pluginOptions(),
+            failOnError,
+            onError: (e: unknown) => errors.push(e),
+          }),
+        ],
+      });
+      compiler.run((err, stats) => {
+        compiler.close(() =>
+          err
+            ? reject(err)
+            : resolve({
+                errors: [...(stats as { compilation: { errors: unknown[] } }).compilation.errors],
+              }),
+        );
+      });
+    });
+
+  it('a map OUTSIDE the output directory: nothing is stamped or uploaded, and it is said (never a silent half-stamp)', async () => {
+    const app = makeApp('rspack-outside', { lazy: false });
+    const before = requests.length;
+    const errors: unknown[] = [];
+    await build(app, { filename: 'js/[name].js' }, '../maps/[file].map', false, errors);
+    expect(errors.map((e) => String((e as Error).message ?? e)).join('\n')).toContain(
+      'outside the output directory',
+    );
+    expect(readFileSync(join(app.out, 'js', 'main.js'), 'utf8')).not.toContain('debugId');
+    expect(requests.length).toBe(before);
+  });
+
+  it('a map OUTSIDE the output directory fails the build under failOnError', async () => {
+    const app = makeApp('rspack-outside-strict', { lazy: false });
+    const before = requests.length;
+    await expect(
+      build(app, { filename: 'js/[name].js' }, '../maps/[file].map', true, []),
+    ).rejects.toThrow(/outside the output directory/);
+    expect(requests.length).toBe(before);
+  });
+
+  it('a map under a directory with a space, pointer emitted unencoded: stamped (mapOf) and uploaded', async () => {
+    const app = makeApp('rspack-space', { lazy: false });
+    const before = requests.length;
+    const errors: unknown[] = [];
+    const result = await build(
+      app,
+      { filename: 'j s/[name].js' },
+      'my maps/[file].map',
+      true,
+      errors,
+    );
+    expect(result.errors.map(String)).toEqual([]);
+    expect(errors.map(String)).toEqual([]);
+    expect(requests.length).toBeGreaterThan(before);
+    const files = readdirSync(app.out, { recursive: true }) as string[];
+    expect(files.filter((f) => f.endsWith('.map'))).toEqual([]);
+    expect(readFileSync(join(app.out, 'j s', 'main.js'), 'utf8')).toMatch(/debugId=/);
+  });
+
+  it('a map moved into another directory of the output (maps/[file].map, bundles in js/): stamped and uploaded', async () => {
+    const app = makeApp('rspack-moved', { lazy: false });
+    const before = requests.length;
+    const errors: unknown[] = [];
+    const result = await build(app, { filename: 'js/[name].js' }, 'maps/[file].map', true, errors);
+    expect(result.errors.map(String)).toEqual([]);
+    expect(errors.map(String)).toEqual([]);
+    expect(requests.length).toBeGreaterThan(before);
+    expect(
+      (readdirSync(app.out, { recursive: true }) as string[]).filter((f) => f.endsWith('.map')),
+    ).toEqual([]);
+  });
+});
+
+// Identity, not directory names: this build's own css/declaration maps are deleted wherever they are (even under
+// dist/src from preserveModules), and files it did not emit are never deleted, even under an innocent name.
+describeReal('ownership: only what this build emitted is deleted', () => {
+  const seed = (out: string, rels: string[]): void => {
+    for (const rel of rels) {
+      mkdirSync(join(out, rel, '..'), { recursive: true });
+      writeFileSync(join(out, rel), '{}');
+    }
+  };
+  const mapsLeft = (out: string): string[] =>
+    (readdirSync(out, { recursive: true }) as string[]).filter((f) => f.endsWith('.map')).sort();
+  const emitExtraMaps = (names: string[]) => ({
+    name: 'emit-extra-maps',
+    generateBundle(this: { emitFile(f: object): void }) {
+      for (const fileName of names) {
+        this.emitFile({ type: 'asset', fileName, source: '{}' });
+      }
+    },
+  });
+
+  it('Rollup preserveModules: dist/src/** css + declaration maps of THIS build are deleted; seeded foreign ones survive', async () => {
+    const app = makeApp('rollup-own', { lazy: false });
+    const foreign = ['node_modules/pkg/style.css.map', '.cache/x.d.ts.map', 'src/old.d.ts.map'];
+    seed(app.out, foreign);
+    const before = requests.length;
+    const bundle = await rollup({
+      input: join(app.dir, 'index.js'),
+      plugins: [
+        bugseeRollupPlugin(pluginOptions()),
+        emitExtraMaps(['src/style.css.map', 'src/a.d.ts.map']),
+      ],
+    });
+    await bundle.write({
+      dir: app.out,
+      sourcemap: true,
+      preserveModules: true,
+      entryFileNames: 'src/[name].js',
+    });
+    await bundle.close();
+    expect(requests.length).toBeGreaterThan(before);
+    expect(mapsLeft(app.out)).toEqual([...foreign].sort());
+  });
+
+  it('Vite 8: foreign public/vendor/bootstrap.css.map and a foreign KEYED public/x.js.map are not deleted', async () => {
+    const app = makeApp('vite-own', { lazy: false });
+    mkdirSync(join(app.dir, 'public', 'vendor'), { recursive: true });
+    writeFileSync(join(app.dir, 'public', 'vendor', 'bootstrap.css.map'), '{}');
+    writeFileSync(
+      join(app.dir, 'public', 'x.js.map'),
+      '{"version":3,"debugId":"b039c7fb-d958-5fe6-b76f-136179e9a728"}',
+    );
+    const notices: string[] = [];
+    const before = requests.length;
+    await viteBuild(viteConfig(app, [bugseeVite({ onNotice: (m: string) => notices.push(m) })]));
+    expect(requests.length).toBeGreaterThan(before);
+    expect(mapsLeft(app.out)).toEqual(['vendor/bootstrap.css.map', 'x.js.map']);
+    expect(notices.join('\n')).toContain('x.js.map');
+  });
+
+  it("Rspack: a pre-seeded foreign css map survives, this build's own js map is deleted", async () => {
+    const app = makeApp('rspack-own', { lazy: false });
+    seed(app.out, ['vendor/foreign.css.map', 'src/old.d.ts.map']);
+    const before = requests.length;
+    const compile = await new Promise<void>((resolve, reject) => {
+      const compiler = rspack({
+        context: app.dir,
+        mode: 'production',
+        entry: join(app.dir, 'index.js'),
+        devtool: 'source-map',
+        output: { path: app.out },
+        plugins: [bugseeRspackPlugin(pluginOptions())],
+      });
+      compiler.run((err) => compiler.close(() => (err ? reject(err) : resolve())));
+    });
+    void compile;
+    expect(requests.length).toBeGreaterThan(before);
+    expect(mapsLeft(app.out)).toEqual(['src/old.d.ts.map', 'vendor/foreign.css.map']);
+  });
+});
+
+// webpack/Rspack asset names can carry a ?query (`[name].js?[contenthash]`); the disk name does not. The stamp
+// must match, stage and write back through the query, and the deletion by identity must too.
+describeReal('Rspack: asset names with a ?query', () => {
+  for (const failOnError of [true, false]) {
+    it(`[name].js?[contenthash] and a chunkFilename query: stamped, uploaded, all of this build's maps deleted (failOnError ${failOnError})`, async () => {
+      const app = makeApp(`rspack-query-${failOnError}`);
+      const before = requests.length;
+      const errors: unknown[] = [];
+      const result = await new Promise<{ errors: unknown[] }>((resolve, reject) => {
+        const compiler = rspack({
+          context: app.dir,
+          mode: 'production',
+          entry: join(app.dir, 'index.js'),
+          devtool: 'source-map',
+          output: {
+            path: app.out,
+            filename: '[name].js?[contenthash]',
+            chunkFilename: '[name].js?[contenthash]',
+          },
+          plugins: [
+            bugseeRspackPlugin({
+              ...pluginOptions(),
+              failOnError,
+              onError: (e: unknown) => errors.push(e),
+            }),
+          ],
+        });
+        compiler.run((err, stats) =>
+          compiler.close(() =>
+            err
+              ? reject(err)
+              : resolve({
+                  errors: [...(stats as { compilation: { errors: unknown[] } }).compilation.errors],
+                }),
+          ),
+        );
+      });
+      expect(result.errors.map(String)).toEqual([]);
+      expect(errors.map(String)).toEqual([]);
+      expect(requests.length, 'uploaded').toBeGreaterThan(before);
+      const files = readdirSync(app.out, { recursive: true }) as string[];
+      expect(files.filter((f) => f.endsWith('.map'))).toEqual([]);
+      const bundles = files.filter((f) => /\.js$/.test(f));
+      expect(bundles.length).toBeGreaterThanOrEqual(2);
+      for (const bundle of bundles) {
+        expect(readFileSync(join(app.out, bundle), 'utf8'), bundle).toMatch(/\/\/# debugId=/);
+      }
+    });
+  }
+});
+
+// GROUND TRUTH: webpack/Rspack write `a#1.js` as `a#1.js` (the `#` stays); only `?...` is dropped.
+describeReal('Rspack: # in a file name is part of the name', () => {
+  const run = (
+    app: { dir: string; out: string },
+    filename: unknown,
+    failOnError: boolean,
+    errors: unknown[],
+  ) =>
+    new Promise<{ errors: unknown[] }>((resolve, reject) => {
+      writeFileSync(join(app.dir, 'other.js'), "console.log('other');\n");
+      const compiler = rspack({
+        context: app.dir,
+        mode: 'production',
+        entry: { main: join(app.dir, 'index.js'), a: join(app.dir, 'other.js') },
+        devtool: 'source-map',
+        output: { path: app.out, filename: filename as never },
+        plugins: [
+          bugseeRspackPlugin({
+            ...pluginOptions(),
+            failOnError,
+            onError: (e: unknown) => errors.push(e),
+          }),
+        ],
+      });
+      compiler.run((err, stats) =>
+        compiler.close(() =>
+          err
+            ? reject(err)
+            : resolve({
+                errors: [...(stats as { compilation: { errors: unknown[] } }).compilation.errors],
+              }),
+        ),
+      );
+    });
+  const expectAllStampedAndGone = (out: string, before: number, atLeast: number): void => {
+    const files = readdirSync(out, { recursive: true }) as string[];
+    expect(requests.length, 'uploaded').toBeGreaterThan(before);
+    expect(
+      files.filter((f) => f.endsWith('.map')),
+      'every own map deleted',
+    ).toEqual([]);
+    const bundles = files.filter((f) => /\.js$/.test(f));
+    expect(bundles.length).toBeGreaterThanOrEqual(atLeast);
+    for (const bundle of bundles) {
+      expect(readFileSync(join(out, bundle), 'utf8'), bundle).toMatch(/\/\/# debugId=/);
+    }
+  };
+
+  for (const failOnError of [true, false]) {
+    it(`one entry emitted as a#1.js beside normal bundles (failOnError ${failOnError})`, async () => {
+      const app = makeApp(`rspack-hash-mixed-${failOnError}`, { lazy: false });
+      const before = requests.length;
+      const errors: unknown[] = [];
+      const result = await run(
+        app,
+        (p: { chunk?: { name?: string } }) => (p.chunk?.name === 'a' ? 'a#1.js' : '[name].js'),
+        failOnError,
+        errors,
+      );
+      expect(result.errors.map(String)).toEqual([]);
+      expect(errors.map(String)).toEqual([]);
+      expect(readdirSync(app.out)).toContain('a#1.js');
+      expectAllStampedAndGone(app.out, before, 2);
+    });
+
+    it(`every file named [name]#[contenthash:6].js (failOnError ${failOnError})`, async () => {
+      const app = makeApp(`rspack-hash-all-${failOnError}`, { lazy: false });
+      const before = requests.length;
+      const errors: unknown[] = [];
+      const result = await run(app, '[name]#[contenthash:6].js', failOnError, errors);
+      expect(result.errors.map(String)).toEqual([]);
+      expect(errors.map(String)).toEqual([]);
+      expectAllStampedAndGone(app.out, before, 2);
+    });
+  }
+});

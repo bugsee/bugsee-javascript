@@ -183,7 +183,7 @@ describe('post-emit stamp verification', () => {
     expect(await readFile(join(dir, 'src', 'm.js'), 'utf8')).toBe('m();\n');
   });
 
-  it('the snapshot stops at the depth limit, like the map walk (a mis-resolved root must not traverse a disk)', async () => {
+  it('the snapshot reaches any depth of an ordinary output directory (inject stamps that deep too)', async () => {
     let deep = dir;
     for (let i = 0; i < 8; i++) {
       deep = join(deep, `d${i}`);
@@ -196,10 +196,10 @@ describe('post-emit stamp verification', () => {
       }
       return { code: 0, stdout: '', stderr: '' };
     });
-    const onError = vi.fn();
-    await uploadSourcemaps(opts({ run: spy, onError }));
-    expect(onError).not.toHaveBeenCalled(); // beyond the limit: never snapshotted, so never "restored"
-    expect(await readFile(join(deep, 'deep.js'), 'utf8')).toBe('{{');
+    const errors: unknown[] = [];
+    await uploadSourcemaps(opts({ run: spy, onError: (e: unknown) => errors.push(e) }));
+    expect(errors).toHaveLength(1);
+    expect(await readFile(join(deep, 'deep.js'), 'utf8')).toBe('deep();\n');
   });
 
   it('does not snapshot or restore a directory that is the project root (or above): it says so, and inject still runs', async () => {
@@ -470,7 +470,7 @@ describe('an in-build stamp is checked again on disk, after the bundler wrote th
     expect(String(errors[0])).toContain('a.js.map');
     expect(String(errors[0])).toContain('after the build wrote it');
     // The run goes on (what is keyed is still uploaded), and the unkeyed map is NOT deleted.
-    expect(result.uploaded).toBe(true);
+    expect(result.uploaded).toBe(false); // nothing keyed: nothing uploaded
     expect(await readdir(dir)).toContain('a.js.map');
   });
 
@@ -604,7 +604,8 @@ describe('a pre-stamped directory upload names its files (never the directory)',
     expect(onError).not.toHaveBeenCalled();
     expect(notices).toHaveLength(1);
     expect(notices[0]).toContain('vendor.js.map');
-    expect(notices[0]).toContain('not part of this build');
+    expect(notices[0]).toContain('were not uploaded');
+    expect(notices[0]).not.toContain('not part of this build');
   });
 
   it('uploads and deletes a keyed map of ANY name (index.map), and deletes nothing that was not uploaded', async () => {
@@ -715,7 +716,7 @@ describe('a pre-stamped directory upload names its files (never the directory)',
     const notices: string[] = [];
     const result = await uploadSourcemaps(opts({ run, onNotice: (m: string) => notices.push(m) }));
     expect(calls).toEqual([]);
-    expect(result.uploaded).toBe(true);
+    expect(result.uploaded).toBe(false);
     expect(notices).toHaveLength(1);
     await expect(uploadSourcemaps(opts({ run, failOnError: true }))).rejects.toThrow(
       /no source maps/,
@@ -748,5 +749,267 @@ describe('a pre-stamped directory upload names its files (never the directory)',
     } finally {
       warn.mockRestore();
     }
+  });
+});
+
+describe('the explicit upload is deterministic and its result is truthful', () => {
+  let dir: string;
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'bugsee-order-'));
+  });
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+  const keyed = JSON.stringify({ debugId: ID });
+  const opts = (extra: object = {}) => ({
+    ...base,
+    outDir: dir,
+    preStamped: true,
+    verifySri: async () => [],
+    deleteMaps: false,
+    ...extra,
+  });
+
+  it('sorts whatever the walk returned: batch composition and notice order are stable', async () => {
+    const names = Array.from({ length: 205 }, (_, i) =>
+      join(dir, `m${String(i).padStart(3, '0')}.js.map`),
+    );
+    for (const n of names) {
+      await writeFile(n, keyed);
+    }
+    await writeFile(join(dir, 'zz.js.map'), '{"version":3}');
+    await writeFile(join(dir, 'aa.js.map'), '{"version":3}');
+    const unsorted = [join(dir, 'zz.js.map'), ...[...names].reverse(), join(dir, 'aa.js.map')];
+    const calls: string[][] = [];
+    const notices: string[] = [];
+    await uploadSourcemaps(
+      opts({
+        listUploadMaps: async () => unsorted,
+        run: async (args: string[]) => {
+          calls.push(args);
+          return { code: 0, stdout: '', stderr: '' };
+        },
+        onNotice: (m: string) => notices.push(m),
+      }),
+    );
+    const uploads = calls.filter((c) => c[0] === 'debug-files');
+    const files = uploads.map((c) => c.slice(2).filter((a) => a.endsWith('.map')));
+    expect(files[0]).toEqual(names.slice(0, 200));
+    expect(files[1]).toEqual(names.slice(200));
+    expect(notices[0]?.indexOf('aa.js.map')).toBeLessThan(
+      notices[0]?.indexOf('zz.js.map') as number,
+    );
+  });
+
+  it('reports uploaded:false when nothing was uploaded, true when something was', async () => {
+    await writeFile(join(dir, 'vendor.js.map'), '{"version":3}');
+    const run = async () => ({ code: 0, stdout: '', stderr: '' });
+    const none = await uploadSourcemaps(opts({ run, onNotice: () => undefined }));
+    expect(none).toMatchObject({ injected: true, uploaded: false, deletedMaps: [] });
+    await writeFile(join(dir, 'k.js.map'), keyed);
+    const some = await uploadSourcemaps(opts({ run, onNotice: () => undefined }));
+    expect(some.uploaded).toBe(true);
+  });
+});
+
+describe('foreign maps in fenced directories are never touched, read for a notice, or deleted', () => {
+  let dir: string;
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'bugsee-foreign-'));
+  });
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+  const keyed = JSON.stringify({ debugId: ID });
+  const ok = async (): Promise<SpawnResult> => ({ code: 0, stdout: '', stderr: '' });
+  const foreign = [
+    'node_modules/pkg/style.css.map',
+    'node_modules/pkg/types.d.ts.map',
+    '.cache/x.d.ts.map',
+    'src/old.d.ts.map',
+  ];
+  const seedForeign = async (): Promise<void> => {
+    for (const rel of foreign) {
+      await mkdir(join(dir, rel, '..'), { recursive: true });
+      await writeFile(join(dir, rel), '{}');
+    }
+    await mkdir(join(dir, 'node_modules', 'pkg'), { recursive: true });
+    await writeFile(join(dir, 'node_modules', 'pkg', 'vendor.js.map'), '{"version":3}');
+  };
+
+  it("pre-stamped: this build's own css/declaration maps are deleted, foreign ones under node_modules/src/dot-dirs survive, and no notice names them", async () => {
+    await seedForeign();
+    await writeFile(join(dir, 'a.js.map'), keyed);
+    await writeFile(join(dir, 'main.css.map'), '{}');
+    await writeFile(join(dir, 'types.d.ts.map'), '{}');
+    const notices: string[] = [];
+    await uploadSourcemaps({
+      ...base,
+      outDir: dir,
+      run: ok,
+      preStamped: true,
+      verifySri: async () => [],
+      onNotice: (m) => notices.push(m),
+    });
+    const left = ((await readdir(dir, { recursive: true })) as string[])
+      .filter((f) => f.endsWith('.map'))
+      .sort();
+    expect(left).toEqual([...foreign, 'node_modules/pkg/vendor.js.map'].sort());
+    expect(notices.join('\n')).not.toContain('node_modules');
+  });
+
+  it('post-emit (default walker): the same rule, and keyed maps at any depth or under src/ ARE deleted', async () => {
+    await seedForeign();
+    await mkdir(join(dir, 'src'), { recursive: true });
+    await writeFile(join(dir, 'src', 'k.js.map'), keyed);
+    let deep = dir;
+    for (let i = 0; i < 8; i++) {
+      deep = join(deep, `d${i}`);
+      await mkdir(deep);
+    }
+    await writeFile(join(deep, 'deep.js.map'), keyed);
+    await writeFile(join(dir, 'main.css.map'), '{}');
+    const onError = vi.fn();
+    await uploadSourcemaps({
+      ...base,
+      outDir: dir,
+      run: ok,
+      findSri: async () => [],
+      spillRoot: tmpdir(),
+      onError,
+    });
+    expect(onError).not.toHaveBeenCalled(); // the unkeyed vendor map under node_modules is not this build's to report
+    const left = ((await readdir(dir, { recursive: true })) as string[])
+      .filter((f) => f.endsWith('.map'))
+      .sort();
+    expect(left).toEqual([...foreign, 'node_modules/pkg/vendor.js.map'].sort());
+  });
+});
+
+describe("the on-disk re-check uses the build's own bundle -> map names", () => {
+  it('flags a moved map (that neither pointer nor sibling can name) that lost its id', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'bugsee-known-'));
+    try {
+      await mkdir(join(dir, 'js'));
+      await mkdir(join(dir, 'maps'));
+      await writeFile(
+        join(dir, 'js', 'a.js'),
+        `a();\n//# sourceMappingURL=a.map\n\n;1;\n//# debugId=${ID}\n`,
+      );
+      await writeFile(join(dir, 'maps', 'a.js.map'), '{"version":3}');
+      const errors: unknown[] = [];
+      await uploadSourcemaps({
+        ...base,
+        outDir: dir,
+        run: async () => ({ code: 0, stdout: '', stderr: '' }),
+        preStamped: true,
+        verifySri: async () => [],
+        stampedBundles: ['js/a.js'],
+        stampedMaps: { 'js/a.js': 'maps/a.js.map' },
+        deleteMaps: false,
+        onNotice: () => undefined,
+        onError: (e) => errors.push(e),
+      });
+      expect(String(errors[0])).toContain('maps/a.js.map');
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('ownFiles: only what THIS build emitted is deleted', () => {
+  let dir: string;
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'bugsee-own-'));
+  });
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+  const keyed = JSON.stringify({ debugId: ID });
+  const ok = async (): Promise<SpawnResult> => ({ code: 0, stdout: '', stderr: '' });
+  const put = async (rel: string, content: string): Promise<void> => {
+    await mkdir(join(dir, rel, '..'), { recursive: true });
+    await writeFile(join(dir, rel), content);
+  };
+  const left = async (): Promise<string[]> =>
+    ((await readdir(dir, { recursive: true })) as string[])
+      .filter((f) => f.endsWith('.map'))
+      .sort();
+
+  const modes = [
+    ['pre-stamped', { preStamped: true, verifySri: async () => [] }],
+    ['post-emit', { findSri: async () => [] }],
+  ] as const;
+  for (const [mode, extra] of modes) {
+    it(`${mode}: own css/declaration maps under src/ are deleted, foreign ones (even outside fenced names) and foreign keyed maps stay, and the keyed leftover is said`, async () => {
+      await put('src/a.js.map', keyed); // own, keyed
+      await put('src/style.css.map', '{}'); // own, never uploaded
+      await put('src/a.d.ts.map', '{}'); // own, never uploaded
+      await put('vendor/bootstrap.css.map', '{}'); // foreign (copied from publicDir)
+      await put('x.js.map', keyed); // foreign but keyed: uploaded as the CLI did, NOT deleted
+      await put('node_modules/pkg/style.css.map', '{}'); // foreign
+      await put('src/old.d.ts.map', '{}'); // foreign, in a name that looks like ours
+      const notices: string[] = [];
+      await uploadSourcemaps({
+        ...base,
+        outDir: dir,
+        run: ok,
+        ownFiles: ['src/a.js.map', 'src\\style.css.map', './src/a.d.ts.map'],
+        onNotice: (m) => notices.push(m),
+        onError: () => undefined,
+        ...extra,
+      });
+      expect(await left()).toEqual([
+        'node_modules/pkg/style.css.map',
+        'src/old.d.ts.map',
+        'vendor/bootstrap.css.map',
+        'x.js.map',
+      ]);
+      expect(notices.join('\n')).toContain('x.js.map');
+      expect(notices.join('\n')).toContain('not produced by this build');
+    });
+  }
+
+  it('says it on console.warn when no notice sink is given', async () => {
+    await put('x.js.map', keyed);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      await uploadSourcemaps({
+        ...base,
+        outDir: dir,
+        run: ok,
+        ownFiles: [],
+        findSri: async () => [],
+      });
+      expect(String(warn.mock.calls[0]?.[0])).toContain('not produced by this build');
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('without ownFiles the name fence still applies (post-emit CLI directory mode)', async () => {
+    await put('assets/a.js.map', keyed);
+    await put('assets/a.css.map', '{}');
+    await put('src/old.css.map', '{}');
+    await uploadSourcemaps({ ...base, outDir: dir, run: ok, findSri: async () => [] });
+    expect(await left()).toEqual(['src/old.css.map']);
+  });
+
+  it('the esbuild/files path is unchanged: it deletes exactly its listed files', async () => {
+    await put('a.js.map', keyed);
+    await put('a.css.map', '{}');
+    await put('other.css.map', '{}');
+    await uploadSourcemaps({
+      ...base,
+      outDir: dir,
+      run: ok,
+      ownFiles: [],
+      files: {
+        scripts: [join(dir, 'a.js')],
+        maps: [join(dir, 'a.js.map')],
+        stylesheetMaps: [join(dir, 'a.css.map')],
+      },
+    });
+    expect(await left()).toEqual(['other.css.map']);
   });
 });
