@@ -98,7 +98,7 @@ interface WebpackCompilerLike {
 /** The webpack-compatible API a compiler exposes (webpack 5 as `compiler.webpack`, Rspack as `compiler.rspack`). */
 interface BundlerApi {
   Compilation?: { PROCESS_ASSETS_STAGE_DEV_TOOLING: number };
-  sources?: { RawSource: new (buffer: Buffer) => unknown };
+  sources?: { RawSource: new (source: string) => unknown };
   DefinePlugin?: DefinePluginCtor;
 }
 
@@ -192,6 +192,18 @@ function unreadableIdentityNotices(
   return notices;
 }
 
+/** Strict, BOM-preserving UTF-8 (a lenient decode would silently corrupt an asset). */
+const utf8 = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
+
+/** The text of an asset's bytes, or a refusal: bytes that are not valid UTF-8 are never turned into a source. */
+function asText(name: string, content: Buffer): string {
+  try {
+    return utf8.decode(content);
+  } catch {
+    throw new Error(`${name} is not valid UTF-8, so it cannot be stamped as a text source`);
+  }
+}
+
 /**
  * An asset name without its `?query`. Measured on real Rspack builds: webpack/Rspack drop `?...` when they write
  * a file (`x.js?h` is written as `x.js`) and KEEP `#` (`a#1.js` is written as `a#1.js`), so only `?` is cut.
@@ -207,7 +219,7 @@ const withoutQuery = (name: string): string => name.replace(/\?.*$/, '');
  */
 function webpackAssetStore(
   compilation: WebpackCompilationLike,
-  RawSource: new (buffer: Buffer) => unknown,
+  RawSource: new (source: string) => unknown,
 ): AssetStore {
   const real = new Map<string, string>();
   const refresh = (): void => {
@@ -229,7 +241,13 @@ function webpackAssetStore(
       return [...real.keys()];
     },
     read: (name) => compilation.getAsset(realName(name))?.source.buffer() ?? Buffer.alloc(0),
-    update: (name, content) => compilation.updateAsset(realName(name), new RawSource(content)),
+    // STRING sources, never a Buffer: the stamp runs before webpack's RealContentHashPlugin renames
+    // `[contenthash]` chunks from their final bytes, and that plugin rewrites hash references (in the runtime,
+    // the sourceMappingURL comment, ...) only inside string sources. A Buffer kept the stale pre-rename names
+    // (the runtime asked for a chunk that did not exist: ChunkLoadError). JS and its map are UTF-8 text.
+    check: (name, content) => void asText(name, content),
+    update: (name, content) =>
+      compilation.updateAsset(realName(name), new RawSource(asText(name, content))),
     // The compilation records which asset is a bundle's source map (SourceMapDevToolPlugin: info.related).
     mapOf: (name) => {
       const related = compilation.getAsset(realName(name))?.info?.related?.sourceMap;
