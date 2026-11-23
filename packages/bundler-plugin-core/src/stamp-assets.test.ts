@@ -686,3 +686,40 @@ describe('stampAssets — how many bundles it staged', () => {
     expect((await stampAssets(store, { run, dryRun: true })).bundles).toBe(2);
   });
 });
+
+describe('stampAssets — a store can refuse the write-back (store.check), before anything is written', () => {
+  it('writes NOTHING back when check throws for any asset', async () => {
+    const MAP = '{"version":3,"sources":["x.ts"],"names":[],"mappings":"AAAA"}';
+    const store = memoryStore({
+      'a.js': 'a();\n//# sourceMappingURL=a.js.map\n',
+      'a.js.map': MAP,
+      'b.js': 'b();\n//# sourceMappingURL=b.js.map\n',
+      'b.js.map': MAP,
+    });
+    const checked: string[] = [];
+    await expect(
+      stampAssets({
+        ...store,
+        check: (name: string) => {
+          checked.push(name);
+          if (name === 'b.js') throw new Error('not text');
+        },
+      }),
+    ).rejects.toThrow('not text');
+    expect(store.updates).toEqual([]); // a.js was checked first and is fine, yet NOTHING was written
+    expect(checked).toContain('a.js');
+    expect(checked).toContain('b.js');
+  });
+
+  it('check is not asked about an asset inject left unchanged', async () => {
+    const checked: string[] = [];
+    const store = memoryStore({ 'a.css': 'x', 'a.js': 'a();\n' });
+    await stampAssets(
+      { ...store, check: (n: string) => void checked.push(n) },
+      {
+        run: async () => ({ code: 0, stdout: '', stderr: '' }),
+      },
+    );
+    expect(checked).toEqual([]);
+  });
+});

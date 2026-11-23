@@ -1,8 +1,9 @@
 // SM-A2 — orchestrate a source-map upload by driving `bugsee-cli`: inject debug-IDs, upload the maps, then
 // delete the client `.map` files (privacy). Each side-effecting step is behind an injectable seam so the
 // orchestration is unit-tested without a real binary or filesystem.
-import { readdir, unlink } from 'node:fs/promises';
+import { access, readdir, readFile, unlink } from 'node:fs/promises';
 import { join, relative, resolve } from 'node:path';
+import { readDebugId } from './debug-ids';
 import { type RunBugseeCliOptions, runBugseeCli, type SpawnResult } from './run-cli';
 import { findIntegrityMismatches, findSriProtectedScripts, type SriProtectedScript } from './sri';
 import {
@@ -192,6 +193,20 @@ export async function defaultDeleteMapFiles(
   return deleted;
 }
 
+/** The error for a stamp that did not verify: what was restored, and anything that could not be. */
+function verifyFailure(
+  issues: Parameters<typeof formatIssues>[0],
+  restored: readonly string[],
+  failed: ReadonlyArray<{ path: string; error: string }>,
+): Error {
+  return new Error(
+    `the debug-ID stamp did not verify, so ${restored.length} file(s) were restored to the bundler's original bytes (${formatIssues(issues)})` +
+      (failed.length > 0
+        ? `; COULD NOT restore ${failed.map((f) => `${f.path} (${f.error})`).join(', ')}, which still carry the unverified stamp`
+        : ''),
+  );
+}
+
 /** Where a contained upload failure goes when the user gave no `onError`. */
 function defaultUploadErrorHandler(error: unknown): void {
   console.warn(`[bugsee] source-map upload skipped: ${String(error)}`);
@@ -215,6 +230,133 @@ export async function uploadSourcemaps(
   const dryFlag = dryRun ? ['--dry-run'] : [];
   const cliOptions: RunBugseeCliOptions = { token: appToken, endpoint };
   const onError = options.onError ?? defaultUploadErrorHandler;
+
+  const notice = (message: string): void =>
+    (options.onNotice ?? ((m: string) => console.warn(`[bugsee] ${m}`)))(message);
+
+  /**
+   * Reports something that does NOT stop the upload (the catch-up's problems): the default must not say the
+   * upload was skipped, as the contained-failure wording does.
+   */
+  const reportContinuing = (error: unknown): void =>
+    (options.onError ?? ((e: unknown) => console.warn(`[bugsee] ${String(e)}`)))(error);
+
+  /** The map is a JSON object (what inject can stamp): not empty, not garbage, not `[]` / `null`. */
+  const isMapObject = async (map: string): Promise<boolean> => {
+    try {
+      const parsed: unknown = JSON.parse(await readFile(map, 'utf8'));
+      return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed);
+    } catch {
+      return false;
+    }
+  };
+
+  /**
+   * CATCH UP the build's OWN script maps that still carry no debug-id. Vite builds a worker through a
+   * sub-build, then puts its code in the output while REGENERATING its map (Vite 8) or emitting both after
+   * our `generateBundle` (Vite 7): the worker file is stamped without its map carrying the id, or not stamped
+   * at all. `sourcemaps inject` on a bundle that already carries the id AND the registration leaves its bytes
+   * unchanged and puts the id in the map (measured, bugsee-cli 0.9.0). Only maps this build emitted
+   * (`ownFiles`) are touched, never a `public/` copy; a bundle that is not fully stamped yet and is pinned by
+   * Subresource Integrity is left alone (stamping it would change pinned bytes).
+   *
+   * Robust by construction: a map that is not a JSON object is skipped (the CLI rejects the whole batch for
+   * one), a rejected batch is retried pair by pair, and whatever was rewritten is verified and restored.
+   * Returns a failure only when files could not be restored from an unverified stamp (and `failOnError` is on).
+   */
+  const catchUpUnkeyed = async (ownFiles: readonly string[]): Promise<Error | undefined> => {
+    const own = ownedBy(outDir, ownFiles);
+    const unkeyed = (
+      await (options.partitionMaps ?? partitionByKeyed)(
+        (
+          await (options.listUploadMaps ?? listOutputMaps)(outDir)
+        ).filter((map) => isUploadableMap(map) && own(map)),
+      )
+    ).kept;
+    const pairs: Array<{ bundle: string; map: string }> = [];
+    for (const map of unkeyed) {
+      const bundle = map.slice(0, -'.map'.length);
+      if (
+        /\.[cm]?js$/i.test(bundle) &&
+        (await access(bundle).then(
+          () => true,
+          () => false,
+        )) &&
+        (await isMapObject(map))
+      ) {
+        pairs.push({ bundle, map });
+      }
+    }
+    if (pairs.length === 0) {
+      return undefined;
+    }
+    const pinned = new Set(
+      (await (options.findSri ?? findSriProtectedScripts)(outDir)).map((pin) =>
+        resolve(pin.script),
+      ),
+    );
+    const eligible: typeof pairs = [];
+    const blocked: typeof pairs = [];
+    for (const pair of pairs) {
+      let code: string;
+      try {
+        code = await readFile(pair.bundle, 'utf8');
+      } catch {
+        continue; // vanished, or not a file: not a candidate
+      }
+      // "Stamped" means the id AND the registration: a foreign `//# debugId=` comment alone would still get
+      // the registration appended, which changes pinned bytes.
+      const stamped = readDebugId(code) !== undefined && code.includes('_bugseeDebugIds');
+      (pinned.has(resolve(pair.bundle)) && !stamped ? blocked : eligible).push(pair);
+    }
+    if (blocked.length > 0) {
+      notice(
+        `${blocked.length} script(s) this build emitted were not fully stamped because Subresource Integrity pins them, so their maps were not uploaded: ${blocked.map((pair) => pair.bundle).join(', ')}`,
+      );
+    }
+    if (eligible.length === 0) {
+      return undefined;
+    }
+    const targets = eligible.flatMap((pair) => [pair.bundle, pair.map]);
+    const snapshot = await snapshotStampFiles({ files: targets }, options.spillRoot);
+    try {
+      const pairErrors: Error[] = [];
+      try {
+        for (const batch of inBatches(targets)) {
+          await run(['sourcemaps', 'inject', ...batch], cliOptions);
+        }
+      } catch {
+        // The CLI rejected a batch: find out which pair, so one bad file does not cost the others.
+        for (const pair of eligible) {
+          try {
+            await run(['sourcemaps', 'inject', pair.bundle, pair.map], cliOptions);
+          } catch (error) {
+            pairErrors.push(
+              new Error(`bugsee-cli could not stamp ${pair.bundle}: ${String(error)}`),
+            );
+          }
+        }
+      }
+      // Whatever was rewritten (even by a CLI that then failed) is verified, and restored if it is not sound:
+      // BEFORE anything is reported, so a user handler that throws cannot skip it.
+      const { issues, restored, failed } = await verifyAndRestore(snapshot);
+      for (const error of pairErrors) {
+        reportContinuing(error);
+      }
+      if (issues.length > 0) {
+        const failure = verifyFailure(issues, restored, failed);
+        // Restored means the output is exactly what the bundler wrote (safe): reported. Only files that could
+        // NOT be restored still carry an unverified stamp, which `failOnError` refuses to ship.
+        if (options.failOnError === true && failed.length > 0) {
+          return failure;
+        }
+        reportContinuing(failure);
+      }
+      return undefined;
+    } finally {
+      await snapshot.dispose();
+    }
+  };
 
   let original: StampSnapshot | undefined;
   try {
@@ -242,6 +384,29 @@ export async function uploadSourcemaps(
         // page that is broken, not them. NOT through the default `onError` wording, which says the
         // upload was skipped; here it was not.
         (options.onError ?? ((e: unknown) => console.warn(`[bugsee] ${String(e)}`)))(error);
+      }
+      // 0'''. CATCH UP the build's OWN script maps that still carry no debug-id. Vite builds a worker through a
+      //       sub-build, then copies its code into the output while REGENERATING its map (Vite 8) or emitting both
+      //       after our `generateBundle` (Vite 7): the worker file is stamped without its map carrying the id, or
+      //       not stamped at all. `sourcemaps inject` on an already-stamped bundle leaves its bytes unchanged
+      //       and puts the bundle's id in the map (measured, bugsee-cli 0.9.0), so this is idempotent. Only maps
+      //       this build emitted (`ownFiles`) are touched, never a `public/` copy; a bundle that is not stamped
+      //       yet and is pinned by Subresource Integrity is left alone (stamping it would break the page).
+      if (!dryRun && files === undefined && options.ownFiles !== undefined) {
+        // Best effort: nothing in the catch-up may cost the build its other maps. Only an applied stamp that
+        // does not VERIFY is a strict failure (thrown under failOnError); a CLI error is reported and the map
+        // simply stays unkeyed.
+        let strict: Error | undefined;
+        try {
+          strict = await catchUpUnkeyed(options.ownFiles);
+        } catch (error) {
+          onError(
+            new Error(`stamping this build's remaining script maps failed: ${String(error)}`),
+          );
+        }
+        if (strict !== undefined) {
+          throw strict;
+        }
       }
       // 0''. The same stamp, as it is on disk after the bundler wrote the output. A later step can rewrite a
       //      chunk or REGENERATE its map after the in-build stamp (Vite does, for dynamic-import preload
@@ -332,12 +497,7 @@ export async function uploadSourcemaps(
       if (original !== undefined) {
         const { issues, restored, failed } = await verifyAndRestore(original);
         if (issues.length > 0) {
-          const failure = new Error(
-            `the debug-ID stamp did not verify, so ${restored.length} file(s) were restored to the bundler's original bytes (${formatIssues(issues)})` +
-              (failed.length > 0
-                ? `; COULD NOT restore ${failed.map((f) => `${f.path} (${f.error})`).join(', ')}, which still carry the unverified stamp`
-                : ''),
-          );
+          const failure = verifyFailure(issues, restored, failed);
           if (options.failOnError === true) {
             throw failure;
           }

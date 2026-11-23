@@ -160,8 +160,13 @@ describe('the output hooks actually drive the upload', () => {
   describe('webpack 5: stamps inside the compilation', () => {
     const DEV_TOOLING = 500;
 
+    // Faithful: a Buffer source is NOT rewritten by RealContentHashPlugin, so the fake refuses one.
     class RawSource {
-      constructor(readonly bytes: Buffer) {}
+      constructor(readonly value: string) {
+        if (typeof value !== 'string') {
+          throw new TypeError('a Buffer source would keep stale content-hash references');
+        }
+      }
     }
 
     function webpack5Compiler(options: { mode?: string } = {}) {
@@ -268,7 +273,7 @@ describe('the output hooks actually drive the upload', () => {
       expect(w.updated).toHaveLength(1);
       expect(w.updated[0]?.name).toBe('main.js');
       expect(w.updated[0]?.source).toBeInstanceOf(RawSource);
-      expect((w.updated[0]?.source as RawSource).bytes.toString()).toBe('stamped');
+      expect((w.updated[0]?.source as RawSource).value).toBe('stamped');
     });
 
     it('passes the dry-run flag to the stamp', async () => {
