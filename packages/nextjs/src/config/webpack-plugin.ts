@@ -470,6 +470,8 @@ export function createNextWebpackPlugin(
                 ))
             )(error);
           }
+          // A count, not an identity: the names the stamp saw are not the final (contenthash-renamed) ones, so a lost id
+          // is detected per COUNT. (A later stage that ADDS a pair already carrying an id could offset one lost id.)
           const missing = state.stampedWithMaps - onDisk.length - unreadable.length;
           if (missing > 0) {
             const failure = new Error(
