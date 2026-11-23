@@ -259,15 +259,25 @@ A pre-stamped build is uploaded as an **explicit file set**, never as the direct
 stamp wrote has a debug-id; anything else in the output directory (a `public/` vendor script and its map, a
 stale map with `emptyOutDir: false`) has none, and the real bugsee-cli (0.9.0, measured, without `--dry-run`)
 exits non-zero for a directory that holds a map without a debug-id ("source map has no debug_id … nothing was
-uploaded"), which would lose EVERY map of the build. So the script maps under the directory (the whole output
-directory, fenced only at a project root) are partitioned by whether they carry a debug-id BEFORE the CLI call;
-the keyed ones are uploaded by path (in batches), the rest are left on disk untouched and reported as a
-**notice** (`onNotice`), not an error: they were never part of the build, so they do not fail `failOnError`. If
-nothing is keyed there is no CLI call (a notice; under `failOnError` the "no maps" failure the strict CLI used to
-give). A dry run still passes the directory (nothing was stamped; `--dry-run` only warns). Rspack development
+uploaded"), which would lose EVERY map of the build. So every uploadable map under the directory (the whole output directory, fenced only at a project
+root) is partitioned by whether it carries a debug-id BEFORE the CLI call. "Uploadable" is what the CLI scans a
+directory for: **every `*.map` except stylesheet and declaration maps** (`.css.map`, `.d.ts.map`, `.d.mts.map`,
+`.d.cts.map`), NOT only `*.js.map`: the stamp keys a map whatever it is called (`sourcemapFileName(s)`,
+`[name].map`), and a narrower filter silently dropped such a build's maps (measured on Rollup, Vite and Rspack
+with `[name].map`). The keyed ones are uploaded by path (in batches), the rest are left on disk untouched and
+reported as a **notice** (`onNotice`), not an error: they were never part of the build, so they do not fail
+`failOnError`. If nothing is keyed there is no CLI call (a notice; under `failOnError` the "no maps" failure the
+strict CLI used to give). The deletion set comes from the SAME walk: exactly the maps that were uploaded (already classified keyed, so
+not re-read), plus the stylesheet and declaration maps of that walk, which are never uploaded but embed the
+source and so are deleted with them (as on the post-emit and `files` paths). A script map is deleted only if it
+was uploaded and the upload was confirmed: an unkeyed or unreadable one is never deleted, and nothing the walk
+merely saw is (a keyed map under `test/` or a dot-directory is uploaded AND deleted). The stylesheet and
+declaration maps are deleted only if something was uploaded. A map that cannot be read (anything but ENOENT) is
+not "gone": it is neither uploaded nor deleted and is reported with the unkeyed ones. A dry run still passes the directory (nothing was stamped; `--dry-run` only warns). Rspack development
 builds that are not uploaded (`uploadInDevelopment` unset) are no longer stamped either. Covered by real builds
-(`plugin.in-build.real-build.test.ts`: Vite 7/8 with a `publicDir` vendor script, Rollup with a stale one; real
-CLI, no dry run, `failOnError` on).
+(`plugin.in-build.real-build.test.ts`: Vite 7/8 with a `publicDir` vendor script, Rollup with a stale one, and `[name].map` custom map
+names on Rollup, Vite 7/8 and Rspack; real CLI, no dry run, `failOnError` on and off). Not run for real: webpack
+itself (Rspack shares its SourceMapDevToolPlugin filename path).
 
 ### Map deletion
 

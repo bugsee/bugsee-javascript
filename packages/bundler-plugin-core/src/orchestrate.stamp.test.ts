@@ -597,13 +597,116 @@ describe('a pre-stamped directory upload names its files (never the directory)',
     expect(upload).not.toContain(dir);
     expect(upload).not.toContain(join(dir, 'vendor.js.map'));
     expect(upload).not.toContain(join(dir, 'style.css.map'));
-    // Keyed maps and the stylesheet map are deleted; the vendor map is untouched.
+    // The uploaded maps AND the stylesheet map (never sent, embeds the source) are deleted; the unkeyed vendor
+    // script map is untouched.
     expect((await readdir(dir)).sort()).toEqual(['sub', 'vendor.js.map']);
     expect(result.uploaded).toBe(true);
     expect(onError).not.toHaveBeenCalled();
     expect(notices).toHaveLength(1);
     expect(notices[0]).toContain('vendor.js.map');
     expect(notices[0]).toContain('not part of this build');
+  });
+
+  it('uploads and deletes a keyed map of ANY name (index.map), and deletes nothing that was not uploaded', async () => {
+    await writeFile(join(dir, 'index.map'), keyed);
+    await mkdir(join(dir, 'test'));
+    await mkdir(join(dir, '.well-known'));
+    await writeFile(join(dir, 'test', 'x.js.map'), keyed);
+    await writeFile(join(dir, '.well-known', 'y.js.map'), keyed);
+    await writeFile(join(dir, 'unkeyed.map'), '{"version":3}');
+    await writeFile(join(dir, 'a.d.ts.map'), '{"version":3}');
+    const { run, calls } = record();
+    const deleted: string[][] = [];
+    const result = await uploadSourcemaps(
+      opts({
+        run,
+        failOnError: true,
+        onNotice: () => undefined,
+        deleteMapFiles: async (_d: string, only?: readonly string[]) => {
+          deleted.push([...(only ?? [])]);
+          return [...(only ?? [])];
+        },
+      }),
+    );
+    const upload = calls.find((c) => c[0] === 'debug-files') as string[];
+    const uploaded = [
+      join(dir, '.well-known', 'y.js.map'),
+      join(dir, 'index.map'),
+      join(dir, 'test', 'x.js.map'),
+    ];
+    for (const map of uploaded) {
+      expect(upload).toContain(map);
+    }
+    expect(upload).not.toContain(join(dir, 'unkeyed.map'));
+    // What was uploaded is deleted (test/ and dot-directories included), plus the declaration map that
+    // was never uploadable; the UNKEYED script map is in neither.
+    expect(deleted).toEqual([[...uploaded, join(dir, 'a.d.ts.map')]]);
+    expect(result.deletedMaps).toEqual([...uploaded, join(dir, 'a.d.ts.map')]);
+    expect(await readdir(dir)).toContain('unkeyed.map');
+  });
+
+  it('never deletes a map that was not in the uploaded set, whatever the directory walk saw', async () => {
+    await writeFile(join(dir, 'a.js.map'), keyed);
+    const { run } = record();
+    const deleted: string[][] = [];
+    const walk = vi.fn(async () => [join(dir, 'a.js.map'), join(dir, 'foreign.js.map')]);
+    await uploadSourcemaps(
+      opts({
+        run,
+        // The deletion snapshot lister would also report this map; it must not be consulted.
+        listMapFiles: walk,
+        deleteMapFiles: async (_d: string, only?: readonly string[]) => {
+          deleted.push([...(only ?? [])]);
+          return [];
+        },
+      }),
+    );
+    expect(deleted).toEqual([[join(dir, 'a.js.map')]]);
+    expect(walk).not.toHaveBeenCalled();
+  });
+
+  it('deletes stylesheet and declaration maps only when an upload happened, and never an unkeyed script map', async () => {
+    for (const name of ['a.css.map', 'a.d.ts.map', 'a.d.mts.map', 'a.d.cts.map', 'x.js.map']) {
+      await writeFile(join(dir, name), name === 'x.js.map' ? '{"version":3}' : '{}');
+    }
+    const { run, calls } = record();
+    await uploadSourcemaps(opts({ run, onNotice: () => undefined }));
+    // Nothing keyed -> no upload -> nothing confirmed -> nothing deleted.
+    expect(calls).toEqual([]);
+    expect((await readdir(dir)).sort()).toHaveLength(5);
+
+    await writeFile(join(dir, 'k.js.map'), keyed);
+    await uploadSourcemaps(opts({ run, onNotice: () => undefined }));
+    expect((await readdir(dir)).sort()).toEqual(['x.js.map']);
+  });
+
+  it('a map it cannot read is reported as not uploaded and left alone (never silently skipped)', async () => {
+    await writeFile(join(dir, 'k.js.map'), keyed);
+    await writeFile(join(dir, 'locked.js.map'), keyed);
+    await chmod(join(dir, 'locked.js.map'), 0o000);
+    const notices: string[] = [];
+    try {
+      const { run, calls } = record();
+      await uploadSourcemaps(
+        opts({ run, failOnError: true, onNotice: (m: string) => notices.push(m) }),
+      );
+      const upload = calls.find((c) => c[0] === 'debug-files') as string[];
+      expect(upload).toContain(join(dir, 'k.js.map'));
+      expect(upload).not.toContain(join(dir, 'locked.js.map'));
+      expect(notices.join('\n')).toContain('locked.js.map');
+    } finally {
+      await chmod(join(dir, 'locked.js.map'), 0o644);
+    }
+  });
+
+  it('does not re-read the maps it already classified when it decides what to delete', async () => {
+    await writeFile(join(dir, 'k.js.map'), keyed);
+    const partition = vi.fn(async (maps: readonly string[]) => ({
+      deletable: [...maps],
+      kept: [] as string[],
+    }));
+    await uploadSourcemaps(opts({ run: record().run, partitionMaps: partition }));
+    expect(partition).toHaveBeenCalledOnce();
   });
 
   it('with nothing keyed there is nothing to upload: no CLI call, a notice, and a failure only under failOnError', async () => {

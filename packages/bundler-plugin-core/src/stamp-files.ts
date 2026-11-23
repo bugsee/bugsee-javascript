@@ -331,17 +331,27 @@ export async function verifyStampedOnDisk(bundles: readonly string[]): Promise<S
   return issues;
 }
 
+/** Maps `debug-files upload` never takes: stylesheet and declaration maps have no debug-id. */
+const NOT_UPLOADED_MAP = /\.(css|d\.ts|d\.mts|d\.cts)\.map$/;
+
 /**
- * Every script map (`*.js.map`, `.cjs`, `.mjs`) under `dir`, walked like the snapshot: the whole output
- * directory, fenced only at a project root. These are the candidates for an explicit upload.
+ * Whether `path` is a map the CLI scans a directory for: every `*.map` except stylesheet and declaration
+ * maps. NOT only `*.js.map`: the stamp keys a map whatever it is called (`sourcemapFileName(s)`, webpack's
+ * `[name].map`), so a narrower filter would silently drop a stamped build's maps.
  */
-export async function listScriptMaps(dir: string): Promise<string[]> {
-  const all = await walkStampable(dir, await isProjectRootOrAbove(dir));
-  return all.filter((file) => SCRIPT_MAP.test(file)).sort();
+export function isUploadableMap(path: string): boolean {
+  return path.endsWith('.map') && !NOT_UPLOADED_MAP.test(path);
 }
 
-/** Script maps are the ones inject keys and the CLI uploads; a stylesheet map is neither. */
-const SCRIPT_MAP = /\.[cm]?js\.map$/;
+/**
+ * Every map under `dir` (`*.map`, whatever its name), walked like the snapshot: the whole output directory,
+ * fenced only at a project root. The SINGLE walk behind what a pre-stamped build uploads and deletes; the
+ * caller splits it with {@link isUploadableMap}.
+ */
+export async function listOutputMaps(dir: string): Promise<string[]> {
+  const all = await walkStampable(dir, await isProjectRootOrAbove(dir));
+  return all.filter((file) => file.endsWith('.map')).sort();
+}
 
 /**
  * Split `maps` into those that may be deleted after an upload and those that must be kept.
@@ -359,15 +369,21 @@ export async function partitionByKeyed(
   const deletable: string[] = [];
   const kept: string[] = [];
   for (const path of maps) {
-    if (!SCRIPT_MAP.test(path)) {
+    if (!isUploadableMap(path)) {
       deletable.push(path);
       continue;
     }
     let text: string;
     try {
       text = await readFile(path, 'utf8');
-    } catch {
-      // Already gone: nothing to delete and nothing to keep.
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+        // Already gone: nothing to delete and nothing to keep.
+        continue;
+      }
+      // Anything else (EACCES, a map too large to read as a string) is NOT "gone": it cannot be confirmed
+      // keyed, so it is neither uploaded nor deleted, and the caller says so.
+      kept.push(path);
       continue;
     }
     let keyed = false;
