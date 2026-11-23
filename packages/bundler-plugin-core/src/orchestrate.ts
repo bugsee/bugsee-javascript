@@ -234,6 +234,13 @@ export async function uploadSourcemaps(
   const notice = (message: string): void =>
     (options.onNotice ?? ((m: string) => console.warn(`[bugsee] ${m}`)))(message);
 
+  /**
+   * Reports something that does NOT stop the upload (the catch-up's problems): the default must not say the
+   * upload was skipped, as the contained-failure wording does.
+   */
+  const reportContinuing = (error: unknown): void =>
+    (options.onError ?? ((e: unknown) => console.warn(`[bugsee] ${String(e)}`)))(error);
+
   /** The map is a JSON object (what inject can stamp): not empty, not garbage, not `[]` / `null`. */
   const isMapObject = async (map: string): Promise<boolean> => {
     try {
@@ -291,7 +298,12 @@ export async function uploadSourcemaps(
     const eligible: typeof pairs = [];
     const blocked: typeof pairs = [];
     for (const pair of pairs) {
-      const code = await readFile(pair.bundle, 'utf8');
+      let code: string;
+      try {
+        code = await readFile(pair.bundle, 'utf8');
+      } catch {
+        continue; // vanished, or not a file: not a candidate
+      }
       // "Stamped" means the id AND the registration: a foreign `//# debugId=` comment alone would still get
       // the registration appended, which changes pinned bytes.
       const stamped = readDebugId(code) !== undefined && code.includes('_bugseeDebugIds');
@@ -308,6 +320,7 @@ export async function uploadSourcemaps(
     const targets = eligible.flatMap((pair) => [pair.bundle, pair.map]);
     const snapshot = await snapshotStampFiles({ files: targets }, options.spillRoot);
     try {
+      const pairErrors: Error[] = [];
       try {
         for (const batch of inBatches(targets)) {
           await run(['sourcemaps', 'inject', ...batch], cliOptions);
@@ -318,12 +331,18 @@ export async function uploadSourcemaps(
           try {
             await run(['sourcemaps', 'inject', pair.bundle, pair.map], cliOptions);
           } catch (error) {
-            onError(new Error(`bugsee-cli could not stamp ${pair.bundle}: ${String(error)}`));
+            pairErrors.push(
+              new Error(`bugsee-cli could not stamp ${pair.bundle}: ${String(error)}`),
+            );
           }
         }
       }
-      // Whatever was rewritten (even by a CLI that then failed) is verified, and restored if it is not sound.
+      // Whatever was rewritten (even by a CLI that then failed) is verified, and restored if it is not sound:
+      // BEFORE anything is reported, so a user handler that throws cannot skip it.
       const { issues, restored, failed } = await verifyAndRestore(snapshot);
+      for (const error of pairErrors) {
+        reportContinuing(error);
+      }
       if (issues.length > 0) {
         const failure = verifyFailure(issues, restored, failed);
         // Restored means the output is exactly what the bundler wrote (safe): reported. Only files that could
@@ -331,7 +350,7 @@ export async function uploadSourcemaps(
         if (options.failOnError === true && failed.length > 0) {
           return failure;
         }
-        onError(failure);
+        reportContinuing(failure);
       }
       return undefined;
     } finally {

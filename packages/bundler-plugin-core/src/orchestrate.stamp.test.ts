@@ -1371,6 +1371,85 @@ describe('catch-up is best effort and never costs the build its other maps', () 
     expect(calls.some((c) => c[0] === 'debug-files')).toBe(true);
   });
 
+  it('a throwing onError cannot skip the verify/restore of a half-written pair', async () => {
+    await seedPair('bad.js');
+    await writeFile(join(dir, 'k.js.map'), keyed);
+    await uploadSourcemaps(
+      opts({
+        run: cli('bad.js').run,
+        ownFiles: [...own('bad.js'), 'k.js.map'],
+        onError: () => {
+          throw new Error('user handler exploded');
+        },
+      }),
+    ).catch(() => undefined);
+    // the fake CLI half-wrote `{{` into bad.js before failing: it MUST be back to the bundler's bytes
+    expect(await readFile(join(dir, 'bad.js'), 'utf8')).toBe(
+      'bad.js();\n//# sourceMappingURL=bad.js.map\n',
+    );
+  });
+
+  it('a CLI that fails for EVERY pair: one report per pair, nothing left half-written, the upload still goes on', async () => {
+    await seedPair('bad1.js');
+    await seedPair('bad2.js');
+    await writeFile(join(dir, 'k.js.map'), keyed);
+    const { run, calls } = cli('bad');
+    const errors: unknown[] = [];
+    await uploadSourcemaps(
+      opts({
+        run,
+        onError: (e: unknown) => errors.push(e),
+        ownFiles: [...own('bad1.js', 'bad2.js'), 'k.js.map'],
+      }),
+    );
+    const perPair = errors.map(String).filter((m) => m.includes('could not stamp'));
+    expect(perPair).toHaveLength(2);
+    expect(perPair.join('\n')).toContain('bad1.js');
+    expect(perPair.join('\n')).toContain('bad2.js');
+    expect(await readFile(join(dir, 'bad1.js'), 'utf8')).toBe(
+      'bad1.js();\n//# sourceMappingURL=bad1.js.map\n',
+    );
+    expect(calls.some((c) => c[0] === 'debug-files')).toBe(true);
+  });
+
+  it('says what is true by default: the stamp was not applied, the upload CONTINUES (never "upload skipped")', async () => {
+    await seedPair('bad.js');
+    await writeFile(join(dir, 'k.js.map'), keyed);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      await uploadSourcemaps(
+        opts({
+          run: cli('bad.js').run,
+          onError: undefined,
+          ownFiles: [...own('bad.js'), 'k.js.map'],
+        }),
+      );
+      const text = warn.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(text).toContain('bad.js');
+      expect(text).not.toMatch(/upload skipped/);
+      expect(text).toMatch(/^\[bugsee\] /m);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('a candidate that cannot be read (a directory named w.js, or a file that vanished) is skipped, not fatal', async () => {
+    await mkdir(join(dir, 'd.js')); // a DIRECTORY with a script name
+    await writeFile(join(dir, 'd.js.map'), plainMap);
+    await seedPair('good.js');
+    const { run } = cli();
+    const errors: unknown[] = [];
+    await uploadSourcemaps(
+      opts({
+        run,
+        onError: (e: unknown) => errors.push(e),
+        ownFiles: [...own('good.js'), 'd.js', 'd.js.map'],
+      }),
+    );
+    expect(await readFile(join(dir, 'good.js'), 'utf8')).toContain('//# debugId=');
+    expect(errors.map(String).join('\n')).not.toContain('remaining script maps failed');
+  });
+
   it('stamps .mjs and .cjs pairs too', async () => {
     await seedPair('m.mjs');
     await seedPair('c.cjs');
