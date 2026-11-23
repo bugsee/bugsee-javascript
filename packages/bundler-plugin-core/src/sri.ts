@@ -252,55 +252,96 @@ export async function findIntegrityMismatches(outDirInput: string): Promise<SriP
   return mismatched;
 }
 
-/** Text files that can carry a copy of a page's hashes: the page itself and the server modules that embed it. */
-const RESEAL_FILE = /\.(x?html?|mjs)$/i;
+const SCRIPT_FILE = /\.[cm]?js$/i;
 
 /**
- * Re-seal a build whose scripts changed AFTER their hashes were written: replace each stale digest with the
- * digest of the script's current bytes, in every HTML page and `.mjs` module under `dirs`.
- *
- * `pins` must be what {@link findSriProtectedScripts} returned BEFORE the change — it is where the stale
- * digests come from. A pin whose script still matches is left alone; one whose script is gone is skipped.
- *
- * Sound only for a build whose copies of the hashes all live in those files — e.g. Angular's, where the
- * integrity attributes are in `index.html` (and, with SSR, in the HTML Angular embeds in its server modules).
- * It is NOT sound for `webpack-subresource-integrity`, which also writes the lazy chunks' hashes into the
- * runtime chunk; the caller checks the result with {@link findIntegrityMismatches}, and a build with another
- * copy of a hash is not claimed to be fixed. Returns the files it rewrote. A missing directory is skipped.
+ * Text files that can carry a copy of a script's hash: the page itself, the server modules that embed it, and
+ * the scripts that hold a table of other scripts' hashes (the webpack builder's runtime chunk).
  */
-export async function resealIntegrity(
-  pins: readonly SriProtectedScript[],
-  dirs: readonly string[],
-): Promise<{ files: string[] }> {
-  const swaps = new Map<string, string>();
-  for (const pin of pins) {
-    let bytes: Buffer;
-    try {
-      bytes = await readFile(pin.script);
-    } catch {
-      continue;
-    }
-    if (passesIntegrity(pin.integrity, bytes)) {
-      continue;
-    }
-    for (const [alg, digests] of digestsByAlgorithm(pin.integrity)) {
-      const fresh = createHash(alg).update(bytes).digest('base64');
-      for (const digest of digests) {
-        swaps.set(`${alg}-${digest}`, `${alg}-${fresh}`);
-      }
+const RESEAL_FILE = /\.(x?html?|[cm]?js)$/i;
+
+/** Rounds of re-sealing: a table inside a script changes that script's own hash, which is one more round. */
+const MAX_RESEAL_PASSES = 5;
+
+type Digests = Record<SriAlgorithm, string>;
+
+const digestsOf = (bytes: Buffer): Digests => ({
+  sha256: createHash('sha256').update(bytes).digest('base64'),
+  sha384: createHash('sha384').update(bytes).digest('base64'),
+  sha512: createHash('sha512').update(bytes).digest('base64'),
+});
+
+/** What every script under some directories hashed to at one moment: the input of {@link resealIntegrity}. */
+export type ScriptDigests = Map<string, Digests>;
+
+/**
+ * Record the digests of every script (`.js`/`.mjs`/`.cjs`) under `dirs`, BEFORE something rewrites them.
+ *
+ * Taken from the files, not from the pages that pin them: a hash can live where no tag mentions it — an
+ * import map's table, or a table inside the webpack builder's runtime chunk, which pins every lazy chunk.
+ */
+export async function snapshotScriptDigests(dirs: readonly string[]): Promise<ScriptDigests> {
+  const snapshot: ScriptDigests = new Map();
+  for (const dir of dirs) {
+    for (const file of await walkFiles(resolve(dir), SCRIPT_FILE)) {
+      snapshot.set(file, digestsOf(await readFile(file)));
     }
   }
+  return snapshot;
+}
+
+/**
+ * Re-seal a build whose scripts changed AFTER their hashes were written: for every script whose bytes differ
+ * from `before` (a {@link snapshotScriptDigests}), replace its old digests with its current ones, in every HTML
+ * page, `.mjs` module and script under `dirs`. A script that is gone is skipped.
+ *
+ * A digest is the same length whatever it hashes, so a rewrite never moves a byte offset: source maps stay
+ * valid. Rewriting a table inside a script changes THAT script, so the pass repeats (bounded) until nothing
+ * is stale; a build whose hashes cannot be brought to rest is left for the caller's
+ * {@link findIntegrityMismatches} to report. Sound where every copy of a hash is a literal in those files —
+ * Angular's pages, its SSR copies of them, the webpack builder's runtime table. Not for a hash computed at
+ * run time. Returns the files it rewrote. A missing directory is skipped.
+ */
+export async function resealIntegrity(
+  before: ScriptDigests,
+  dirs: readonly string[],
+): Promise<{ files: string[] }> {
+  const known: ScriptDigests = new Map(
+    [...before].map(([file, digests]) => [file, { ...digests }]),
+  );
   const rewritten = new Set<string>();
-  for (const dir of dirs) {
-    for (const file of await walkFiles(resolve(dir), RESEAL_FILE)) {
-      const before = await readFile(file, 'utf8');
-      let after = before;
-      for (const [stale, fresh] of swaps) {
-        after = after.split(stale).join(fresh);
+  for (let pass = 0; pass < MAX_RESEAL_PASSES; pass++) {
+    const swaps = new Map<string, string>();
+    for (const [file, digests] of known) {
+      let bytes: Buffer;
+      try {
+        bytes = await readFile(file);
+      } catch {
+        continue;
       }
-      if (after !== before) {
-        await writeFile(file, after, 'utf8');
-        rewritten.add(file);
+      const now = digestsOf(bytes);
+      for (const alg of SRI_ALGORITHMS) {
+        if (now[alg] !== digests[alg]) {
+          swaps.set(`${alg}-${digests[alg]}`, `${alg}-${now[alg]}`);
+          // What this script's pages hold now, for the next pass.
+          digests[alg] = now[alg];
+        }
+      }
+    }
+    if (swaps.size === 0) {
+      break;
+    }
+    for (const dir of dirs) {
+      for (const file of await walkFiles(resolve(dir), RESEAL_FILE)) {
+        const text = await readFile(file, 'utf8');
+        let after = text;
+        for (const [stale, fresh] of swaps) {
+          after = after.split(stale).join(fresh);
+        }
+        if (after !== text) {
+          await writeFile(file, after, 'utf8');
+          rewritten.add(file);
+        }
       }
     }
   }

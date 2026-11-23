@@ -62,7 +62,9 @@ export {
   findIntegrityMismatches,
   findSriProtectedScripts,
   resealIntegrity,
+  type ScriptDigests,
   type SriProtectedScript,
+  snapshotScriptDigests,
 } from './sri';
 export {
   isWorkingTreeDirty,

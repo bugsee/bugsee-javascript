@@ -878,10 +878,12 @@ describe('uploadSourcemaps with resealSri', () => {
     script: '/build/dist/main.js',
     integrity: 'sha384-OLD',
   };
+  const digests = new Map([['/build/dist/main.js', { sha256: 'a', sha384: 'b', sha512: 'c' }]]);
   const sealed = (over: Record<string, unknown> = {}) => ({
     ...base,
     resealSri: true,
     findSri: async () => [pin],
+    snapshotDigests: async () => digests,
     reseal: vi.fn(async () => ({ files: ['/build/dist/index.html'] })),
     verifySri: async () => [],
     deleteMapFiles: async () => [] as string[],
@@ -897,7 +899,7 @@ describe('uploadSourcemaps with resealSri', () => {
     expect(result.uploaded).toBe(true);
   });
 
-  it('re-seals with the pins taken BEFORE the inject, over the output directory by default', async () => {
+  it('re-seals with the digests taken BEFORE the inject, over the output directory by default', async () => {
     const order: string[] = [];
     const run = vi.fn(async (args: string[]): Promise<SpawnResult> => {
       order.push(args[0] ?? '');
@@ -907,13 +909,14 @@ describe('uploadSourcemaps with resealSri', () => {
       order.push('reseal');
       return { files: [] };
     });
-    const findSri = vi.fn(async () => {
-      order.push('findSri');
-      return [pin];
+    const snapshotDigests = vi.fn(async (_dirs: readonly string[]) => {
+      order.push('snapshot');
+      return digests;
     });
-    await uploadSourcemaps({ ...sealed({ reseal, findSri }), run });
-    expect(order).toEqual(['findSri', 'sourcemaps', 'reseal', 'debug-files']);
-    expect(reseal).toHaveBeenCalledWith([pin], ['/build/dist']);
+    await uploadSourcemaps({ ...sealed({ reseal, snapshotDigests }), run });
+    expect(order).toEqual(['snapshot', 'sourcemaps', 'reseal', 'debug-files']);
+    expect(snapshotDigests).toHaveBeenCalledWith(['/build/dist']);
+    expect(reseal).toHaveBeenCalledWith(digests, ['/build/dist']);
   });
 
   it('re-seals over resealDirs when given (the SSR server modules that embed the page)', async () => {
@@ -923,7 +926,7 @@ describe('uploadSourcemaps with resealSri', () => {
       ...sealed({ reseal, resealDirs: ['/build/dist', '/build/server'] }),
       run,
     });
-    expect(reseal).toHaveBeenCalledWith([pin], ['/build/dist', '/build/server']);
+    expect(reseal).toHaveBeenCalledWith(digests, ['/build/dist', '/build/server']);
   });
 
   it('passes --allow-sri to every batch of a file run', async () => {
@@ -966,8 +969,10 @@ describe('uploadSourcemaps with resealSri', () => {
   it('does not re-seal on a dry run: nothing was written', async () => {
     const { run, calls } = fakeRun();
     const reseal = vi.fn(async () => ({ files: [] }));
-    await uploadSourcemaps({ ...sealed({ reseal }), run, dryRun: true });
+    const snapshotDigests = vi.fn(async () => digests);
+    await uploadSourcemaps({ ...sealed({ reseal, snapshotDigests }), run, dryRun: true });
     expect(reseal).not.toHaveBeenCalled();
+    expect(snapshotDigests).not.toHaveBeenCalled();
     expect(calls[0]?.args).toEqual([
       'sourcemaps',
       'inject',

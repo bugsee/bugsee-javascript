@@ -9,6 +9,7 @@ import {
   findSriProtectedScripts,
   resealIntegrity,
   type SriProtectedScript,
+  snapshotScriptDigests,
 } from './sri';
 import {
   MAX_WALK_DEPTH,
@@ -87,17 +88,19 @@ export interface UploadSourcemapsOptions {
   /**
    * Stamp a build that pins its script hashes, then RE-WRITE the hashes to match, instead of refusing.
    *
-   * For a build whose only copies of those hashes are in HTML pages (and the server modules that embed
-   * them) — Angular's esbuild application builder. `sourcemaps inject` runs with `--allow-sri`, the stale
+   * For a build whose copies of those hashes are literals in its HTML pages (tags and import maps), the
+   * server modules that embed them and a runtime table of chunk hashes — Angular's builders. `sourcemaps inject` runs with `--allow-sri`, the stale
    * digests are replaced in {@link resealDirs}, and the result is verified; a page that still does not
-   * verify is reported (or thrown under `failOnError`), never silent. NOT for `webpack-subresource-integrity`,
-   * which also embeds hashes in its runtime chunk. Ignored on a dry run (nothing is written).
+   * verify is reported (or thrown under `failOnError`), never silent. Not for a hash computed at run time.
+   * Ignored on a dry run (nothing is written).
    */
   resealSri?: boolean;
   /** Directories whose HTML / `.mjs` carry a copy of the hashes. Default: `[outDir]`. */
   resealDirs?: readonly string[];
   /** Injectable re-sealer (default {@link resealIntegrity}). */
   reseal?: typeof resealIntegrity;
+  /** Injectable script-digest snapshot taken before the stamp (default {@link snapshotScriptDigests}). */
+  snapshotDigests?: typeof snapshotScriptDigests;
   /**
    * FAIL the build when `bugsee-cli` fails. Default `false`.
    *
@@ -281,6 +284,14 @@ export async function uploadSourcemaps(
         );
       }
 
+      // 0a. The digest of every script as the build emitted it, for the re-seal: the stale hashes are found by
+      //     what the files WERE, wherever a copy sits (a tag, an import map, a table in the runtime chunk). Not
+      //     on a dry run: nothing is written.
+      const digests =
+        resealing && !dryRun
+          ? await (options.snapshotDigests ?? snapshotScriptDigests)([outDir])
+          : undefined;
+
       // 0b. Take the originals, so a stamp that does not verify can be undone (see below). Not on a dry run:
       //     inject writes nothing, so there is nothing to undo.
       const target: SnapshotTarget =
@@ -320,17 +331,17 @@ export async function uploadSourcemaps(
       // 1c. Re-seal: the bundles changed after the build hashed them, so write the new hashes where the old ones
       //     are, then check. After 1b, so the bytes sealed are the bytes that stayed on disk (a restored file
       //     still matches its original hash and is left alone). Not on a dry run: nothing was written.
-      if (resealing && !dryRun) {
-        await (options.reseal ?? resealIntegrity)(pinned, options.resealDirs ?? [outDir]);
+      if (digests !== undefined) {
+        await (options.reseal ?? resealIntegrity)(digests, options.resealDirs ?? [outDir]);
         const broken = await (options.verifySri ?? findIntegrityMismatches)(outDir);
         if (broken.length > 0) {
           const [first] = broken as [SriProtectedScript, ...SriProtectedScript[]];
           const failure = new Error(
             `${first.script} still does not match the integrity hash ${first.html} pins` +
               (broken.length > 1 ? ` (and ${broken.length - 1} more)` : '') +
-              ` after the hashes were re-written, so the browser will refuse to run it. Something other than the ` +
-              `pages carries a copy of that hash (a runtime table of chunk hashes, for instance), which this step ` +
-              `does not rewrite. Turn Subresource Integrity off for this build, or do not stamp it.`,
+              ` after the hashes were re-written, so the browser will refuse to run it. A copy of that hash is held in ` +
+              `a form this step does not rewrite (one computed at run time, or a file outside the directories it covers), ` +
+              `which it cannot see. Turn Subresource Integrity off for this build, or do not stamp it.`,
           );
           if (options.failOnError === true) {
             throw failure;

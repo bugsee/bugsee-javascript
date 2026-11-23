@@ -178,11 +178,9 @@ describeReal('uploadAngularSourcemaps on real Angular output with subresourceInt
     expect(fresh).not.toBe(stale);
     expect(fresh).toContain(sha384(join(browser, ENTRY)));
     expect(fresh).toContain(sha384(join(browser, LAZY)));
+    // The module is the re-sealed page, byte for byte, as the string Angular wrote it as.
     expect(fresh).toBe(
-      JSON.stringify(readFileSync(join(browser, 'index.html'), 'utf8')).replace(
-        /^/,
-        'export default ',
-      ) + ';\n',
+      `export default ${JSON.stringify(readFileSync(join(browser, 'index.html'), 'utf8'))};\n`,
     );
   });
 

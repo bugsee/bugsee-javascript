@@ -3,7 +3,12 @@ import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs
 import { tmpdir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { findIntegrityMismatches, findSriProtectedScripts, resealIntegrity } from './sri';
+import {
+  findIntegrityMismatches,
+  findSriProtectedScripts,
+  resealIntegrity,
+  snapshotScriptDigests,
+} from './sri';
 
 // Measured, 2026-09-18: a real webpack 5.111 build with `webpack-subresource-integrity` +
 // `html-webpack-plugin`, served over HTTP and loaded in Chromium 151. Before `sourcemaps inject` the
@@ -446,22 +451,6 @@ describe('findSriProtectedScripts', () => {
       );
       expect(await findSriProtectedScripts(dir)).toEqual([]);
     });
-
-    it('is re-sealed with the rest of the page, so a stamped lazy chunk still loads', async () => {
-      const dir = await fixture();
-      const digest = (text: string) => createHash('sha384').update(text).digest('base64');
-      await write(dir, 'chunk.js', 'lazy();');
-      const html = await write(
-        dir,
-        'index.html',
-        importMap({ './chunk.js': `sha384-${digest('lazy();')}` }),
-      );
-      const pins = await findSriProtectedScripts(dir);
-      await write(dir, 'chunk.js', 'lazy();\n//# debugId=x');
-      expect((await resealIntegrity(pins, [dir])).files).toEqual([html]);
-      expect(await findIntegrityMismatches(dir)).toEqual([]);
-      expect(await readFile(html, 'utf8')).toContain(digest('lazy();\n//# debugId=x'));
-    });
   });
 });
 
@@ -564,15 +553,15 @@ describe('resealIntegrity', () => {
       `<link rel="modulepreload" href="chunk.js" integrity="${sha('sha384', 'b();')}">` +
         `<script src="main.js" integrity="${sha('sha384', 'a();')}"></script>`,
     );
-    const pins = await findSriProtectedScripts(root);
+    const before = await snapshotScriptDigests([root]);
     await write(root, 'main.js', 'a();\n//# debugId=x');
-    return { html, pins };
+    return { html, before };
   };
 
   it('rewrites the pinned hash of a changed script, so the page verifies again', async () => {
-    const { html, pins } = await hashedThenStamped();
+    const { html, before } = await hashedThenStamped();
     await write(root, 'about.html', '<p>no hashes here</p>');
-    const { files } = await resealIntegrity(pins, [root]);
+    const { files } = await resealIntegrity(before, [root]);
     expect(files).toEqual([html]);
     expect(await findIntegrityMismatches(root)).toEqual([]);
     const page = await readFile(html, 'utf8');
@@ -581,12 +570,11 @@ describe('resealIntegrity', () => {
   });
 
   it('leaves a script that did not change, and its page, alone', async () => {
-    const { html, pins } = await hashedThenStamped();
-    const before = await readFile(html, 'utf8');
+    const { html, before } = await hashedThenStamped();
+    const page = await readFile(html, 'utf8');
     await write(root, 'main.js', 'a();'); // back to the hashed bytes
-    await write(root, 'about.html', '<p>no hashes here</p>');
-    expect((await resealIntegrity(pins, [root])).files).toEqual([]);
-    expect(await readFile(html, 'utf8')).toBe(before);
+    expect((await resealIntegrity(before, [root])).files).toEqual([]);
+    expect(await readFile(html, 'utf8')).toBe(page);
   });
 
   it('rewrites every algorithm in the value, and keeps the ones it cannot compute', async () => {
@@ -596,9 +584,9 @@ describe('resealIntegrity', () => {
       'index.html',
       `<script src="main.js" integrity="${sha('sha256', 'a();')}   ${sha('sha512', 'a();')} md5-zzz"></script>`,
     );
-    const pins = await findSriProtectedScripts(root);
+    const before = await snapshotScriptDigests([root]);
     await write(root, 'main.js', 'a2();');
-    await resealIntegrity(pins, [root]);
+    await resealIntegrity(before, [root]);
     const page = await readFile(html, 'utf8');
     expect(page).toContain(sha('sha256', 'a2();'));
     expect(page).toContain(sha('sha512', 'a2();'));
@@ -613,14 +601,14 @@ describe('resealIntegrity', () => {
       'index.html',
       `<script src="main.js" integrity="${sha('sha384', 'a();')}?ct=x"></script>`,
     );
-    const pins = await findSriProtectedScripts(root);
+    const before = await snapshotScriptDigests([root]);
     await write(root, 'main.js', 'a2();');
-    await resealIntegrity(pins, [root]);
+    await resealIntegrity(before, [root]);
     expect(await readFile(html, 'utf8')).toContain(`${sha('sha384', 'a2();')}?ct=x`);
   });
 
   it('also rewrites the copies of the page embedded in server modules, in every directory given', async () => {
-    const { pins } = await hashedThenStamped();
+    const { before } = await hashedThenStamped();
     const server = await fixture();
     const embedded = await write(
       server,
@@ -628,31 +616,120 @@ describe('resealIntegrity', () => {
       `export default "<script src=\\"main.js\\" integrity=\\"${sha('sha384', 'a();')}\\"></script>";`,
     );
     const untouched = await write(server, 'notes.txt', sha('sha384', 'a();'));
-    const { files } = await resealIntegrity(pins, [root, server]);
+    const { files } = await resealIntegrity(before, [root, server]);
     expect(files).toContain(embedded);
     expect(files).not.toContain(untouched);
     expect(await readFile(embedded, 'utf8')).toContain(sha('sha384', 'a();\n//# debugId=x'));
     expect(await readFile(untouched, 'utf8')).toBe(sha('sha384', 'a();'));
   });
 
-  it('skips a pinned script that is gone, and a directory that is missing', async () => {
-    await write(
+  it('rewrites a hash held in an import map, which no tag mentions', async () => {
+    await write(root, 'lazy.js', 'lazy();');
+    const html = await write(
       root,
       'index.html',
-      `<script src="gone.js" integrity="${sha('sha384', 'x')}"></script>`,
+      `<script type="importmap">{"integrity":{"./lazy.js":"${sha('sha384', 'lazy();')}"}}</script>`,
     );
-    const pins = await findSriProtectedScripts(root);
-    expect(await resealIntegrity(pins, [root, join(root, 'missing')])).toEqual({ files: [] });
+    const before = await snapshotScriptDigests([root]);
+    await write(root, 'lazy.js', 'lazy();\n//# debugId=x');
+    expect((await resealIntegrity(before, [root])).files).toEqual([html]);
+    expect(await findIntegrityMismatches(root)).toEqual([]);
+  });
+
+  // What the webpack builder does with `subresourceIntegrity` (measured on @angular-devkit/build-angular 19, Chromium):
+  // the page pins runtime/main/polyfills, and the RUNTIME script carries the hashes of the lazy chunks, which no page
+  // pins. A stamped lazy chunk was blocked while the entry scripts ran. The runtime's own bytes change when its table is
+  // rewritten, so its pin in the page needs a second round.
+  it("rewrites a hash table held in a script, and then that script's own pin", async () => {
+    await write(root, 'lazy.js', 'lazy();');
+    const table = (lazy: string) => `var t={"lazy":"${lazy}"};run(t);`;
+    await write(root, 'runtime.js', table(sha('sha384', 'lazy();')));
+    const html = await write(
+      root,
+      'index.html',
+      `<script src="runtime.js" integrity="${sha('sha384', table(sha('sha384', 'lazy();')))}"></script>`,
+    );
+    const before = await snapshotScriptDigests([root]);
+    await write(root, 'lazy.js', 'lazy();\n//# debugId=x'); // stamped after it was hashed
+
+    const { files } = await resealIntegrity(before, [root]);
+
+    const fresh = sha('sha384', 'lazy();\n//# debugId=x');
+    expect(await readFile(join(root, 'runtime.js'), 'utf8')).toBe(table(fresh));
+    expect(await readFile(html, 'utf8')).toContain(sha('sha384', table(fresh)));
+    expect(files.sort()).toEqual([html, join(root, 'runtime.js')].sort());
+    expect(await findIntegrityMismatches(root)).toEqual([]);
+  });
+
+  it('re-seals a script that was stamped AND had its table rewritten, once for each change', async () => {
+    // The runtime chunk is both: the stamp appends to it, and the lazy chunk's new hash goes in it.
+    await write(root, 'lazy.js', 'lazy();');
+    const table = (lazy: string) => `var t={"lazy":"${lazy}"};run(t);`;
+    const original = table(sha('sha384', 'lazy();'));
+    await write(root, 'runtime.js', original);
+    const html = await write(
+      root,
+      'index.html',
+      `<script src="runtime.js" integrity="${sha('sha384', original)}"></script>`,
+    );
+    const before = await snapshotScriptDigests([root]);
+    await write(root, 'lazy.js', 'lazy();\n//# debugId=x');
+    await write(root, 'runtime.js', `${original}\n//# debugId=y`);
+
+    await resealIntegrity(before, [root]);
+
+    expect(await findIntegrityMismatches(root)).toEqual([]);
+    const runtime = await readFile(join(root, 'runtime.js'), 'utf8');
+    expect(runtime).toContain(sha('sha384', 'lazy();\n//# debugId=x'));
+    expect(await readFile(html, 'utf8')).toContain(sha('sha384', runtime));
+  });
+
+  it("gives up rather than loop when two scripts hold each other's hash", async () => {
+    // Content-addressed hashes cannot form a cycle in a real build; a hand-made one must still terminate.
+    const a = await write(root, 'a.js', 'a-original');
+    const b = await write(root, 'b.js', 'b-original');
+    const before = await snapshotScriptDigests([root]);
+    await write(root, 'a.js', `x="${sha('sha384', 'b-original')}";`);
+    await write(root, 'b.js', `y="${sha('sha384', 'a-original')}";`);
+    const { files } = await resealIntegrity(before, [root]);
+    expect(files.sort()).toEqual([a, b].sort());
+  });
+
+  it('skips a script that is gone, and a directory that is missing', async () => {
+    await write(root, 'gone.js', 'x');
+    const before = await snapshotScriptDigests([root]);
+    await rm(join(root, 'gone.js'));
+    expect(await resealIntegrity(before, [root, join(root, 'missing')])).toEqual({ files: [] });
   });
 
   it('does not descend into node_modules, dot directories or past the depth bound', async () => {
-    const { pins } = await hashedThenStamped();
+    const { before } = await hashedThenStamped();
     const hidden = await write(root, 'node_modules/x/index.html', sha('sha384', 'a();'));
     const dot = await write(root, '.cache/index.html', sha('sha384', 'a();'));
     const deep = await write(root, 'a/b/c/d/e/f/g/h/index.html', sha('sha384', 'a();'));
-    const { files } = await resealIntegrity(pins, [root]);
+    const { files } = await resealIntegrity(before, [root]);
     expect(files).not.toContain(hidden);
     expect(files).not.toContain(dot);
     expect(files).not.toContain(deep);
+  });
+});
+
+describe('snapshotScriptDigests', () => {
+  it('records every script under the directories, and nothing else', async () => {
+    const dir = await fixture();
+    const a = await write(dir, 'a.js', 'a');
+    const b = await write(dir, 'sub/b.mjs', 'b');
+    const c = await write(dir, 'c.cjs', 'c');
+    await write(dir, 'd.html', 'd');
+    await write(dir, 'e.js.map', 'e');
+    await write(dir, 'node_modules/f.js', 'f');
+    const snapshot = await snapshotScriptDigests([dir]);
+    expect([...snapshot.keys()].sort()).toEqual([a, b, c].sort());
+    const digest = (alg: string) => createHash(alg).update('a').digest('base64');
+    expect(snapshot.get(a)).toEqual({
+      sha256: digest('sha256'),
+      sha384: digest('sha384'),
+      sha512: digest('sha512'),
+    });
   });
 });

@@ -13,7 +13,8 @@
       "!vendor",
       "!.local-registry",
       "!packages/protocol/spec",
-      "!docs/design/async-origin-capture/**"
+      "!packages/angular/test/fixtures",
+      "!docs/design/async-origin-capture"
     ]
   },
   "formatter": {
