@@ -4,16 +4,16 @@ NestJS adapter for the Bugsee SDK: per-request context, `http.server` tracing an
 
 Part of the Bugsee JavaScript SDK (public beta, 0.1.0-beta.x).
 
-Install this package directly in NestJS apps, together with the `@bugsee/bugsee` umbrella that provides `launch()`. The umbrella resolves to the Node build automatically.
+Install this package directly in NestJS apps, on its own: it depends on `@bugsee/bugsee` and re-exports it, so `launch()` and the adapter API come from this one package. On Bun, install `@bugsee/bun` next to it and import `launch` from `@bugsee/bun` to keep Bun-specific instrumentation.
 
 ## Install
 
 ```sh
-npm install @bugsee/bugsee @bugsee/nestjs
+npm install @bugsee/nestjs
 # or
-pnpm add @bugsee/bugsee @bugsee/nestjs
+pnpm add @bugsee/nestjs
 # or
-yarn add @bugsee/bugsee @bugsee/nestjs
+yarn add @bugsee/nestjs
 ```
 
 Requires Node.js 18 or newer (Nest 12 itself requires Node.js 20 or newer). Peer dependencies: `@nestjs/common` and `@nestjs/core` (`^9 || ^10 || ^11 || ^12`), and `rxjs` (`^7`).
@@ -24,8 +24,7 @@ Call `launch()` as early as possible, at the top of your server entry. On a serv
 
 ```ts
 // server.ts
-import { launch } from "@bugsee/bugsee";
-import { setupNest } from "@bugsee/nestjs";
+import { launch, setupNest } from "@bugsee/nestjs";
 import { NestFactory } from "@nestjs/core";
 import { AppModule } from "./app.module";
 
@@ -86,7 +85,7 @@ Adapter options, passed as the second argument of `setupNest`:
 - `user`: `(req) => string | undefined`, the end-user identity for reports. Off by default.
 - `shouldReport`: `(err) => boolean`, override which errors are reported.
 
-This package also re-exports everything from `@bugsee/bugsee/node`.
+This package installs `@bugsee/bugsee` for you and re-exports everything from its Node entry, so you do not install or import it separately.
 
 ## Links
 

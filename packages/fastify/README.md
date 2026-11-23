@@ -4,16 +4,16 @@ Fastify adapter for the Bugsee SDK: per-request context, `http.server` tracing a
 
 Part of the Bugsee JavaScript SDK (public beta, 0.1.0-beta.x).
 
-Install this package directly in Fastify apps, together with the `@bugsee/bugsee` umbrella that provides `launch()`. The umbrella resolves to the Node build automatically.
+Install this package directly in Fastify apps, on its own: it depends on `@bugsee/bugsee` and re-exports it, so `launch()` and the adapter API come from this one package. On Bun, install `@bugsee/bun` next to it and import `launch` from `@bugsee/bun` to keep Bun-specific instrumentation.
 
 ## Install
 
 ```sh
-npm install @bugsee/bugsee @bugsee/fastify
+npm install @bugsee/fastify
 # or
-pnpm add @bugsee/bugsee @bugsee/fastify
+pnpm add @bugsee/fastify
 # or
-yarn add @bugsee/bugsee @bugsee/fastify
+yarn add @bugsee/fastify
 ```
 
 Requires Node.js 18 or newer. No peer dependency is declared: the adapter only uses the shape of your `fastify` instance.
@@ -24,8 +24,7 @@ Call `launch()` as early as possible, at the top of your server entry. On a serv
 
 ```ts
 // server.ts
-import { launch } from "@bugsee/bugsee";
-import { setupFastify } from "@bugsee/fastify";
+import { launch, setupFastify } from "@bugsee/fastify";
 import Fastify from "fastify";
 
 launch("YOUR_APP_TOKEN");
@@ -62,7 +61,7 @@ Adapter options, passed as the second argument of `setupFastify`:
 - `user`: `(req) => string | undefined`, the end-user identity for reports. Off by default.
 - `shouldReport`: `(err) => boolean`, override which errors are reported.
 
-This package also re-exports everything from `@bugsee/bugsee/node`.
+This package installs `@bugsee/bugsee` for you and re-exports everything from its Node entry, so you do not install or import it separately.
 
 ## Links
 

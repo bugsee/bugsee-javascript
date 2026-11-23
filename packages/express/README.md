@@ -4,16 +4,16 @@ Express adapter for the Bugsee SDK: per-request context, `http.server` tracing a
 
 Part of the Bugsee JavaScript SDK (public beta, 0.1.0-beta.x).
 
-Install this package directly in Express apps, together with the `@bugsee/bugsee` umbrella that provides `launch()`. The umbrella resolves to the Node build automatically.
+Install this package directly in Express apps, on its own: it depends on `@bugsee/bugsee` and re-exports it, so `launch()` and the adapter API come from this one package. On Bun, install `@bugsee/bun` next to it and import `launch` from `@bugsee/bun` to keep Bun-specific instrumentation.
 
 ## Install
 
 ```sh
-npm install @bugsee/bugsee @bugsee/express
+npm install @bugsee/express
 # or
-pnpm add @bugsee/bugsee @bugsee/express
+pnpm add @bugsee/express
 # or
-yarn add @bugsee/bugsee @bugsee/express
+yarn add @bugsee/express
 ```
 
 Requires Node.js 18 or newer. No peer dependency is declared: the adapter only uses the shape of your `express` app.
@@ -24,8 +24,7 @@ Call `launch()` as early as possible, at the top of your server entry. On a serv
 
 ```ts
 // server.ts
-import { launch } from "@bugsee/bugsee";
-import { setupExpress } from "@bugsee/express";
+import { launch, setupExpress } from "@bugsee/express";
 import express from "express";
 
 launch("YOUR_APP_TOKEN");
@@ -76,7 +75,7 @@ Adapter options, passed as the second argument of `setupExpress`:
 - `shouldReport`: `(err) => boolean`, override which errors are reported. By default errors with no status or a 5xx status are reported and 4xx are skipped.
 - `autoErrorHandler`: set `false` to place the error handler yourself.
 
-This package also re-exports everything from `@bugsee/bugsee/node`.
+This package installs `@bugsee/bugsee` for you and re-exports everything from its Node entry, so you do not install or import it separately.
 
 ## Links
 
