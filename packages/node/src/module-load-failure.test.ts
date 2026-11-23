@@ -509,4 +509,14 @@ describe('probed Node message shapes (v26)', () => {
     );
     expect(sub?.module).toBe('/repo/packages/foo/sub');
   });
+
+  it('is not misled by a subpath that contains " in "', () => {
+    const failure = detectModuleLoadFailure(
+      coded(
+        'ERR_PACKAGE_PATH_NOT_EXPORTED',
+        'Package subpath \'./a in b/c\' is not defined by "exports" in /r/foo/package.json',
+      ),
+    );
+    expect(failure?.module).toBe('/r/foo/a in b/c');
+  });
 });

@@ -46,7 +46,7 @@ const NOT_EXPORTED = /^Package subpath '([^']+)'/;
 const PACKAGE_OF_JSON = /node_modules[\\/]((?:@[^\\/\n]+[\\/])?[^\\/\n]+)[\\/]package\.json/;
 // `No \"exports\" main defined in /app/node_modules/pkg/package.json [imported from ...]`: the package root, with no subpath.
 // A package that is not under `node_modules` (a symlinked workspace package resolves to its real path): its directory.
-const PACKAGE_DIR = / in ([^\n]*?)[\\/]package\.json/;
+const PACKAGE_DIR = /(?:"exports"|main defined) in ([^\n]*?)[\\/]package\.json/;
 const NO_EXPORTS_MAIN = /^No "exports" main defined in /;
 // `Package import specifier "#x" is not defined in package /app/package.json imported from /app/y.mjs`
 const IMPORT_NOT_DEFINED = /^Package import specifier "([^"]+)"/;
