@@ -66,7 +66,7 @@ const pluginOptions = (extra: object = {}) => ({
   ...extra,
 });
 
-function makeApp(name: string): { dir: string; out: string } {
+function makeApp(name: string, options: { lazy?: boolean } = {}): { dir: string; out: string } {
   const dir = join(realpathSync(root), name);
   mkdirSync(dir, { recursive: true });
   writeFileSync(
@@ -77,7 +77,9 @@ function makeApp(name: string): { dir: string; out: string } {
   writeFileSync(join(dir, 'lazy.js'), "export default 'lazy chunk ' + Date.now();\n");
   writeFileSync(
     join(dir, 'index.js'),
-    "import { greet } from './greet.js';\nconsole.log(greet('world'));\nimport('./lazy.js').then((m) => console.log(m.default));\n",
+    `import { greet } from './greet.js';\nconsole.log(greet('world'));\n${
+      options.lazy === false ? '' : "import('./lazy.js').then((m) => console.log(m.default));\n"
+    }`,
   );
   writeFileSync(join(dir, 'package.json'), JSON.stringify({ name, version: '1.2.3' }));
   return { dir, out: join(dir, 'dist') };
@@ -260,6 +262,62 @@ describeReal('doctor on Vite worker builds (stamped by the upload catch-up)', ()
       });
     }
   }
+});
+
+describeReal('doctor on multi-output and nested-directory Rollup builds', () => {
+  it('six outputs into one directory (maps kept) are all stamped, paired and clean', async () => {
+    const app = makeApp('doc-many-outputs', { lazy: false });
+    const names = ['a', 'b', 'c', 'd', 'e', 'f'];
+    const bundle = await rollup({
+      input: join(app.dir, 'index.js'),
+      plugins: [bugseeRollupPlugin(pluginOptions())],
+    });
+    await Promise.all(
+      names.map((n) =>
+        bundle.write({
+          file: join(app.out, `${n}.js`),
+          format: 'iife',
+          name: `app_${n}`,
+          sourcemap: 'hidden',
+        }),
+      ),
+    );
+    await bundle.close();
+    const report = await doctor(app.out);
+    expect(report.summary).toMatchObject({ bundles: 6, maps: 6, errors: 0, warnings: 0 });
+    expect(report.passed).toEqual(
+      expect.arrayContaining(['stamp.map-id-mismatch', 'stamp.duplicate-debug-id']),
+    );
+  });
+
+  it('an output nested inside another: checking the parent walks both and finds no problem', async () => {
+    const app = makeApp('doc-nested-outputs', { lazy: false });
+    const bundle = await rollup({
+      input: join(app.dir, 'index.js'),
+      plugins: [bugseeRollupPlugin(pluginOptions())],
+    });
+    await Promise.all([
+      bundle.write({
+        dir: app.out,
+        entryFileNames: 'p.js',
+        format: 'iife',
+        name: 'p',
+        sourcemap: 'hidden',
+      }),
+      bundle.write({
+        dir: join(app.out, 'b'),
+        entryFileNames: 'c.js',
+        format: 'iife',
+        name: 'c',
+        sourcemap: 'hidden',
+      }),
+    ]);
+    await bundle.close();
+    const parent = await doctor(app.out);
+    expect(parent.summary).toMatchObject({ bundles: 2, maps: 2, errors: 0, warnings: 0 });
+    const nested = await doctor(join(app.out, 'b'));
+    expect(nested.summary).toMatchObject({ bundles: 1, maps: 1, errors: 0, warnings: 0 });
+  });
 });
 
 describeReal('doctor on real, problematic build output', () => {
