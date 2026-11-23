@@ -121,6 +121,7 @@ const deps = (over: WebpackPluginDeps = {}): WebpackPluginDeps => ({
   upload: vi.fn(async () => undefined),
   exists: vi.fn(async () => true),
   hasSriManifest: vi.fn(async () => false),
+  tail: vi.fn(async () => 'code();\n//# debugId=00000000-0000-5000-8000-000000000001\n'),
   remove: vi.fn(async () => undefined),
   ...over,
 });
@@ -495,56 +496,105 @@ describe('createNextWebpackPlugin: the new core contract', () => {
     'static/c.js.map': 'm',
   };
 
-  it('hands the on-disk re-check the stamped bundles and maps by REAL asset name', async () => {
+  it('hands the on-disk re-check the FINAL names on disk: the bundles that carry a debug-ID now, with their maps', async () => {
+    // The stamp saw `chunks/1.[old].js`; webpack renamed it afterwards, so the check goes by what is on disk.
     const d = deps({
       stamp: vi.fn(async () => ({
-        stamped: ['__bugsee_up__/app/page.js', 'static/c.js'],
-        maps: { '__bugsee_up__/app/page.js': '__bugsee_up__/app/page.js.map' },
-        bundles: 2,
+        stamped: ['chunks/1.OLDHASH.js'],
+        maps: { 'chunks/1.OLDHASH.js': 'chunks/1.OLDHASH.js.map' },
+        bundles: 1,
       })),
+      tail: vi.fn(async (path: string) =>
+        path.endsWith('1.NEWHASH.js')
+          ? 'x\n//# debugId=00000000-0000-5000-8000-000000000009\n'
+          : 'plain',
+      ),
     });
-    const fake = fakeCompiler();
+    const fake = fakeCompiler({ path: '/out/.next/server/chunks' });
     createNextWebpackPlugin(context(), 'server', d).apply(fake.compiler);
-    const c = fakeCompilation(asset);
+    const c = fakeCompilation({
+      '../app/page.js': 'x',
+      '../app/page.js.map': 'm',
+      '1.NEWHASH.js': 'x',
+      '1.NEWHASH.js.map': 'm',
+    });
     fake.startCompilation(c.compilation);
     await c.run();
-    // The names are only translated if the store was listed (the stamp lists it first).
     await fake.emit(c.compilation);
     const [, , options] = (d.upload as ReturnType<typeof vi.fn>).mock.calls[0] as [
       unknown,
       unknown,
       { stampedBundles: string[]; stampedMaps: Record<string, string> },
     ];
-    expect(options.stampedBundles).toEqual(['__bugsee_up__/app/page.js', 'static/c.js']);
-    expect(options.stampedMaps).toEqual({
-      '__bugsee_up__/app/page.js': '__bugsee_up__/app/page.js.map',
-    });
+    expect(options.stampedBundles).toEqual(['1.NEWHASH.js']);
+    expect(options.stampedMaps).toEqual({ '1.NEWHASH.js': '1.NEWHASH.js.map' });
   });
 
-  it('translates staged names back to real names when the store was listed', async () => {
+  it('reports a stamped bundle that lost its debug-ID on the way (instead of silently dropping it from the check)', async () => {
+    const onError = vi.fn();
     const d = deps({
-      stamp: vi.fn(async (store) => {
-        store.names();
-        return {
-          stamped: ['__bugsee_up__/app/page.js'],
-          maps: { '__bugsee_up__/app/page.js': '__bugsee_up__/app/page.js.map' },
-          bundles: 1,
-        };
-      }),
+      stamp: vi.fn(async () => ({ stamped: ['a.js'], maps: { 'a.js': 'a.js.map' }, bundles: 1 })),
+      tail: vi.fn(async () => 'plain, no id'),
     });
-    const fake = fakeCompiler();
-    createNextWebpackPlugin(context(), 'server', d).apply(fake.compiler);
-    const c = fakeCompilation(asset);
+    const fake = fakeCompiler({ path: '/o' });
+    createNextWebpackPlugin(context({ onError }), 'client', d).apply(fake.compiler);
+    const c = fakeCompilation({ 'a.js': 'x', 'a.js.map': 'm' });
+    fake.startCompilation(c.compilation);
+    await c.run();
+    await fake.emit(c.compilation);
+    expect(onError).toHaveBeenCalledWith(
+      expect.objectContaining({ message: expect.stringContaining('1 of the 1 bundle(s)') }),
+    );
+    expect(d.upload).toHaveBeenCalledTimes(1);
+  });
+
+  it('warns on the console for it without onError, and rethrows under failOnError', async () => {
+    const make = (ctx: BugseeNextContext) => {
+      const d = deps({
+        stamp: vi.fn(async () => ({ stamped: ['a.js'], maps: { 'a.js': 'a.js.map' }, bundles: 1 })),
+        tail: vi.fn(async () => 'plain'),
+      });
+      const fake = fakeCompiler({ path: '/o' });
+      createNextWebpackPlugin(ctx, 'client', d).apply(fake.compiler);
+      const c = fakeCompilation({ 'a.js': 'x', 'a.js.map': 'm' });
+      fake.startCompilation(c.compilation);
+      return {
+        run: async () => {
+          await c.run();
+          await fake.emit(c.compilation);
+        },
+      };
+    };
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    await make(context()).run();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('do not carry their debug-ID'));
+    warn.mockRestore();
+    await expect(make(context({ failOnError: true })).run()).rejects.toThrow('do not carry');
+  });
+
+  it('pairs a recorded map elsewhere for the re-check', async () => {
+    const d = deps({
+      stamp: vi.fn(async () => ({
+        stamped: ['static/a.js'],
+        maps: { 'static/a.js': 'maps/a.js.map' },
+        bundles: 1,
+      })),
+    });
+    const fake = fakeCompiler({ path: '/o' });
+    createNextWebpackPlugin(context(), 'client', d).apply(fake.compiler);
+    const c = fakeCompilation(
+      { 'static/a.js': 'x', 'maps/a.js.map': 'm' },
+      { 'static/a.js': 'maps/a.js.map' },
+    );
     fake.startCompilation(c.compilation);
     await c.run();
     await fake.emit(c.compilation);
     const [, , options] = (d.upload as ReturnType<typeof vi.fn>).mock.calls[0] as [
       unknown,
       unknown,
-      { stampedBundles: string[]; stampedMaps: Record<string, string> },
+      { stampedMaps: Record<string, string> },
     ];
-    expect(options.stampedBundles).toEqual(['../app/page.js']);
-    expect(options.stampedMaps).toEqual({ '../app/page.js': '../app/page.js.map' });
+    expect(options.stampedMaps).toEqual({ 'static/a.js': 'maps/a.js.map' });
   });
 
   it('does not claim a stamp that staged nothing while the build emitted scripts: says so, stamps after emit', async () => {
@@ -985,12 +1035,13 @@ describe('pairRecorded', () => {
 });
 
 describe('createNextWebpackPlugin: queries, recorded maps, registration', () => {
-  it('hands the on-disk re-check query-free names (the file on disk has no ?query)', async () => {
+  it('goes by the query-free names on disk (webpack drops ?query when it writes the file)', async () => {
     const d = deps({
-      stamp: vi.fn(async (store) => {
-        store.names();
-        return { stamped: ['static/a.js'], maps: { 'static/a.js': 'static/a.js.map' }, bundles: 1 };
-      }),
+      stamp: vi.fn(async () => ({
+        stamped: ['static/a.js'],
+        maps: { 'static/a.js': 'static/a.js.map' },
+        bundles: 1,
+      })),
     });
     const fake = fakeCompiler({ path: '/o' });
     createNextWebpackPlugin(context(), 'client', d).apply(fake.compiler);

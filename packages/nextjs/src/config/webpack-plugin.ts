@@ -10,14 +10,14 @@
 // plugin neither stamped them (an asset name may not escape the staging directory) nor found their maps, and its
 // directory-wide upload of `.next` swept up the server compilation's half-written files.
 import { stat, unlink } from 'node:fs/promises';
-import { resolve } from 'node:path';
+import { relative, resolve } from 'node:path';
 import {
   type AssetStore,
   type ResolvedPluginOptions,
   runPluginUpload,
   stampAssets,
 } from '@bugsee/bundler-plugin-core';
-import { type BuildFiles, partitionBuildFiles } from './build-files';
+import { type BuildFiles, partitionBuildFiles, readTail } from './build-files';
 import type { BugseeNextContext } from './context';
 import { FALLBACK_SRI_NOTICE, sriManifestNear } from './sri';
 
@@ -68,11 +68,15 @@ export interface WebpackPluginDeps {
   exists?: (path: string) => Promise<boolean>;
   /** Whether Next's integrity manifest sits next to this output (default: looks on disk). */
   hasSriManifest?: (outDir: string) => Promise<boolean>;
+  /** The end of a file as text (default: reads the last 16 KiB). */
+  tail?: (path: string) => Promise<string>;
   /** Delete a file (default `fs.unlink`; a file that is already gone is fine). */
   remove?: (path: string) => Promise<void>;
 }
 
 const PLUGIN = 'bugsee-next';
+/** The debug-ID comment `bugsee-cli sourcemaps inject` appends to a stamped bundle. */
+const DEBUG_ID = /\/\/# debugId=[0-9a-f-]{36}/;
 /** A script asset, query and upper-case extension included (what the core's own plugin counts). */
 const SCRIPT_ASSET = /\.[cm]?js(\?|$)/i;
 
@@ -80,8 +84,8 @@ const SCRIPT_ASSET = /\.[cm]?js(\?|$)/i;
 interface InBuildStamp {
   preStamped: boolean;
   /** The bundles it stamped and their maps, by real asset name, for the on-disk re-check. */
-  stampedBundles?: string[];
-  stampedMaps?: Record<string, string>;
+  /** How many stamped bundles have a map: what must still carry its debug-ID on disk. */
+  stampedWithMaps?: number;
   /** Why the in-build stamp failed, reported once the build knows what happens next (fallback or not). */
   failure?: unknown;
   /** The stamp was refused in a way that makes stamping after emit unsafe too. */
@@ -196,6 +200,9 @@ export function pairRecorded(
   const present = new Set(emitted);
   const scripts = new Set(base.scripts);
   const maps = new Set(base.maps);
+  const pairs: Record<string, string> = Object.fromEntries(
+    base.scripts.map((s) => [s, `${s}.map`]),
+  );
   for (const { name } of compilation.getAssets()) {
     const script = resolve(outDir, withoutQuery(name));
     if (!SCRIPT_ASSET.test(name) || scripts.has(script) || !present.has(script)) {
@@ -210,9 +217,10 @@ export function pairRecorded(
     if (map !== undefined && present.has(map)) {
       scripts.add(script);
       maps.add(map);
+      pairs[script] = map;
     }
   }
-  return { ...base, scripts: [...scripts].sort(), maps: [...maps].sort() };
+  return { ...base, scripts: [...scripts].sort(), maps: [...maps].sort(), pairs };
 }
 
 /** The webpack plugin for one Next compilation. */
@@ -226,6 +234,7 @@ export function createNextWebpackPlugin(
   const exists = deps.exists ?? fileExists;
   const hasSriManifest = deps.hasSriManifest ?? ((dir: string) => sriManifestNear(dir));
   const remove = deps.remove ?? removeFile;
+  const tail = deps.tail ?? readTail;
   const { resolved } = context;
   // Only the browser compilation registers the build (once per `next build`), and only it follows the client
   // deletion policy: `.next/static` is public, `.next/server` is not.
@@ -258,7 +267,7 @@ export function createNextWebpackPlugin(
             async () => {
               const store = nextAssetStore(compilation, RawSource);
               try {
-                const { stamped, maps, bundles } = await stamp(store, { dryRun: resolved.dryRun });
+                const { maps, bundles } = await stamp(store, { dryRun: resolved.dryRun });
                 const scripts = compilation
                   .getAssets()
                   .filter(({ name }) => SCRIPT_ASSET.test(name));
@@ -269,17 +278,7 @@ export function createNextWebpackPlugin(
                   );
                   return;
                 }
-                state = {
-                  preStamped: true,
-                  // On disk there is no `?query` (webpack drops it when it writes the file).
-                  stampedBundles: stamped.map((name) => withoutQuery(store.real(name))),
-                  stampedMaps: Object.fromEntries(
-                    Object.entries(maps).map(([bundle, map]) => [
-                      withoutQuery(store.real(bundle)),
-                      withoutQuery(store.real(map)),
-                    ]),
-                  ),
-                };
+                state = { preStamped: true, stampedWithMaps: Object.keys(maps).length };
               } catch (error) {
                 if (resolved.failOnError) {
                   throw error;
@@ -405,11 +404,41 @@ export function createNextWebpackPlugin(
           }
           return;
         }
+        // The in-build stamp ran BEFORE webpack renames `[contenthash]` assets, so the names it saw are not the names
+        // on disk. What the on-disk re-check needs is the FINAL bundle names: the paired bundles that carry a
+        // debug-ID now. A stamped bundle that lost its ID on the way is reported (below) instead of silently
+        // dropped from the check.
+        let onDisk: string[] | undefined;
+        if (state.preStamped && state.stampedWithMaps !== undefined) {
+          onDisk = [];
+          for (const script of files.scripts) {
+            if (DEBUG_ID.test(await tail(script))) {
+              onDisk.push(script);
+            }
+          }
+          if (onDisk.length < state.stampedWithMaps) {
+            const failure = new Error(
+              `${state.stampedWithMaps - onDisk.length} of the ${state.stampedWithMaps} bundle(s) stamped inside the ${kind} build do not carry their debug-ID on disk: something rewrote them after Bugsee stamped them`,
+            );
+            if (resolved.failOnError) {
+              throw failure;
+            }
+            (resolved.onError ?? ((e: unknown) => console.warn(`[bugsee] ${String(e)}`)))(failure);
+          }
+        }
         await upload(forKind, outDir, {
           bundler: { isProduction: true, configuration: kind },
           preStamped: state.preStamped,
-          ...(state.preStamped && state.stampedBundles !== undefined
-            ? { stampedBundles: state.stampedBundles, stampedMaps: state.stampedMaps }
+          ...(onDisk !== undefined
+            ? {
+                stampedBundles: onDisk.map((script) => relative(outDir, script)),
+                stampedMaps: Object.fromEntries(
+                  onDisk.map((script) => [
+                    relative(outDir, script),
+                    relative(outDir, files.pairs?.[script] ?? `${script}.map`),
+                  ]),
+                ),
+              }
             : {}),
           files,
         });

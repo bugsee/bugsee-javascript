@@ -14,6 +14,8 @@ export interface BuildFiles {
   stylesheetMaps: string[];
   /** Bundles left out because their map is shared with another bundle (see {@link pairByPointer}). */
   shared?: string[];
+  /** Each script's map, where the caller knows the pairing (webpack: sibling name or recorded relationship). */
+  pairs?: Record<string, string>;
 }
 
 const SCRIPT = /\.[cm]?js$/i;
@@ -23,7 +25,7 @@ const TAIL_BYTES = 16 * 1024;
 const SKIP = new Set(['node_modules']);
 
 /** The last {@link TAIL_BYTES} of a file as text (the whole file when it is smaller). */
-async function readTail(file: string): Promise<string> {
+export async function readTail(file: string): Promise<string> {
   const handle = await open(file, 'r');
   try {
     const { size } = await handle.stat();
