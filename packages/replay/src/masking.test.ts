@@ -174,6 +174,14 @@ describe('resolveReplayMaskingOptions — fail-closed defaults', () => {
     );
   });
 
+  it('does NOT block inline <svg> by default, but still blocks SVG <image> (embedded rasters)', () => {
+    const tags = MEDIA_SELECTOR.split(',');
+    expect(tags).not.toContain('svg');
+    expect(tags).toContain('image');
+    expect(tags).toContain('feImage'); // SVG filter primitive that carries a raster/data-URI href
+    expect(resolveReplayMaskingOptions().blockSelector?.split(',')).not.toContain('svg');
+  });
+
   it('excludes iframes (blocked) — part of the media set', () => {
     expect(MEDIA_SELECTOR).toContain('iframe');
     expect(resolveReplayMaskingOptions().blockSelector).toContain('iframe');
