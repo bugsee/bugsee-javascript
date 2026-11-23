@@ -599,3 +599,37 @@ describe('async origin (a stackless platform rejection reported WITH its call si
     recorder.stop();
   });
 });
+
+describe('a failed dynamic import', () => {
+  // Safari (and Chrome, for this error) ships no stack for it; Node would give the test's own.
+  const stackless = (message: string): TypeError => {
+    const error = new TypeError(message);
+    error.stack = undefined;
+    return error;
+  };
+
+  function reportOf(reason: unknown) {
+    const w = fakeWindow();
+    const requests = started(createUnhandledRejectionProvider(w.win));
+    w.emit('unhandledrejection', { reason });
+    return requests[0]?.report as unknown as { description?: string; crash?: CrashJson };
+  }
+
+  it('names the module, and carries a frame, when the message names it (Chrome)', () => {
+    const report = reportOf(
+      stackless(
+        'Failed to fetch dynamically imported module: https://app.example.com/chunk-LAZY.js',
+      ),
+    );
+    expect(report.crash?.exception.frames).toHaveLength(1);
+    expect(report.crash?.exception.frames[0]?.trace).toContain('chunk-LAZY.js');
+    expect(report.description).toContain('Failed module: https://app.example.com/chunk-LAZY.js');
+  });
+
+  it('still gets one fixed frame when Safari names nothing, so occurrences group', () => {
+    const report = reportOf(stackless('Importing a module script failed.'));
+    expect(report.crash?.exception.frames).toHaveLength(1);
+    expect(report.crash?.exception.frames[0]?.trace).toContain('<unknown module>');
+    expect(report.description).toContain('Failed module: unknown');
+  });
+});

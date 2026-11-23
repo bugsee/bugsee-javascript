@@ -3,6 +3,7 @@ import type { CrashJson, DetectionProvider, StackFrame } from '@bugsee/core';
 import {
   applyDebugIds,
   buildCrashJson,
+  composeFrameEnrichers,
   DetectionProviderBase,
   describeThrown,
   formatStack,
@@ -11,6 +12,11 @@ import {
 } from '@bugsee/core';
 import { BugseeOption } from '@bugsee/protocol';
 import { parseStack } from './stack';
+import {
+  createStacklessFrameEnricher,
+  describeStacklessContext,
+  stacklessFrames,
+} from './stackless-error-context';
 
 // Browser crash/error detection providers (globalErrorInterceptor on the browser,
 // mechanisms). Each subscribes to a window event and submits a ReportingRequest via
@@ -42,7 +48,8 @@ function describeError(
     // No frames of its own (no stack, or only the `Name: message` header Chromium gives an async DOMException): an async platform
     // rejection (`video.play()`). Where the call was made, and on what, if the recorder saw it.
     const located = describeOrigin(value, origins);
-    return located === undefined ? { summary } : { summary, description: located };
+    // Still nothing: a failed dynamic import, or an engine that reports a location instead of a stack (see stackless-error-context).
+    return withStacklessContext(value, summary, located);
   }
   // A value that is not an `Error` here may still be a platform rejection (a DOMException from another realm is not `instanceof Error`):
   // the recorder keys by reason, so it answers for an object too.
@@ -53,6 +60,20 @@ function describeError(
   return located === undefined
     ? { summary: describeThrown(value) }
     : { summary: describeThrown(value), description: located };
+}
+
+function withStacklessContext(
+  value: unknown,
+  summary: string,
+  located: string | undefined,
+): { summary: string; description?: string } {
+  const frames = stacklessFrames(value);
+  const parts = [
+    located,
+    frames.length > 0 ? formatStack(frames).trimEnd() : undefined,
+    describeStacklessContext(value),
+  ].filter((part) => part !== undefined && part !== '');
+  return parts.length === 0 ? { summary } : { summary, description: parts.join('\n') };
 }
 
 function describeOrigin(value: object, origins?: AsyncOriginReporting): string | undefined {
@@ -72,10 +93,15 @@ function describeOrigin(value: object, origins?: AsyncOriginReporting): string |
 /** Structured crash.json from a thrown value — `handled: false` (uncaught). A non-Error gets a
  *  synthetic exception rather than nothing. Uses the browser's multi-engine stack parser. */
 function crashOf(value: unknown, origins?: AsyncOriginReporting): CrashJson {
+  // The async-origin enricher first (a platform rejection's call site), then the stackless context for what is still empty.
+  const enrichFrames = composeFrameEnrichers([
+    ...(origins !== undefined ? [origins.enrichFrames] : []),
+    createStacklessFrameEnricher(),
+  ]);
   return buildCrashJson(value, {
     parseStack,
     handled: false,
-    ...(origins !== undefined ? { enrichFrames: origins.enrichFrames } : {}),
+    ...(enrichFrames !== undefined ? { enrichFrames } : {}),
   });
 }
 
