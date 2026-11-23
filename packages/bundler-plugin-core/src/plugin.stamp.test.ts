@@ -42,8 +42,13 @@ beforeEach(() => {
 
 describe('rspack: stamps inside the compilation', () => {
   const DEV_TOOLING = 500;
+  // Faithful: a Buffer source is NOT rewritten by RealContentHashPlugin, so the fake refuses one.
   class RawSource {
-    constructor(readonly bytes: Buffer) {}
+    constructor(readonly value: string) {
+      if (typeof value !== 'string') {
+        throw new TypeError('a Buffer source would keep stale content-hash references');
+      }
+    }
   }
 
   function rspackCompiler(options: { mode?: string; withApi?: boolean } = {}) {
@@ -218,7 +223,7 @@ describe('rspack: stamps inside the compilation', () => {
     apply({ appToken: 'tok' }, r.compiler);
     await r.compile();
     expect(r.updated[0]?.source).toBeInstanceOf(RawSource);
-    expect((r.updated[0]?.source as RawSource).bytes.toString()).toBe('stamped');
+    expect((r.updated[0]?.source as RawSource).value).toBe('stamped');
   });
 
   it('passes the dry-run flag on', async () => {
@@ -290,6 +295,62 @@ describe('rspack: stamps inside the compilation', () => {
       await r.compile();
       expect(r.processAssets).toHaveLength(1);
     }
+  });
+
+  it('hands updateAsset a string, byte-for-byte what was stamped (multi-byte text survives)', async () => {
+    stampSpy.mockImplementation(async (store) => {
+      (store as { update(n: string, c: Buffer): void }).update(
+        'main.js',
+        Buffer.from('héllo ✓ 日本 stamped', 'utf8'),
+      );
+      return { stamped: ['main.js'], maps: {}, bundles: 1 };
+    });
+    const r = rspackCompiler();
+    apply({ appToken: 'tok' }, r.compiler);
+    await r.compile();
+    expect(typeof (r.updated[0]?.source as { value: unknown }).value).toBe('string');
+    expect((r.updated[0]?.source as { value: string }).value).toBe('héllo ✓ 日本 stamped');
+  });
+
+  it('refuses bytes that are not valid UTF-8 (never corrupts an asset): the stamp fails and the post-emit path takes over', async () => {
+    stampSpy.mockImplementation(async (store) => {
+      (store as { update(n: string, c: Buffer): void }).update(
+        'main.js',
+        Buffer.from([0xff, 0xfe, 0x00, 0x61]),
+      );
+      return { stamped: ['main.js'], maps: {}, bundles: 1 };
+    });
+    const onError = vi.fn();
+    const r = rspackCompiler();
+    apply({ appToken: 'tok', onError }, r.compiler);
+    await r.compile();
+    await r.afterEmit();
+    expect(r.updated).toEqual([]);
+    expect(String(onError.mock.calls[0]?.[0])).toContain('UTF-8');
+    expect(depsOf(0)?.preStamped).toBe(false);
+  });
+
+  it('the store check refuses invalid UTF-8 WITHOUT writing, and passes text; a BOM is preserved', async () => {
+    const outcome: string[] = [];
+    stampSpy.mockImplementation(async (store) => {
+      const st = store as { check(n: string, c: Buffer): void; update(n: string, c: Buffer): void };
+      st.check('main.js', Buffer.from('fine ✓', 'utf8'));
+      outcome.push('text ok');
+      try {
+        st.check('main.js', Buffer.from([0xc3, 0x28]));
+      } catch (error) {
+        outcome.push(String(error));
+      }
+      st.update('main.js', Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from('bom')]));
+      return { stamped: ['main.js'], maps: {}, bundles: 1 };
+    });
+    const r = rspackCompiler();
+    apply({ appToken: 'tok' }, r.compiler);
+    await r.compile();
+    expect(outcome[0]).toBe('text ok');
+    expect(outcome[1]).toContain('not valid UTF-8');
+    expect(r.updated).toHaveLength(1); // only the explicit update wrote anything
+    expect((r.updated[0]?.source as { value: string }).value).toBe('\uFEFFbom');
   });
 
   it('does not stamp for a disabled plugin', async () => {

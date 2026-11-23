@@ -26,6 +26,11 @@ export interface AssetStore {
   read(name: string): Buffer | string;
   update(name: string, content: Buffer): void;
   /**
+   * Called for EVERY asset about to be written back, before ANY is: throw to refuse the whole stamp (a store
+   * that can only hold text refuses bytes that are not valid text), so a refusal never leaves a half-written build.
+   */
+  check?(name: string, content: Buffer): void;
+  /**
    * The asset that is the source map of the bundle `name`, when the bundler can say (a Rollup chunk's
    * `sourcemapFileName`). inject pairs a bundle with its map by the sibling name `<bundle>.map`, so a map
    * the bundler MOVED is staged under that name; without this a moved map is simply not found and the
@@ -169,6 +174,12 @@ export async function stampAssets(
     const issues = verifyStamp(before, after, options.parse);
     if (issues.length > 0) {
       throw new StampVerificationError(issues);
+    }
+    for (const name of staged) {
+      const afterBytes = after.get(stagedAs(name)) as Buffer;
+      if (!afterBytes.equals(before.get(stagedAs(name)) as Buffer)) {
+        store.check?.(name, afterBytes);
+      }
     }
     const stamped: string[] = [];
     for (const name of staged) {
