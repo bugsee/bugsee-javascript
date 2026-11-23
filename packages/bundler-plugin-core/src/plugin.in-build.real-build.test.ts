@@ -392,3 +392,75 @@ describeReal('real Rspack build with the built-in SubresourceIntegrityPlugin', (
     expect(existsSync(join(app.out, 'index.html'))).toBe(true);
   });
 });
+
+// A script that is NOT part of the bundle (a `publicDir` copy, a stale file with `emptyOutDir: false`) has no
+// debug-id, and the real bugsee-cli exits non-zero for a directory that holds a map without one ("nothing was
+// uploaded"). Uploading the DIRECTORY would therefore lose every map of the build; the pre-stamped path names
+// its files instead. Real CLI, no --dry-run, failOnError on.
+describeReal('an unstamped vendor script + map beside a stamped build', () => {
+  const VENDOR_MAP = '{"version":3,"sources":["vendor.src.js"],"names":[],"mappings":"AAAA"}';
+  const addVendor = (dir: string): void => {
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      join(dir, 'vendor.js'),
+      'window.__vendor = 1;\n//# sourceMappingURL=vendor.js.map\n',
+    );
+    writeFileSync(join(dir, 'vendor.js.map'), VENDOR_MAP);
+  };
+  const expectVendorUntouched = (out: string): void => {
+    expect(readFileSync(join(out, 'vendor.js.map'), 'utf8')).toBe(VENDOR_MAP);
+    expect(readFileSync(join(out, 'vendor.js'), 'utf8')).not.toContain('debugId');
+  };
+
+  for (const [label, build] of [
+    ['Vite 8 (Rolldown)', viteBuild],
+    ['Vite 7 (Rollup)', vite7Build],
+  ] as const) {
+    it(`${label}: publicDir/vendor.js is left alone and said; the stamped maps still upload; failOnError does not fail`, async () => {
+      const app = makeApp(`vite-vendor-${label.replace(/\W+/g, '')}`, { lazy: false });
+      addVendor(join(app.dir, 'public'));
+      const before = requests.length;
+      const notices: string[] = [];
+      const errors: unknown[] = [];
+      await build(
+        viteConfig(app, [
+          bugseeVite({
+            onNotice: (m: string) => notices.push(m),
+            onError: (e: unknown) => errors.push(e),
+          }),
+        ]),
+      );
+      expect(errors.map(String)).toEqual([]);
+      expect(requests.length).toBeGreaterThan(before);
+      expect(readdirSync(join(app.out, 'assets')).filter((f) => f.endsWith('.map'))).toEqual([]);
+      expectVendorUntouched(app.out);
+      expect(notices.join('\n')).toContain('vendor.js.map');
+    });
+  }
+
+  it('Rollup: a stale vendor script in the output directory is left alone and said', async () => {
+    const app = makeApp('rollup-vendor');
+    addVendor(app.out);
+    const before = requests.length;
+    const notices: string[] = [];
+    const errors: unknown[] = [];
+    const bundle = await rollup({
+      input: join(app.dir, 'index.js'),
+      plugins: [
+        bugseeRollupPlugin({
+          ...pluginOptions(),
+          onNotice: (m: string) => notices.push(m),
+          onError: (e: unknown) => errors.push(e),
+        }),
+      ],
+    });
+    await bundle.write({ dir: app.out, sourcemap: true });
+    await bundle.close();
+    expect(errors.map(String)).toEqual([]);
+    expect(requests.length).toBeGreaterThan(before);
+    const maps = readdirSync(app.out).filter((f) => f.endsWith('.map'));
+    expect(maps).toEqual(['vendor.js.map']);
+    expectVendorUntouched(app.out);
+    expect(notices.join('\n')).toContain('vendor.js.map');
+  });
+});

@@ -331,6 +331,15 @@ export async function verifyStampedOnDisk(bundles: readonly string[]): Promise<S
   return issues;
 }
 
+/**
+ * Every script map (`*.js.map`, `.cjs`, `.mjs`) under `dir`, walked like the snapshot: the whole output
+ * directory, fenced only at a project root. These are the candidates for an explicit upload.
+ */
+export async function listScriptMaps(dir: string): Promise<string[]> {
+  const all = await walkStampable(dir, await isProjectRootOrAbove(dir));
+  return all.filter((file) => SCRIPT_MAP.test(file)).sort();
+}
+
 /** Script maps are the ones inject keys and the CLI uploads; a stylesheet map is neither. */
 const SCRIPT_MAP = /\.[cm]?js\.map$/;
 

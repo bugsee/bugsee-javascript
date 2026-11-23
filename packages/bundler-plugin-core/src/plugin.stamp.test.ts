@@ -196,6 +196,26 @@ describe('rspack: stamps inside the compilation', () => {
     expect(depsOf(0)?.preStamped).toBe(false);
   });
 
+  it('does not stamp a development build that is not uploaded (rspack serve/watch), and does when uploadInDevelopment is set', async () => {
+    const dev = rspackCompiler({ mode: 'development' });
+    apply({ appToken: 'tok', onNotice: () => undefined }, dev.compiler);
+    await dev.compile();
+    expect(dev.processAssets).toHaveLength(0);
+    expect(stampSpy).not.toHaveBeenCalled();
+
+    const optIn = rspackCompiler({ mode: 'development' });
+    apply({ appToken: 'tok', uploadInDevelopment: true }, optIn.compiler);
+    await optIn.compile();
+    expect(optIn.processAssets).toHaveLength(1);
+
+    for (const mode of ['production', 'none']) {
+      const r = rspackCompiler({ mode });
+      apply({ appToken: 'tok' }, r.compiler);
+      await r.compile();
+      expect(r.processAssets).toHaveLength(1);
+    }
+  });
+
   it('does not stamp for a disabled plugin', async () => {
     const r = rspackCompiler();
     apply({ disabled: true }, r.compiler);

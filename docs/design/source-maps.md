@@ -253,6 +253,22 @@ systems, so the cwd-equals-output check can miss a differently-cased spelling of
 directory that cannot be removed (EPERM/EBUSY) is reported, never thrown. Windows paths resolve a custom map
 name through the native path API (the in-memory asset names use posix).
 
+### Uploading a pre-stamped directory
+
+A pre-stamped build is uploaded as an **explicit file set**, never as the directory. Only what the in-build
+stamp wrote has a debug-id; anything else in the output directory (a `public/` vendor script and its map, a
+stale map with `emptyOutDir: false`) has none, and the real bugsee-cli (0.9.0, measured, without `--dry-run`)
+exits non-zero for a directory that holds a map without a debug-id ("source map has no debug_id … nothing was
+uploaded"), which would lose EVERY map of the build. So the script maps under the directory (the whole output
+directory, fenced only at a project root) are partitioned by whether they carry a debug-id BEFORE the CLI call;
+the keyed ones are uploaded by path (in batches), the rest are left on disk untouched and reported as a
+**notice** (`onNotice`), not an error: they were never part of the build, so they do not fail `failOnError`. If
+nothing is keyed there is no CLI call (a notice; under `failOnError` the "no maps" failure the strict CLI used to
+give). A dry run still passes the directory (nothing was stamped; `--dry-run` only warns). Rspack development
+builds that are not uploaded (`uploadInDevelopment` unset) are no longer stamped either. Covered by real builds
+(`plugin.in-build.real-build.test.ts`: Vite 7/8 with a `publicDir` vendor script, Rollup with a stale one; real
+CLI, no dry run, `failOnError` on).
+
 ### Map deletion
 
 `.map` files are deleted (default) only after a **confirmed** upload: after `debug-files upload` returned success,

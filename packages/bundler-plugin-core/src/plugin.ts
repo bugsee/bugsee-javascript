@@ -401,13 +401,23 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
   // final bytes and the SRI plugin then hashes the STAMPED bytes — for the HTML and for the lazy-chunk
   // table alike. Nothing is rewritten after emit. Returns whether THIS compilation was stamped; reset per
   // compilation, so in watch mode a stamp from the previous build cannot vouch for this one.
-  const tapProcessAssetsStamp = (compiler: WebpackCompilerLike): (() => InBuildStamp) => {
+  const tapProcessAssetsStamp = (
+    compiler: WebpackCompilerLike,
+    /** A build that will not be uploaded is not stamped either. */
+    skip = false,
+  ): (() => InBuildStamp) => {
     let state: InBuildStamp = { preStamped: false };
     const api = compiler.webpack ?? compiler.rspack;
     const stage = api?.Compilation?.PROCESS_ASSETS_STAGE_DEV_TOOLING;
     const RawSource = api?.sources?.RawSource;
     const thisCompilation = compiler.hooks.thisCompilation;
-    if (resolved.enabled && stage !== undefined && RawSource !== undefined && thisCompilation) {
+    if (
+      resolved.enabled &&
+      !skip &&
+      stage !== undefined &&
+      RawSource !== undefined &&
+      thisCompilation
+    ) {
       thisCompilation.tap(name, (compilation) => {
         state = { preStamped: false };
         compilation.hooks.processAssets.tapPromise({ name, stage: stage + 1 }, async () => {
@@ -677,7 +687,12 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
       injectDefines(compiler, DefinePlugin, identityDefines, taken);
       // Stamp inside the compilation (as webpack does); a failure falls back to the post-emit inject below,
       // which keeps the SRI guard that refuses a build whose integrity hashes the stamp would invalidate.
-      const preStamped = tapProcessAssetsStamp(compiler);
+      // A development build that is not uploaded (`afterEmit` skips it) is not stamped either: rspack
+      // serve/watch would otherwise spawn the CLI on every rebuild for bundles nothing uses.
+      const preStamped = tapProcessAssetsStamp(
+        compiler,
+        compiler.options.mode === 'development' && !resolved.uploadInDevelopment,
+      );
       // End of the build (#184): upload after emit, as webpack does.
       // Rspack's production default is `devtool: false`: no maps are emitted and the upload silently finds
       // nothing. Said once, like esbuild's `sourcemap: false`.

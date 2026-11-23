@@ -15,6 +15,7 @@ import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   isProjectRootOrAbove,
+  listScriptMaps,
   restoreAtomically,
   snapshotStampFiles,
   verifyAndRestore,
@@ -371,5 +372,36 @@ describe('verifyStampedOnDisk', () => {
   it('a bundle with no map at all is left alone', async () => {
     await writeFile(join(dir, 'a.js'), 'a();\n');
     expect(await verifyStampedOnDisk([join(dir, 'a.js')])).toEqual([]);
+  });
+});
+
+describe('listScriptMaps', () => {
+  it('lists script maps of the whole output directory (src/ and dot-dirs included), sorted, never stylesheet maps', async () => {
+    await mkdir(join(dir, 'src'));
+    await mkdir(join(dir, '.hidden'));
+    await writeFile(join(dir, 'src', 'a.js.map'), '{}');
+    await writeFile(join(dir, '.hidden', 'b.mjs.map'), '{}');
+    await writeFile(join(dir, 'z.cjs.map'), '{}');
+    await writeFile(join(dir, 'c.css.map'), '{}');
+    await writeFile(join(dir, 'd.js'), 'x');
+    expect((await listScriptMaps(dir)).map((f) => f.slice(dir.length + 1))).toEqual([
+      '.hidden/b.mjs.map',
+      'src/a.js.map',
+      'z.cjs.map',
+    ]);
+  });
+  it('is fenced at the project root', async () => {
+    const start = process.cwd();
+    await mkdir(join(dir, 'src'));
+    await writeFile(join(dir, 'src', 'a.js.map'), '{}');
+    await writeFile(join(dir, 'ok.js.map'), '{}');
+    process.chdir(dir);
+    try {
+      expect((await listScriptMaps(dir)).map((f) => f.slice(dir.length + 1))).toEqual([
+        'ok.js.map',
+      ]);
+    } finally {
+      process.chdir(start);
+    }
   });
 });

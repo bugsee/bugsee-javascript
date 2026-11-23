@@ -317,6 +317,7 @@ export async function runPluginUpload(
       dryRun: resolved.dryRun,
       stripSourcesContent: resolved.stripSourcesContent,
       failOnError: resolved.failOnError,
+      onNotice: notify(resolved),
       ...(resolved.onError !== undefined ? { onError: resolved.onError } : {}),
       // Omitted, not sent empty: absence is how the backend tells "no VCS context" from "known empty".
       ...(vcs !== undefined ? { vcs } : {}),

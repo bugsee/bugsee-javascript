@@ -514,9 +514,10 @@ describe('an in-build stamp is checked again on disk, after the bundler wrote th
       opts({
         outDir: '.',
         stampedBundles: ['no-such-bundle-bugsee.js'],
+        listUploadMaps: async () => [], // never walk the project tree from a test
+        onNotice: () => undefined,
         onError,
         deleteMaps: false,
-        failOnError: true,
       }),
     );
     expect(onError).not.toHaveBeenCalled();
@@ -527,7 +528,7 @@ describe('an in-build stamp is checked again on disk, after the bundler wrote th
     await writeFile(join(dir, 'a.js.map'), '{"version":3}');
     const onError = vi.fn();
     await uploadSourcemaps(
-      opts({ stampedBundles: undefined, onError, deleteMaps: false, failOnError: true }),
+      opts({ stampedBundles: undefined, onError, onNotice: () => undefined, deleteMaps: false }),
     );
     expect(onError).not.toHaveBeenCalled();
   });
@@ -549,5 +550,100 @@ describe('an in-build stamp is checked again on disk, after the bundler wrote th
       }),
     );
     expect(onError).not.toHaveBeenCalled();
+  });
+});
+
+describe('a pre-stamped directory upload names its files (never the directory)', () => {
+  let dir: string;
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'bugsee-explicit-'));
+  });
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+  const record = () => {
+    const calls: string[][] = [];
+    const run = vi.fn(async (args: string[]): Promise<SpawnResult> => {
+      calls.push(args);
+      return { code: 0, stdout: '', stderr: '' };
+    });
+    return { run, calls };
+  };
+  const opts = (extra: object = {}) => ({
+    ...base,
+    outDir: dir,
+    preStamped: true,
+    verifySri: async () => [],
+    ...extra,
+  });
+  const keyed = JSON.stringify({ debugId: ID });
+
+  it('uploads only the maps that carry a debug-id: a vendor map beside the build is left alone, said as a NOTICE, and never fails the build', async () => {
+    await writeFile(join(dir, 'a.js.map'), keyed);
+    await mkdir(join(dir, 'sub'));
+    await writeFile(join(dir, 'sub', 'b.mjs.map'), keyed);
+    await writeFile(join(dir, 'vendor.js.map'), '{"version":3}');
+    await writeFile(join(dir, 'style.css.map'), '{"version":3}');
+    const { run, calls } = record();
+    const notices: string[] = [];
+    const onError = vi.fn();
+    const result = await uploadSourcemaps(
+      opts({ run, failOnError: true, onError, onNotice: (m: string) => notices.push(m) }),
+    );
+    const upload = calls.find((c) => c[0] === 'debug-files') as string[];
+    expect(upload.slice(0, 2)).toEqual(['debug-files', 'upload']);
+    expect(upload).toContain(join(dir, 'a.js.map'));
+    expect(upload).toContain(join(dir, 'sub', 'b.mjs.map'));
+    expect(upload).not.toContain(dir);
+    expect(upload).not.toContain(join(dir, 'vendor.js.map'));
+    expect(upload).not.toContain(join(dir, 'style.css.map'));
+    // Keyed maps and the stylesheet map are deleted; the vendor map is untouched.
+    expect((await readdir(dir)).sort()).toEqual(['sub', 'vendor.js.map']);
+    expect(result.uploaded).toBe(true);
+    expect(onError).not.toHaveBeenCalled();
+    expect(notices).toHaveLength(1);
+    expect(notices[0]).toContain('vendor.js.map');
+    expect(notices[0]).toContain('not part of this build');
+  });
+
+  it('with nothing keyed there is nothing to upload: no CLI call, a notice, and a failure only under failOnError', async () => {
+    await writeFile(join(dir, 'vendor.js.map'), '{"version":3}');
+    const { run, calls } = record();
+    const notices: string[] = [];
+    const result = await uploadSourcemaps(opts({ run, onNotice: (m: string) => notices.push(m) }));
+    expect(calls).toEqual([]);
+    expect(result.uploaded).toBe(true);
+    expect(notices).toHaveLength(1);
+    await expect(uploadSourcemaps(opts({ run, failOnError: true }))).rejects.toThrow(
+      /no source maps/,
+    );
+    expect(calls).toEqual([]);
+  });
+
+  it('batches explicit paths like any file run', async () => {
+    for (let i = 0; i < 250; i++) {
+      await writeFile(join(dir, `c${i}.js.map`), keyed);
+    }
+    const { run, calls } = record();
+    await uploadSourcemaps(opts({ run, deleteMaps: false }));
+    expect(calls.filter((c) => c[0] === 'debug-files')).toHaveLength(2);
+  });
+
+  it('a dry run still uploads the directory (nothing was stamped, nothing is deleted)', async () => {
+    await writeFile(join(dir, 'vendor.js.map'), '{"version":3}');
+    const { run, calls } = record();
+    await uploadSourcemaps(opts({ run, dryRun: true }));
+    expect(calls[0]?.slice(0, 3)).toEqual(['debug-files', 'upload', dir]);
+  });
+
+  it('a directory with no notice sink says nothing on stdout-breaking channels (default console.warn)', async () => {
+    await writeFile(join(dir, 'vendor.js.map'), '{"version":3}');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      await uploadSourcemaps(opts({ run: record().run }));
+      expect(String(warn.mock.calls[0]?.[0])).toContain('vendor.js.map');
+    } finally {
+      warn.mockRestore();
+    }
   });
 });

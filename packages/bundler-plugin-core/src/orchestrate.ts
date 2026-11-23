@@ -7,6 +7,7 @@ import { type RunBugseeCliOptions, runBugseeCli, type SpawnResult } from './run-
 import { findIntegrityMismatches, findSriProtectedScripts, type SriProtectedScript } from './sri';
 import {
   isProjectRootOrAbove,
+  listScriptMaps,
   MAX_WALK_DEPTH,
   NEVER_WALK,
   partitionByKeyed,
@@ -87,6 +88,10 @@ export interface UploadSourcemapsOptions {
    * missed. Without it the re-check has nothing to name and does not run.
    */
   stampedBundles?: readonly string[];
+  /** Where a non-failing observation goes (default: nowhere — callers that want it pass the notice sink). */
+  onNotice?: (message: string) => void;
+  /** Injectable lister of the script maps to consider for a pre-stamped directory upload (default {@link listScriptMaps}). */
+  listUploadMaps?: (dir: string) => Promise<string[]>;
   /** Where the pre-inject originals are spilled (default: the OS temp directory). A test seam. */
   spillRoot?: string;
   /** Injectable integrity check for the pre-stamped path (default {@link findIntegrityMismatches}). */
@@ -365,7 +370,32 @@ export async function uploadSourcemaps(
       ...(options.stripSourcesContent === true ? ['--strip-sources-content'] : []),
       ...dryFlag,
     ];
-    if (files === undefined) {
+    // A PRE-STAMPED directory is uploaded as an explicit file set, never as the directory. Only what the
+    // in-build stamp wrote has a debug-id; anything else in the directory (a `public/` vendor script and
+    // its map, a stale map with `emptyOutDir: false`) has none, and the CLI exits non-zero for a directory
+    // holding such a map ("nothing was uploaded"), which would lose EVERY map of the build. Unkeyed maps
+    // are left alone and said, not failed.
+    const explicitUpload = files === undefined && options.preStamped === true && !dryRun;
+    if (explicitUpload) {
+      const candidates = await (options.listUploadMaps ?? listScriptMaps)(outDir);
+      const { deletable, kept } = await (options.partitionMaps ?? partitionByKeyed)(candidates);
+      if (kept.length > 0) {
+        (options.onNotice ?? ((m: string) => console.warn(`[bugsee] ${m}`)))(
+          `${kept.length} source map(s) in ${outDir} carry no debug-ID, so they are not part of this build's stamp and were not uploaded (left on disk untouched): ${kept.join(', ')}`,
+        );
+      }
+      if (deletable.length === 0) {
+        if (options.failOnError === true) {
+          throw new Error(
+            `no source maps with a debug-ID were found in ${outDir}, so nothing was uploaded`,
+          );
+        }
+      } else {
+        for (const batch of inBatches(deletable)) {
+          await run(uploadArgs(batch), cliOptions);
+        }
+      }
+    } else if (files === undefined) {
       await run(uploadArgs([outDir]), cliOptions);
     } else {
       for (const batch of inBatches(files.maps)) {
@@ -402,7 +432,8 @@ export async function uploadSourcemaps(
           : [...files.maps, ...(files.stylesheetMaps ?? [])],
       );
       deletedMaps = await (options.deleteMapFiles ?? defaultDeleteMapFiles)(outDir, deletable);
-      if (kept.length > 0) {
+      // Unkeyed maps of a pre-stamped build were already said (a notice, above): they were never part of it.
+      if (kept.length > 0 && !explicitUpload) {
         const failure = new Error(
           `${kept.length} source map(s) carry no debug-ID, so they were not uploaded and were left on disk: ${kept.join(', ')}`,
         );
