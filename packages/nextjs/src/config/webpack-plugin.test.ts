@@ -1094,3 +1094,72 @@ describe('createNextWebpackPlugin: queries, recorded maps, registration', () => 
     expect((await reg(false, 'client')).registerBuild).toBe('release');
   });
 });
+
+describe('createNextWebpackPlugin: the on-disk scan and the no-maps notice', () => {
+  const stampedDeps = (over: WebpackPluginDeps = {}) =>
+    deps({
+      stamp: vi.fn(async () => ({ stamped: ['a.js'], maps: { 'a.js': 'a.js.map' }, bundles: 1 })),
+      ...over,
+    });
+  const emitWith = async (
+    ctx: BugseeNextContext,
+    d: WebpackPluginDeps,
+    assets: Record<string, string>,
+  ) => {
+    const fake = fakeCompiler({ path: '/o' });
+    createNextWebpackPlugin(ctx, 'client', d).apply(fake.compiler);
+    const c = fakeCompilation(assets);
+    fake.startCompilation(c.compilation);
+    await c.run();
+    await fake.emit(c.compilation);
+  };
+
+  it('an unreadable bundle never fails the build: reported through onError, not counted as lost', async () => {
+    const onError = vi.fn();
+    const d = stampedDeps({
+      tail: vi.fn(async () => {
+        throw Object.assign(new Error('EBUSY'), { code: 'EBUSY' });
+      }),
+    });
+    await expect(
+      emitWith(context({ onError }), d, { 'a.js': 'x', 'a.js.map': 'm' }),
+    ).resolves.toBeUndefined();
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(onError).toHaveBeenCalledWith(expect.objectContaining({ message: 'EBUSY' }));
+    expect(d.upload).toHaveBeenCalledTimes(1);
+  });
+
+  it('warns on the console for it without onError', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const d = stampedDeps({
+      tail: vi.fn(async () => {
+        throw new Error('EMFILE');
+      }),
+    });
+    await emitWith(context(), d, { 'a.js': 'x', 'a.js.map': 'm' });
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('could not read a stamped client bundle'),
+    );
+    warn.mockRestore();
+  });
+
+  it('rethrows an unreadable bundle under failOnError', async () => {
+    const d = stampedDeps({
+      tail: vi.fn(async () => {
+        throw new Error('EBUSY');
+      }),
+    });
+    await expect(
+      emitWith(context({ failOnError: true }), d, { 'a.js': 'x', 'a.js.map': 'm' }),
+    ).rejects.toThrow('EBUSY');
+  });
+
+  it('says nothing about missing browser maps when the app chose that (or on a dry run)', async () => {
+    const off = context({}, { browserMaps: false });
+    await emitWith(off, deps(), { 'a.js': 'x' });
+    expect(off.say).not.toHaveBeenCalled();
+    const expected = context({}, { browserMaps: true });
+    await emitWith(expected, deps(), { 'a.js': 'x' });
+    expect(expected.say).toHaveBeenCalledWith(expect.stringContaining('emitted no source maps'));
+  });
+});

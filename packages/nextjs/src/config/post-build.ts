@@ -70,7 +70,8 @@ async function postBuild(
 
   const client = await collect(join(distDir, 'static'));
   const server = context.serverSourceMaps ? await collect(join(distDir, 'server')) : undefined;
-  if (client.scripts.length === 0) {
+  // Only when maps were EXPECTED: an app that turned them off (or a dry run, which never forces them on) chose that.
+  if (client.scripts.length === 0 && context.browserMaps !== false) {
     context.say(
       'the browser build emitted no source maps, so nothing was uploaded for it. Set `productionBrowserSourceMaps: true` (withBugsee does this unless you set it to false).',
     );

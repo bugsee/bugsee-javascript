@@ -101,6 +101,7 @@ function extendConfig<C extends NextConfigObject>(
   turbopack: boolean,
   nextVersion: string | undefined,
   projectDir: string,
+  development: boolean,
 ): C {
   const sri = Boolean(config.experimental?.sri);
   const next: NextConfigObject = { ...config };
@@ -192,9 +193,14 @@ function extendConfig<C extends NextConfigObject>(
 
   if (turbopack) {
     if (noHook) {
-      context.say(NO_HOOK_NOTICE(nextVersion as string));
+      // Config-time notices are about a BUILD; `next dev` loads the same config and must stay quiet.
+      if (!development) {
+        context.say(NO_HOOK_NOTICE(nextVersion as string));
+      }
     } else if (sri) {
-      context.say(TURBOPACK_SRI_NOTICE);
+      if (!development) {
+        context.say(TURBOPACK_SRI_NOTICE);
+      }
     } else {
       const userHook = config.compiler?.runAfterProductionCompile as
         | ((metadata: PostBuildMetadata) => Promise<void>)
@@ -254,6 +260,7 @@ export function withBugsee<C extends NextConfigObject>(
       turbopack,
       (deps.nextVersion ?? installedNextVersion)(projectDir),
       projectDir,
+      env.NODE_ENV === 'development',
     );
     WRAPPED.add(extended);
     return extended;

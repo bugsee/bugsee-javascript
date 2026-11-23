@@ -477,3 +477,29 @@ describe('withBugsee: browser maps are forced on only when an upload can happen'
     );
   });
 });
+
+describe('withBugsee: config-time notices belong to a build, not to next dev', () => {
+  const turbo = (env: Record<string, string>, ctx = context()) =>
+    deps(ctx, { env: { TURBOPACK: '1', ...env }, nextVersion: () => '15.3.0' });
+
+  it('prints the no-hook notice for a build', () => {
+    const ctx = context();
+    apply({}, turbo({ NODE_ENV: 'production' }, ctx));
+    expect(ctx.say).toHaveBeenCalledWith(expect.stringContaining('15.4.0'));
+  });
+
+  it('stays quiet under NODE_ENV=development (next dev --turbopack with an object config)', () => {
+    const ctx = context();
+    apply({}, turbo({ NODE_ENV: 'development' }, ctx));
+    expect(ctx.say).not.toHaveBeenCalled();
+  });
+
+  it('the Turbopack + SRI notice is quiet in development too', () => {
+    const ctx = context();
+    apply(
+      { experimental: { sri: {} } },
+      deps(ctx, { env: { TURBOPACK: '1', NODE_ENV: 'development' } }),
+    );
+    expect(ctx.say).not.toHaveBeenCalled();
+  });
+});

@@ -117,6 +117,15 @@ describe('runPostBuild', () => {
     expect(d.upload).toHaveBeenCalledTimes(2);
   });
 
+  it('only says the browser emitted no maps when maps were expected', async () => {
+    const off = context({}, { browserMaps: false });
+    await runPostBuild(off, metadata, deps({ '/app/.next/server': files('s') }));
+    expect(off.say).not.toHaveBeenCalled();
+    const expected = context({}, { browserMaps: true });
+    await runPostBuild(expected, metadata, deps({ '/app/.next/server': files('s') }));
+    expect(expected.say).toHaveBeenCalledWith(expect.stringContaining('emitted no source maps'));
+  });
+
   it('says the shared map itself stays (and is public) when it is in .next/static', async () => {
     const ctx = context();
     const d = deps({ '/app/.next/static': { ...files('c'), shared: ['/d/x.js'] } });

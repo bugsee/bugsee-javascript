@@ -397,7 +397,7 @@ export function createNextWebpackPlugin(
           )(state.failure);
         }
         if (files.scripts.length === 0) {
-          if (kind === 'client') {
+          if (kind === 'client' && context.browserMaps !== false) {
             context.say(
               'the browser build emitted no source maps, so nothing was uploaded for it. Set `productionBrowserSourceMaps: true` (withBugsee does this unless you set it to false).',
             );
@@ -411,14 +411,34 @@ export function createNextWebpackPlugin(
         let onDisk: string[] | undefined;
         if (state.preStamped && state.stampedWithMaps !== undefined) {
           onDisk = [];
+          // A file that cannot be read (a lock held by a scanner, EMFILE) is not "lost": it is reported and left out of
+          // the count, and never fails the build unless `failOnError` asks.
+          const unreadable: unknown[] = [];
           for (const script of files.scripts) {
-            if (DEBUG_ID.test(await tail(script))) {
-              onDisk.push(script);
+            try {
+              if (DEBUG_ID.test(await tail(script))) {
+                onDisk.push(script);
+              }
+            } catch (error) {
+              unreadable.push(error);
             }
           }
-          if (onDisk.length < state.stampedWithMaps) {
+          if (unreadable.length > 0 && resolved.failOnError) {
+            throw unreadable[0];
+          }
+          for (const error of unreadable) {
+            (
+              resolved.onError ??
+              ((e: unknown) =>
+                console.warn(
+                  `[bugsee] could not read a stamped ${kind} bundle to check it: ${String(e)}`,
+                ))
+            )(error);
+          }
+          const missing = state.stampedWithMaps - onDisk.length - unreadable.length;
+          if (missing > 0) {
             const failure = new Error(
-              `${state.stampedWithMaps - onDisk.length} of the ${state.stampedWithMaps} bundle(s) stamped inside the ${kind} build do not carry their debug-ID on disk: something rewrote them after Bugsee stamped them`,
+              `${missing} of the ${state.stampedWithMaps} bundle(s) stamped inside the ${kind} build do not carry their debug-ID on disk: something rewrote them after Bugsee stamped them`,
             );
             if (resolved.failOnError) {
               throw failure;
