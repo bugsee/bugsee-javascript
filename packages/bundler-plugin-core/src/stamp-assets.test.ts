@@ -482,3 +482,106 @@ describe('rollupUnstampableMaps — chunks whose map cannot be stamped in memory
     ).toEqual([]);
   });
 });
+
+describe('stampAssets — a map that is not the bundle sibling (sourcemapFileNames moved it)', () => {
+  const chunk = (fileName: string, code: string, extra: object = {}) => ({
+    type: 'chunk' as const,
+    fileName,
+    code,
+    map: { version: 3 },
+    ...extra,
+  });
+  const asset = (fileName: string, source: string) => ({
+    type: 'asset' as const,
+    fileName,
+    source,
+  });
+  const MAP = '{"version":3,"file":"a.js","sources":["a.ts"],"names":[],"mappings":"AAAA"}';
+  const moved = () => ({
+    'js/a.js': chunk('js/a.js', 'console.log(1);\n//# sourceMappingURL=a.js.map\n', {
+      sourcemapFileName: 'maps/a.js.map',
+    }),
+    'maps/a.js.map': asset('maps/a.js.map', MAP),
+  });
+
+  it('stamps the bundle AND its moved map with the same id, through the real bugsee-cli', async () => {
+    const bundle = moved();
+    const result = await stampAssets(rollupAssetStore(bundle));
+    const id = readDebugId(bundle['js/a.js'].code);
+    expect(id).toMatch(/^[0-9a-f-]{36}$/);
+    expect(JSON.parse(bundle['maps/a.js.map'].source).debugId).toBe(id);
+    expect(result.stamped).toEqual(['js/a.js']);
+  });
+
+  it('stages the map as the bundle sibling (that is how inject pairs them), and writes it back at its real name', async () => {
+    const seen: string[] = [];
+    const bundle = moved();
+    await stampAssets(rollupAssetStore(bundle), {
+      run: async (args) => {
+        const { readdir, writeFile, readFile } = await import('node:fs/promises');
+        const { join } = await import('node:path');
+        const root = args[2] as string;
+        for (const dir of ['js']) {
+          for (const f of await readdir(join(root, dir))) {
+            seen.push(`${dir}/${f}`);
+          }
+        }
+        await writeFile(
+          join(root, 'js/a.js'),
+          `${await readFile(join(root, 'js/a.js'), 'utf8')};1;\n${STAMP_COMMENT}\n`,
+        );
+        await writeFile(
+          join(root, 'js/a.js.map'),
+          MAP.replace(/\}$/, `,"debugId":"b039c7fb-d958-5fe6-b76f-136179e9a728"}`),
+        );
+        return { code: 0, stdout: '', stderr: '' };
+      },
+    });
+    expect(seen.sort()).toEqual(['js/a.js', 'js/a.js.map']);
+    expect(bundle['maps/a.js.map'].source).toContain('debugId');
+  });
+
+  it('refuses (before inject) when the sibling name is already taken by another asset', async () => {
+    const run = vi.fn(async () => ({ code: 0, stdout: '', stderr: '' }));
+    const bundle = { ...moved(), 'js/a.js.map': asset('js/a.js.map', '{}') };
+    await expect(stampAssets(rollupAssetStore(bundle), { run })).rejects.toThrow(/js\/a\.js\.map/);
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  it('refuses a stamped bundle whose map cannot be staged at all (not a .map name): never a silent half-stamp', async () => {
+    const bundle = {
+      'a.js': chunk('a.js', 'x();\n', { sourcemapFileName: 'maps/a.json' }),
+      'maps/a.json': asset('maps/a.json', MAP),
+    };
+    const run = vi.fn(async () => ({ code: 0, stdout: '', stderr: '' }));
+    const error = (await stampAssets(rollupAssetStore(bundle), { run }).catch(
+      (e: unknown) => e,
+    )) as StampVerificationError;
+    expect(error).toBeInstanceOf(StampVerificationError);
+    expect(error.message).toContain('maps/a.json');
+  });
+
+  it('a store with no mapOf behaves exactly as before', async () => {
+    const store = memoryStore({
+      'a.js': 'x()\n//# sourceMappingURL=a.js.map',
+      'a.js.map': '{"version":3,"sources":["x.ts"],"names":[],"mappings":"AAAA"}',
+    });
+    await stampAssets(store);
+    expect(JSON.parse(store.assets.get('a.js.map') as string).debugId).toMatch(/^[0-9a-f-]{36}$/);
+  });
+
+  it('rollupAssetStore.mapOf names the map asset of a chunk, or nothing', () => {
+    const store = rollupAssetStore({
+      ...moved(),
+      'b.js': chunk('b.js', 'x'),
+      'c.js': chunk('c.js', 'x'),
+      'c.js.map': asset('c.js.map', '{}'),
+      'logo.png': asset('logo.png', 'x'),
+    });
+    expect(store.mapOf?.('js/a.js')).toBe('maps/a.js.map');
+    expect(store.mapOf?.('b.js')).toBeUndefined(); // no map asset
+    expect(store.mapOf?.('c.js')).toBe('c.js.map');
+    expect(store.mapOf?.('logo.png')).toBeUndefined(); // not a chunk
+    expect(store.mapOf?.('nope.js')).toBeUndefined();
+  });
+});

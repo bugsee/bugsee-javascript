@@ -59,7 +59,9 @@ const STAMPABLE = /\.([cm]?js|map)$/;
 
 /** Every stampable file under `dir`. An unreadable directory contributes nothing (never throws). */
 async function walkStampable(dir: string, fenced: boolean, depth = 0): Promise<string[]> {
-  if (depth > MAX_WALK_DEPTH) {
+  // The depth cap bounds a walk from a PROJECT ROOT only. In an ordinary output directory the CLI's scan and
+  // inject have no limit, so a cap here would leave a deep bundle stamped but never verified, uploaded or deleted.
+  if (fenced && depth > MAX_WALK_DEPTH) {
     return [];
   }
   let entries: Dirent[];
@@ -350,7 +352,7 @@ export function isUploadableMap(path: string): boolean {
  */
 export async function listOutputMaps(dir: string): Promise<string[]> {
   const all = await walkStampable(dir, await isProjectRootOrAbove(dir));
-  return all.filter((file) => file.endsWith('.map')).sort();
+  return all.filter((file) => file.endsWith('.map'));
 }
 
 /**

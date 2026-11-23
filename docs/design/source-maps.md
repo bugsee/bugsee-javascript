@@ -245,13 +245,26 @@ beside them is not mistaken for a miss. A stamped build is also re-checked again
 its HTML (`findIntegrityMismatches`, `sri.ts`): any `<script integrity>` / `<link rel=modulepreload integrity>` whose
 hash no longer matches the emitted bytes is reported (a warning; thrown only under `failOnError`).
 
-**Known limits of the on-disk verification** (accepted, no code change): the post-emit snapshot walk stops at
-a depth of 6 while inject stamps deeper files (those are stamped but neither verified nor restorable); the walk
-is unfenced when the output directory is a project directory reached from a different working directory (the
-project-root refusal compares against the cwd); and `realpath` does not normalise case on case-insensitive file
-systems, so the cwd-equals-output check can miss a differently-cased spelling of the same directory. A spill
-directory that cannot be removed (EPERM/EBUSY) is reported, never thrown. Windows paths resolve a custom map
-name through the native path API (the in-memory asset names use posix).
+**Known limits of the on-disk verification** (accepted, no code change): the walk is unfenced when the
+output directory is a project directory reached from a different working directory (the project-root refusal
+compares against the cwd); and `realpath` does not normalise case on case-insensitive file systems, so the
+cwd-equals-output check can miss a differently-cased spelling of the same directory. The depth cap of 6 applies
+ONLY to a walk from a project root; an ordinary output directory is walked to any depth, like the CLI's scan
+and inject. A spill directory that cannot be removed (EPERM/EBUSY) is reported, never thrown. Windows paths
+resolve a custom map name through the native path API (the in-memory asset names use posix).
+
+### Maps that are not the bundle sibling
+
+`sourcemapFileNames` can put a map anywhere in the output (`maps/[name].js.map`, bundles in `js/`). `inject`
+pairs a staged bundle with its map by the `<bundle>.map` sibling name (the `//# sourceMappingURL` comment is a
+placeholder at `generateBundle` time and not reliable: measured, it names `index.js.map` while the map is at
+`maps/index.js.map`), so `stampAssets` asks the store which asset is a bundle's map (`mapOf`, Rollup's
+`sourcemapFileName`) and STAGES it as the sibling, writing the stamped bytes back at its real name. Without
+that the bundle was stamped with an id that was never put in the map and nothing was uploaded. If the map cannot
+be staged at all (not a `.map` name) or the sibling name is taken by another asset, the whole in-build stamp is
+refused and the build falls back to stamping after emit. Covered by real Rollup, Vite 7 and Vite 8 builds
+(`maps/[name].js.map`, with and without `js/` bundles, `failOnError` on and off). The upload result is truthful:
+`uploaded` is false when a pre-stamped build had no keyed map to upload.
 
 ### Uploading a pre-stamped directory
 

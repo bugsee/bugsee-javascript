@@ -603,3 +603,126 @@ describeReal('a stylesheet map beside the stamped maps (Rspack, [file].map)', ()
     expect(out.files.filter((f) => f.endsWith('.map'))).toEqual([]);
   });
 });
+
+// A map can be MOVED by `sourcemapFileNames` (another directory of the output). inject pairs a staged bundle
+// with its map by the sourceMappingURL comment or the sibling name, so the stamp must make the pairing work
+// for any location, or the bundle is stamped with an id that is never uploaded and the map is left behind.
+describeReal('maps moved to another directory (sourcemapFileNames: "maps/[name].js.map")', () => {
+  const shapes = [
+    ['same directory tree, maps/ beside the bundles', {}],
+    [
+      'bundles in js/, maps in maps/',
+      { entryFileNames: 'js/[name].js', chunkFileNames: 'js/[name].js' },
+    ],
+  ] as const;
+  for (const failOnError of [true, false]) {
+    for (const [shape, extraOutput] of shapes) {
+      const tag = `${shape}, failOnError ${failOnError}`;
+      const check = (out: string, before: number, notices: string[], errors: unknown[]): void => {
+        const files = readdirSync(out, { recursive: true }) as string[];
+        expect(errors.map(String)).toEqual([]);
+        expect(notices.join('\n')).not.toContain('not part of this build');
+        expect(requests.length, 'uploaded').toBeGreaterThan(before);
+        expect(
+          files.filter((f) => f.endsWith('.map')),
+          'maps deleted after the upload',
+        ).toEqual([]);
+        const bundles = files.filter((f) => /\.[cm]?js$/.test(f));
+        expect(bundles.length).toBeGreaterThan(0);
+        for (const bundle of bundles) {
+          expect(readFileSync(join(out, bundle), 'utf8'), bundle).toMatch(
+            /\/\/# debugId=[0-9a-f-]{36}/,
+          );
+        }
+      };
+
+      it(`Rollup (${tag})`, async () => {
+        const app = makeApp(`rollup-moved-${shape.length}-${failOnError}`, { lazy: false });
+        const before = requests.length;
+        const [notices, errors]: [string[], unknown[]] = [[], []];
+        const bundle = await rollup({
+          input: join(app.dir, 'index.js'),
+          plugins: [
+            bugseeRollupPlugin({
+              ...pluginOptions(),
+              failOnError,
+              onNotice: (m: string) => notices.push(m),
+              onError: (e: unknown) => errors.push(e),
+            }),
+          ],
+        });
+        await bundle.write({
+          dir: app.out,
+          sourcemap: true,
+          sourcemapFileNames: 'maps/[name].js.map',
+          ...extraOutput,
+        });
+        await bundle.close();
+        check(app.out, before, notices, errors);
+      });
+
+      for (const [label, build] of [
+        ['Vite 8 (Rolldown)', viteBuild],
+        ['Vite 7 (Rollup)', vite7Build],
+      ] as const) {
+        it(`${label} (${tag})`, async () => {
+          const app = makeApp(
+            `vite-moved-${label.replace(/\W+/g, '')}-${shape.length}-${failOnError}`,
+            { lazy: false },
+          );
+          const before = requests.length;
+          const [notices, errors]: [string[], unknown[]] = [[], []];
+          await build(
+            viteConfig(
+              app,
+              [
+                bugseeVite({
+                  failOnError,
+                  onNotice: (m: string) => notices.push(m),
+                  onError: (e: unknown) => errors.push(e),
+                }),
+              ],
+              {
+                rollupOptions: {
+                  output: { sourcemapFileNames: 'maps/[name].js.map', ...extraOutput },
+                },
+              },
+            ),
+          );
+          check(app.out, before, notices, errors);
+        });
+      }
+    }
+  }
+});
+
+// The CLI's directory scan has no depth limit and inject stamps a bundle however deep it is.
+describeReal('a bundle deeper than the walk depth cap', () => {
+  it('Rollup: entryFileNames a/b/c/d/e/f/g/[name].js is stamped, uploaded and its map deleted', async () => {
+    const app = makeApp('rollup-deep', { lazy: false });
+    const before = requests.length;
+    const [notices, errors]: [string[], unknown[]] = [[], []];
+    const bundle = await rollup({
+      input: join(app.dir, 'index.js'),
+      plugins: [
+        bugseeRollupPlugin({
+          ...pluginOptions(),
+          onNotice: (m: string) => notices.push(m),
+          onError: (e: unknown) => errors.push(e),
+        }),
+      ],
+    });
+    await bundle.write({
+      dir: app.out,
+      sourcemap: true,
+      entryFileNames: 'a/b/c/d/e/f/g/[name].js',
+    });
+    await bundle.close();
+    expect(errors.map(String)).toEqual([]);
+    expect(notices).toEqual([]);
+    expect(requests.length).toBeGreaterThan(before);
+    const files = readdirSync(app.out, { recursive: true }) as string[];
+    expect(files.filter((f) => f.endsWith('.map'))).toEqual([]);
+    expect(readFileSync(join(app.out, 'a/b/c/d/e/f/g/index.js'), 'utf8')).toMatch(/debugId=/);
+  });
+});

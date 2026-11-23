@@ -25,6 +25,13 @@ export interface AssetStore {
   names(): string[];
   read(name: string): Buffer | string;
   update(name: string, content: Buffer): void;
+  /**
+   * The asset that is the source map of the bundle `name`, when the bundler can say (a Rollup chunk's
+   * `sourcemapFileName`). inject pairs a bundle with its map by the sibling name `<bundle>.map`, so a map
+   * the bundler MOVED is staged under that name; without this a moved map is simply not found and the
+   * bundle would be stamped with an id that was never put in the map.
+   */
+  mapOf?(name: string): string | undefined;
 }
 
 export interface StampAssetsOptions {
@@ -78,12 +85,39 @@ export async function stampAssets(
   if (!staged.some((name) => BUNDLE.test(name))) {
     return { stamped: [] };
   }
+  // A map that is not the bundle's sibling is staged AS the sibling (and written back at its real name).
+  const stageName = new Map<string, string>();
+  const stagedSet = new Set(staged);
+  for (const bundle of staged.filter((name) => BUNDLE.test(name))) {
+    const map = store.mapOf?.(bundle);
+    const sibling = `${bundle}.map`;
+    if (map === undefined || map === sibling) {
+      continue;
+    }
+    if (!stagedSet.has(map)) {
+      // Not something that can be staged (not a .map name): stamping the bundle alone would be a silent
+      // half-stamp, so the whole stamp is refused and the caller falls back.
+      throw new StampVerificationError([
+        {
+          name: map,
+          reason: `the map of ${bundle} cannot be staged for stamping (not a .map file inside the output)`,
+        },
+      ]);
+    }
+    if (stagedSet.has(sibling)) {
+      throw new Error(
+        `the map ${map} of ${bundle} cannot be staged as ${sibling}: another asset already has that name`,
+      );
+    }
+    stageName.set(map, sibling);
+  }
+  const stagedAs = (name: string): string => stageName.get(name) ?? name;
   // Staging writes each asset to a file named after it. Two names that differ only by case are two
   // assets in the bundler but ONE file on a case-insensitive disk (macOS, Windows), where the second would
   // overwrite the first and verification would compare the wrong bytes. Refuse rather than guess: the
   // caller's fallback stamps the real output directory, where such a collision cannot exist.
   const seen = new Map<string, string>();
-  for (const name of staged) {
+  for (const name of staged.map(stagedAs)) {
     const clash = seen.get(name.toLowerCase());
     if (clash !== undefined && clash !== name) {
       throw new Error(
@@ -99,8 +133,8 @@ export async function stampAssets(
     for (const name of staged) {
       const content = store.read(name);
       const bytes = typeof content === 'string' ? Buffer.from(content) : content;
-      before.set(name, bytes);
-      const path = join(root, name);
+      before.set(stagedAs(name), bytes);
+      const path = join(root, stagedAs(name));
       await mkdir(dirname(path), { recursive: true });
       await writeFile(path, bytes);
     }
@@ -118,7 +152,7 @@ export async function stampAssets(
     // as the bundler produced it, which an interleaved read-and-update could not promise.
     const after = new Map<string, Buffer>();
     for (const name of staged) {
-      after.set(name, await readFile(join(root, name)));
+      after.set(stagedAs(name), await readFile(join(root, stagedAs(name))));
     }
     const issues = verifyStamp(before, after, options.parse);
     if (issues.length > 0) {
@@ -126,10 +160,10 @@ export async function stampAssets(
     }
     const stamped: string[] = [];
     for (const name of staged) {
-      const afterBytes = after.get(name) as Buffer;
+      const afterBytes = after.get(stagedAs(name)) as Buffer;
       // Only what inject actually changed goes back. An untouched asset keeps its original Source
       // object, so webpack's caching and any map information it carries are not disturbed.
-      if (!afterBytes.equals(before.get(name) as Buffer)) {
+      if (!afterBytes.equals(before.get(stagedAs(name)) as Buffer)) {
         store.update(name, afterBytes);
         if (BUNDLE.test(name)) {
           stamped.push(name);
@@ -171,6 +205,14 @@ export type RollupBundleLike = Record<string, RollupChunkLike | RollupAssetLike>
 export function rollupAssetStore(bundle: RollupBundleLike): AssetStore {
   return {
     names: () => Object.keys(bundle).filter((name) => STAGED.test(name)),
+    mapOf: (name) => {
+      const entry = bundle[name];
+      if (entry?.type !== 'chunk') {
+        return undefined;
+      }
+      const map = entry.sourcemapFileName ?? `${name}.map`;
+      return bundle[map] === undefined ? undefined : map;
+    },
     read: (name) => {
       const entry = bundle[name];
       if (entry === undefined) {

@@ -454,3 +454,39 @@ describe('listOutputMaps', () => {
     }
   });
 });
+
+describe('depth: an ordinary output directory is walked to any depth (the CLI scan and inject have no cap)', () => {
+  const deepDir = async (levels: number): Promise<string> => {
+    let d = dir;
+    for (let i = 0; i < levels; i++) {
+      d = join(d, `d${i}`);
+      await mkdir(d);
+    }
+    return d;
+  };
+  it('lists a map 8 levels down and snapshots + restores the bundle beside it', async () => {
+    const deep = await deepDir(8);
+    await writeFile(join(deep, 'deep.js.map'), '{}');
+    await writeFile(join(deep, 'deep.js'), 'a();\n');
+    expect(await listOutputMaps(dir)).toEqual([join(deep, 'deep.js.map')]);
+    const snap = await snapshotStampFiles({ dir });
+    expect(snap.entries.has(join(deep, 'deep.js'))).toBe(true);
+    await writeFile(join(deep, 'deep.js'), `a();\n{{${STAMP}`);
+    expect((await verifyAndRestore(snap)).restored).toEqual([
+      join(deep, 'deep.js'),
+      join(deep, 'deep.js.map'),
+    ]);
+    await snap.dispose();
+  });
+  it('at a PROJECT ROOT the depth cap still bounds the walk', async () => {
+    const start = process.cwd();
+    const deep = await deepDir(8);
+    await writeFile(join(deep, 'deep.js.map'), '{}');
+    process.chdir(dir);
+    try {
+      expect(await listOutputMaps(dir)).toEqual([]);
+    } finally {
+      process.chdir(start);
+    }
+  });
+});

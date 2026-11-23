@@ -384,14 +384,15 @@ export async function uploadSourcemaps(
     if (explicitUpload) {
       // ONE walk: the uploadable maps are classified by key; the stylesheet / declaration maps of the same
       // walk are never uploaded but embed the source, so they are deleted with the uploaded ones.
-      const everything = await (options.listUploadMaps ?? listOutputMaps)(outDir);
+      // Sorted here, so the CLI batches and the notice are stable whatever order a walk returns.
+      const everything = [...(await (options.listUploadMaps ?? listOutputMaps)(outDir))].sort();
       const { deletable, kept } = await (options.partitionMaps ?? partitionByKeyed)(
         everything.filter(isUploadableMap),
       );
       unuploadableMaps = everything.filter((map) => !isUploadableMap(map));
       if (kept.length > 0) {
         (options.onNotice ?? ((m: string) => console.warn(`[bugsee] ${m}`)))(
-          `${kept.length} source map(s) in ${outDir} have no readable debug-ID, so they are not part of this build's stamp and were not uploaded (left on disk untouched): ${kept.join(', ')}`,
+          `${kept.length} source map(s) in ${outDir} have no readable debug-ID, so they were not uploaded (left on disk untouched): ${kept.join(', ')}`,
         );
       }
       if (deletable.length === 0) {
@@ -462,7 +463,13 @@ export async function uploadSourcemaps(
         onError(failure);
       }
     }
-    return { injected: true, uploaded: true, deletedMaps, ...vcsEcho };
+    // Truthful: a pre-stamped build with no keyed map made no upload at all.
+    return {
+      injected: true,
+      uploaded: !explicitUpload || uploadedMaps.length > 0,
+      deletedMaps,
+      ...vcsEcho,
+    };
   } catch (error) {
     // A telemetry side effect must not break a production deploy. Reported, never swallowed;
     // `failOnError` is there for teams that would rather the build stopped.
