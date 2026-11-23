@@ -10,7 +10,6 @@ export {
   findPackageVersion,
 } from './app-identity';
 export { deriveBuildUuid } from './build-id';
-export { loadBuildPluginEnv, mergeBuildPluginEnv } from './env-file';
 export {
   BUILD_PLUGIN_ENV_FILE,
   type EnvFileResult,
@@ -62,7 +61,6 @@ export {
   type SpawnResult,
   spawnProcess,
 } from './run-cli';
-export { type AssetStore, type StampAssetsOptions, stampAssets } from './stamp-assets';
 export {
   findIntegrityMismatches,
   findSriProtectedScripts,
@@ -75,6 +73,7 @@ export {
   type SriProtectedScript,
   snapshotScriptDigests,
 } from './sri';
+export { type AssetStore, type StampAssetsOptions, stampAssets } from './stamp-assets';
 export { isFencedPath } from './stamp-files';
 export {
   isWorkingTreeDirty,
