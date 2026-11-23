@@ -130,8 +130,8 @@ are Rollup `writeBundle`, esbuild `onEnd` (registered through unplugin's `esbuil
 or `write: false`, which is what tsup always sets, with a notice; the plugin sets `sourcemap: 'external'` only when it is
 unset, and says so when it is `false`) and Rspack `afterEmit`, each calling
 `runPluginUpload` with the same SRI guard as Vite and webpack (#184; real esbuild and Rspack builds are exercised in
-`plugin.real-build.test.ts`). Rspack has no in-compilation stamp stage wired, so it takes the post-emit inject path
-(an SRI build is refused, not stamped). They do **not** cover **Angular**: its builder does not accept esbuild
+`plugin.real-build.test.ts`). Rollup and Rspack stamp INSIDE the build like Vite and webpack 5 (§7.1); only esbuild
+takes the post-emit inject path (an SRI build is refused there, not stamped). They do **not** cover **Angular**: its builder does not accept esbuild
 plugins, so Angular uses the documented CLI post-build recipe (`docs/source-maps-usage.md §2`). Next.js on webpack
 uses the webpack plugin. Bun, tsup and `tsc`/`swc` stay CLI-post-build (tsup via `onSuccess`).
 esbuild builds work on **per-build file lists**: the plugin sets `metafile: true` and, in `onEnd`, takes the build's own
@@ -162,13 +162,11 @@ SDK's concern (needs `hermes-compose-source-map` + a preserved bundle id).
 
 ## 7.1 Subresource Integrity
 
-**The plugin refuses to stamp a build that pins its own script hashes** (`sri.ts`,
-`findSriProtectedScripts`). This is not a precaution — it is measured.
-
 `sourcemaps inject` appends the debug-ID comment and the `_bugseeDebugIds` registration to every emitted `.js`.
-A build that computed SRI hashes during emit — `webpack-subresource-integrity`, Angular's
-`subresourceIntegrity: true` — has already written a hash of the PRE-stamp bytes into the HTML. Measured on a
-real webpack 5.111 build loaded in **Chromium 151.0.7922.34**:
+Done AFTER the bundler wrote its output, that changes bytes a build step may already have hashed: a build that
+computed SRI hashes during emit (`webpack-subresource-integrity`, Rspack's `SubresourceIntegrityPlugin`, a Vite SRI
+plugin, Angular's `subresourceIntegrity: true`) has written a hash of the PRE-stamp bytes into the HTML. Measured on
+a real webpack 5.111 build loaded in **Chromium 151.0.7922.34**:
 
 | | `window.__ran` | console |
 |---|---|---|
@@ -176,28 +174,101 @@ real webpack 5.111 build loaded in **Chromium 151.0.7922.34**:
 | after inject | **`false`** | `Failed to find a valid digest in the 'integrity' attribute for resource '…/main.<hash>.js' … The resource has been blocked.` |
 
 `index.html` is byte-identical across that pair; only the JS grew, 114 → 472 bytes. The page loads and nothing
-runs — strictly worse than having no source maps.
+runs — strictly worse than having no source maps. Two mechanisms keep that from happening.
 
-So `uploadSourcemaps` scans the output directory's HTML *before* anything is written, and when a `<script>`
-pins a `.js` inside that directory it reports (or, under `failOnError`, throws) and uploads nothing. The build
-is left exactly as the bundler emitted it; verified against the real webpack+SRI build — bytes unchanged, page
-still runs, `{injected: false, uploaded: false}`.
+### Stamp inside the build (the fix)
 
-**What the guard does NOT see** (review, 2026-09-18 — each verified against the implementation):
+The Rust `inject` stays the one implementation (§4): `stampAssets` (`stamp-assets.ts`) stages the build's bundles
+and maps in a temp directory with the same relative layout, runs the real `sourcemaps inject` over it, verifies
+the result (below) and writes back only what changed. What differs per bundler is WHERE it is called, so that
+every later hash is taken over the stamped bytes:
+
+| Bundler | Hook | Ordering |
+|---|---|---|
+| webpack 5, **Rspack** | `compilation.hooks.processAssets` at `PROCESS_ASSETS_STAGE_DEV_TOOLING + 1` (501) | maps are emitted AT 500; `webpack-subresource-integrity` / Rspack's `SubresourceIntegrityPlugin` hash later (measured: after 700), so they hash the stamped bytes — for the HTML and for the lazy-chunk `sriHashes` table in the runtime. Rspack uses the same `compiler.rspack` API (`Compilation`, `sources.RawSource`) as webpack; verified against a real Rspack 2.2.9 build with the built-in SRI plugin. |
+| **Vite**, **Rollup** | `generateBundle` with `order: 'pre'` | the bundle's chunks (`code`) and their `.map` files (bundle ASSETS: measured on Rollup 4.65, Vite 7.3 and Vite 8.3/Rolldown) are in memory and are what gets written. `order: 'pre'` runs before Vite builds `index.html` (where a `transformIndexHtml` SRI plugin hashes) and before default-order and `post` hooks. |
+
+The in-build stamp is **per build**: webpack/Rspack reset it per compilation; Vite/Rollup record it per output
+directory in `generateBundle` and consume it in the matching `writeBundle` (so a stamp can never carry over to a
+later build of the same directory, nor from one Vite environment to another). A failed or impossible in-build
+stamp degrades to the POST-EMIT path below — never to an unchecked page: a chunk whose map is not a bundle asset
+(an older Rollup, `sourcemap: 'inline'`) is not stamped in memory and says so once; a failed stamp is reported
+(thrown under `failOnError`).
+
+**Ordering limits, measured — do not read them as guarantees.**
+
+- Vite/Rollup hooks of the SAME order run in plugin order: list the Bugsee plugin **before** any SRI plugin
+  (`plugins: [bugseeVitePlugin(...), sriPlugin()]`). An SRI plugin with `order: 'pre'` listed first hashes unstamped bytes.
+- Vite itself rewrites a chunk that has dynamic `import()`s **after** user `generateBundle` hooks (it replaces
+  `__VITE_PRELOAD__` markers, and **regenerates that chunk's `.map` asset from `chunk.map`**). Two consequences,
+  both measured: (1) an SRI plugin that hashes in `transformIndexHtml` pins the pre-substitution bytes of such a
+  chunk whether or not Bugsee is installed — only an SRI step that hashes last (`generateBundle`, `order: 'post'`)
+  is correct for lazy-loading apps; (2) the regenerated map would drop the debugId, so the stamp also carries the
+  id on `chunk.map` (`debugId`/`debug_id`), which is the one thing Vite keeps. Both are covered by real builds
+  (`plugin.in-build.real-build.test.ts`, and a Chromium run in `instrumentation-tests/test/sri-vite-rollup.e2e.ts`).
+- A plugin that rewrites chunks AFTER the Bugsee stamp changes bytes that were already hashed or stamped. The
+  post-build checks below detect (not prevent) it.
+
+### Verify the stamp
+
+After ANY stamp (in-build or post-emit), `verify-stamp.ts` checks it, because stamping rewrites shipped JS:
+
+1. every stamped `.js`/`.cjs`/`.mjs` still **parses** (acorn, module then script; a bundle the parser could not read
+   before is not blamed on the stamp);
+2. the **`//# sourceMappingURL=` comment** is preserved byte-for-byte as the last one (measured, bugsee-cli 0.9.0:
+   `inject` APPENDS the runtime stub and the `//# debugId=` comment AFTER the sourceMappingURL line, so "still the
+   last line" is not an invariant; "the same pointer, and nothing but the stamp after it" is);
+3. every stamped **map** is a JSON object with a `debugId` equal to its bundle's `//# debugId=` comment;
+4. nothing else changed: the stamped bundle is the original bytes **plus an appended stamp** (prefix equality —
+   skipped for a bundle that was already stamped, where `inject` replaces the old stamp).
+
+In-build, a failure writes NOTHING back (all or nothing: the asset table is exactly what the bundler produced),
+reports through `onError` (throws under `failOnError`) and falls back to the post-emit path. Post-emit, the
+originals are snapshotted before `inject` (the build's own scripts and maps, same walk fence as map deletion); a
+failing file is restored to its original bytes **together with its pair**, and reported. After the bundler wrote
+an in-build stamp, `verifyStampedPairs` re-checks the files on disk (every bundle with a map carries a debugId its
+map shares), which is what catches a later step regenerating a map. A stamped build is also re-checked against
+its HTML (`findIntegrityMismatches`, `sri.ts`): any `<script integrity>` / `<link rel=modulepreload integrity>` whose
+hash no longer matches the emitted bytes is reported (a warning; thrown only under `failOnError`).
+
+### Map deletion
+
+`.map` files are deleted (default) only after a **confirmed** upload: after `debug-files upload` returned success,
+and only the maps that carry a debugId (`partitionByKeyed`, `stamp-files.ts`) — a script map without one was not
+keyed for upload (bugsee-cli 0.9.0 exits 11 on one in a directory run; a CLI that skipped it with exit 0 would
+otherwise lose the only copy). Such maps are kept and reported (thrown under `failOnError`); stylesheet maps are
+never uploaded and are still deleted (they embed the source). A failed upload deletes nothing.
+
+### Post-emit path and the guard (esbuild, the standalone CLI, and any in-build failure)
+
+esbuild has no pre-write hook (`write: false` is the caller's), and the CLI runs after the build, so they stamp after
+emit. Because that rewrites hashed bytes, **the plugin refuses to stamp a build that pins its own script hashes**
+(`sri.ts`, `findSriProtectedScripts`): `uploadSourcemaps` scans the output directory's HTML *before* anything is
+written, and when a `<script>` pins a `.js` inside that directory it reports (or, under `failOnError`, throws) and
+uploads nothing. The build is left exactly as the bundler emitted it; verified against a real webpack+SRI build —
+bytes unchanged, page still runs, `{injected: false, uploaded: false}`. The refusal message names the workaround: a
+bundler that stamps in the build (webpack 5, Rspack, Vite, Rollup), or `bugsee-cli sourcemaps inject` BEFORE the
+step that computes the hashes (esbuild, Angular, Bun, `tsc`). The CLI has its own guard as of 0.7.13:
+`sourcemaps inject` refuses an SRI build unless `--allow-sri` is passed.
+
+**What the guards do NOT see** (each verified against the implementation):
 
 - **Manifest-driven SRI.** `webpack-subresource-integrity` exposes `compilation.assets[*].integrity`
   for server-rendered templates (`webpack-assets-manifest` with `integrity: true`, shakapacker): the hash
   lives in `manifest.json` and the page is rendered at request time, so there is no HTML in the output
-  directory to scan. Such a build still breaks.
+  directory to scan. The in-build stamp makes that hash correct on webpack/Rspack; on the post-emit path such a
+  build still breaks.
 - **HTML emitted outside the output directory.** `html-webpack-plugin`'s `filename` can point anywhere
   (`../templates/index.html` is the usual Django/Rails shape); the scan only walks `outDir`.
 - **Importmap integrity** (`<script type="importmap">` whose JSON body carries an `integrity` map) —
   an inline script with no `src`.
-- **The standalone CLI path.** The guard lives in `@bugsee/bundler-plugin-core`, which wires
-  `writeBundle` for vite and rollup, `afterEmit` for webpack and Rspack, and `onEnd` for esbuild. Users driving
-  `bugsee-cli` directly (Angular 17+, Bun, `tsc`) get no guard from the plugin, but the CLI has its own as of
-  0.7.13: `sourcemaps inject` refuses an SRI build unless `--allow-sri` is passed. Angular's
-  `subresourceIntegrity: true` is exactly the config this protects against.
+- **Lazy-chunk hash tables are not read.** The post-stamp integrity check compares what the HTML pins; the table
+  `webpack-subresource-integrity` / Rspack embed in the runtime chunk is correct because it was hashed after the
+  stamp (real-build test: every lazy chunk's digest appears in the runtime), but it is not re-verified from disk.
+- **In-build stamping covers what is in the bundler's asset table.** A script copied verbatim from a `public/`
+  directory (never in the bundle) is no longer stamped, since the post-emit inject is skipped for a pre-stamped build.
+- **The standalone CLI path.** Users driving `bugsee-cli` directly (Angular 17+, Bun, `tsc`) get no plugin guard,
+  but the CLI's own (`--allow-sri`).
 
 It does see, and refuses: `<script integrity src=…>` and `<link rel=modulepreload|preload integrity href=…>`
 in any `.html` under the output directory, quoted or bare, in any attribute order, with a whitespace-padded
@@ -207,12 +278,9 @@ prefetch is discarded, not fatal), or a symlinked page.
 
 **Why not rewrite the hashes instead.** `webpack-subresource-integrity` also embeds the lazy chunks' hashes in
 the runtime chunk (`__webpack_require__.sriHashes = {480: "sha384-…"}`), so patching the HTML alone would still
-break every dynamic import, and Angular's builder has its own shape.
-
-**The real fix, not yet built:** stamp during `processAssets` / `generateBundle`, before the bundler computes
-its hashes — the only approach correct for the HTML *and* the runtime-embedded lazy hashes. It needs an
-in-memory (or write-then-read-back) stamping path rather than shelling out over already-emitted files, which
-is a change to the spawn model in §4 and is tracked as OPEN-FINDINGS D3.
+break every dynamic import, and Angular's builder has its own shape. Stamping before the hash is the only approach
+correct for the HTML *and* the runtime-embedded lazy hashes (OPEN-FINDINGS D3's "real fix"; now built for webpack 5,
+Rspack, Vite and Rollup).
 
 ---
 
