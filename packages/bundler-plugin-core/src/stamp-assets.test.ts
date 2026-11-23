@@ -737,3 +737,15 @@ describe('stampAssets — two bundles that claim the same map', () => {
     expect(run).not.toHaveBeenCalled();
   });
 });
+
+describe("stampAssets — a map that is another bundle's own sibling is claimed too", () => {
+  it("refuses when b.js names a.js.map (a.js's own sibling map) as its map", async () => {
+    const run = vi.fn(async () => ({ code: 0, stdout: '', stderr: '' }));
+    const store = {
+      ...memoryStore({ 'a.js': 'a\n', 'a.js.map': '{}', 'b.js': 'b\n' }),
+      mapOf: (name: string) => (name === 'a.js' ? 'a.js.map' : 'a.js.map'),
+    };
+    await expect(stampAssets(store, { run })).rejects.toThrow(/a\.js\.map.*claimed/);
+    expect(run).not.toHaveBeenCalled();
+  });
+});

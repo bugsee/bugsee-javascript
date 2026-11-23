@@ -276,6 +276,45 @@ describe('one pipeline per output directory', () => {
     ]);
   });
 
+  it("every output of one directory is told the OTHER outputs' names (so none uploads or reports another's maps)", async () => {
+    const seen: Array<{ ownFiles?: readonly string[]; siblingOwnFiles?: readonly string[] }> = [];
+    const upload = async (opts: {
+      outDir: string;
+      ownFiles?: readonly string[];
+      siblingOwnFiles?: readonly string[];
+    }) => {
+      seen.push({ ownFiles: opts.ownFiles, siblingOwnFiles: opts.siblingOwnFiles });
+      return { injected: true, uploaded: true, deletedMaps: [] };
+    };
+    const calls = ['a', 'b', 'c'].map((n) =>
+      runPluginUpload(resolved, 'dist', {
+        uploadSourcemaps: upload as never,
+        ownFiles: [`${n}.js`, `${n}.js.map`],
+        ...noVcs,
+      }),
+    );
+    await Promise.all(calls);
+    expect(seen).toHaveLength(3); // sequential: one pipeline per output, never concurrent
+    expect(seen.map((x) => x.ownFiles?.[0])).toEqual(['a.js', 'b.js', 'c.js']);
+    expect(seen[0]?.siblingOwnFiles?.slice().sort()).toEqual([
+      'b.js',
+      'b.js.map',
+      'c.js',
+      'c.js.map',
+    ]);
+    // a already finished (and handled its own maps), so only c is still pending when b runs
+    expect(seen[1]?.siblingOwnFiles?.slice().sort()).toEqual(['c.js', 'c.js.map']);
+    expect(seen[2]?.siblingOwnFiles).toEqual([]);
+    // once everything settled, a later run sees no leftover siblings
+    const later = await runPluginUpload(resolved, 'dist', {
+      uploadSourcemaps: upload as never,
+      ownFiles: ['z.js'],
+      ...noVcs,
+    });
+    expect(later).toBeDefined();
+    expect(seen[3]?.siblingOwnFiles).toEqual([]);
+  });
+
   it('a failed in-flight run does not stop the waiting second output from running', async () => {
     const calls: string[] = [];
     let first = true;

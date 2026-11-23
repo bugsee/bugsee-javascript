@@ -780,3 +780,20 @@ describe('sameAsSnapshot / restorePaths', () => {
     await snap.dispose();
   });
 });
+
+describe("the rollback partner is the ORIGINAL pointer's map even when the changed pointer names ANOTHER snapshotted map", () => {
+  it('restores maps/m.map (original partner), not x.map (where the bad stamp pointed)', async () => {
+    await mkdir(join(dir, 'maps'));
+    const original = 'm();\n//# sourceMappingURL=maps/m.map\n';
+    await writeFile(join(dir, 'm.js'), original);
+    await writeFile(join(dir, 'maps', 'm.map'), plainMap);
+    await writeFile(join(dir, 'x.map'), plainMap); // an unrelated, snapshotted map
+    const snap = await snapshotStampFiles({ dir });
+    await writeFile(join(dir, 'm.js'), `m();\n//# sourceMappingURL=x.map\n{{${STAMP}`);
+    await writeFile(join(dir, 'maps', 'm.map'), stampedMap); // the real map got stamped
+    const { restored } = await verifyAndRestore(snap);
+    expect(restored).toContain(join(dir, 'maps', 'm.map'));
+    expect(await readFile(join(dir, 'maps', 'm.map'), 'utf8')).toBe(plainMap);
+    await snap.dispose();
+  });
+});

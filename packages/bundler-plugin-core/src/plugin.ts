@@ -572,11 +572,18 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
   // a stamp can never carry over to a later build. An output whose write cannot be matched is simply
   // not stamped: the safe answer.
   const stampedOutputs = new WeakMap<object, InBuildStamp>();
+  // Outputs written into one directory announce their names at generateBundle (before ANY of them writes), so
+  // the first to write already knows its siblings and leaves their maps to them. Per plugin instance; a new
+  // build forgets outputs that never wrote.
+  const announced = new Map<string, Map<object, string[]>>();
   const stampBundle = async (output: OutputLike, bundle: RollupBundleLike): Promise<void> => {
     const outDir = resolveOutputDir(output);
     if (outDir === undefined || !resolved.enabled) {
       return;
     }
+    const group = announced.get(outDir) ?? new Map<object, string[]>();
+    group.set(output, Object.keys(bundle));
+    announced.set(outDir, group);
     stampedOutputs.set(output, { preStamped: false });
     const unstampable = rollupUnstampableMaps(bundle);
     if (unstampable.length > 0) {
@@ -607,11 +614,20 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
     if (outDir !== undefined) {
       const stamp = stampedOutputs.get(output);
       stampedOutputs.delete(output);
+      const group = announced.get(outDir);
+      const siblings = [...(group ?? [])]
+        .filter(([other]) => other !== output)
+        .flatMap(([, names]) => names);
+      group?.delete(output);
+      if (group?.size === 0) {
+        announced.delete(outDir);
+      }
       if (stamp?.abandoned === true) {
         return;
       }
       await runPluginUpload(forOutput(outDir), outDir, {
         bundler,
+        ...(bundle !== undefined ? { siblingOwnFiles: siblings } : {}),
         ...(bundle !== undefined ? { ownFiles: Object.keys(bundle) } : {}),
         ...(stamp?.preStamped === true
           ? {
@@ -681,6 +697,9 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
       configResolved(config: { isProduction: boolean; mode: string }) {
         viteBuild = { isProduction: config.isProduction, configuration: config.mode };
       },
+      buildStart() {
+        announced.clear();
+      },
       generateBundle: generateBundleHook,
       writeBundle: (output: OutputLike, bundle?: object) =>
         uploadForOutput(output, viteBuild, bundle),
@@ -720,6 +739,7 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
       // A watch rebuild is a new build: warn again if it is again not baked.
       buildStart() {
         unbakedOutDirs.clear();
+        announced.clear();
       },
       generateBundle: generateBundleHook,
       writeBundle: (output: OutputLike, bundle?: object) => uploadForOutput(output, {}, bundle),

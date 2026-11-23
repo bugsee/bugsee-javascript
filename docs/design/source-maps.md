@@ -316,7 +316,13 @@ id. (The hand-rolled SRI step pins only the entry chunks in `index.html`, never 
   `maps/w.js.map`). The claim that inject leaves an already-stamped, SRI-pinned bundle alone is ENFORCED: if its bytes
   changed they are restored (with its map) and reported. Two bundles claiming one map refuse the in-build stamp.
 - **Concurrent outputs.** A second output with its own `ownFiles` for the same directory waits for the in-flight
-  upload and then runs itself, so its maps are not mistaken for foreign ones.
+  upload and then runs itself, so its maps are not mistaken for foreign ones. Outputs announce their names at
+  `generateBundle` (before any of them writes; a new build forgets outputs that never wrote), and each run leaves
+  the maps of the outputs still pending to those outputs: neither uploaded by this run nor reported as "not produced
+  by this build". N outputs into one directory make N uploads, not N times everything.
+- **A rejected inject whose rewrite could not be restored** says so (the rethrown error carries which files still
+  hold the unverified rewrite), with or without `failOnError`. Two bundles claiming one map, counting a bundle's
+  own sibling as a claim, refuse the in-build stamp.
 
 ### Maps that are not the bundle sibling
 

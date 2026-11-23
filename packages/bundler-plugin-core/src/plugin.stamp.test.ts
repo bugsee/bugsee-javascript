@@ -962,3 +962,43 @@ describe("vite/rollup: without a final bundle the stamp's own names are used unc
     expect(deps.stampedMaps).toEqual({ 'a.js': 'a.js.map' });
   });
 });
+
+describe('outputs announce their names at generateBundle, so the first write already knows its siblings', () => {
+  const hooksOf2 = (kind: 'vite' | 'rollup') =>
+    makePlugin({ appToken: 'tok', onNotice: () => undefined })[kind] as unknown as {
+      generateBundle: { handler: (o: object, b: Record<string, unknown>) => Promise<void> };
+      writeBundle: (o: object, b?: object) => Promise<void>;
+      buildStart?: () => void;
+    };
+  const bundleOf = (name: string) => ({
+    [`${name}.js`]: { type: 'chunk', fileName: `${name}.js`, code: 'x', map: {} },
+    [`${name}.js.map`]: { type: 'asset', fileName: `${name}.js.map`, source: '{}' },
+  });
+  const siblingsOf = (call: number) =>
+    (uploadSpy.mock.calls[call]?.[2] as { siblingOwnFiles?: string[] }).siblingOwnFiles;
+
+  for (const kind of ['vite', 'rollup'] as const) {
+    it(`${kind}: the first output to write is told the others' names; the last is told none`, async () => {
+      uploadSpy.mockClear();
+      const h = hooksOf2(kind);
+      const [a, b] = [{ file: '/out/a.js' }, { file: '/out/b.js' }];
+      await h.generateBundle.handler(a, bundleOf('a'));
+      await h.generateBundle.handler(b, bundleOf('b'));
+      await h.writeBundle(a, bundleOf('a'));
+      await h.writeBundle(b, bundleOf('b'));
+      expect(siblingsOf(0)?.slice().sort()).toEqual(['b.js', 'b.js.map']);
+      expect(siblingsOf(1)).toEqual([]);
+    });
+
+    it(`${kind}: a new build forgets outputs that never wrote (buildStart)`, async () => {
+      uploadSpy.mockClear();
+      const h = hooksOf2(kind);
+      await h.generateBundle.handler({ file: '/out/dead.js' }, bundleOf('dead')); // never written
+      h.buildStart?.();
+      const live = { file: '/out/live.js' };
+      await h.generateBundle.handler(live, bundleOf('live'));
+      await h.writeBundle(live, bundleOf('live'));
+      expect(siblingsOf(0)).toEqual([]);
+    });
+  }
+});

@@ -1806,3 +1806,75 @@ describe('catch-up edge cases (pointer search, failed restore of a pinned bundle
     expect(errors.map(String).join('\n')).toContain('could not restore');
   });
 });
+
+describe('round-17 hardening: failed restore after a rejected inject, sibling outputs', () => {
+  let dir: string;
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'bugsee-r17-'));
+  });
+  afterEach(async () => {
+    await chmod(dir, 0o755).catch(() => undefined);
+    await rm(dir, { recursive: true, force: true });
+  });
+  const keyed = JSON.stringify({ debugId: ID });
+  const ok = async (_args: string[]): Promise<SpawnResult> => ({ code: 0, stdout: '', stderr: '' });
+
+  it('a rejected inject whose rewrite could NOT be restored says so (default and failOnError)', async () => {
+    await writeFile(join(dir, 'a.js'), 'a();\n//# sourceMappingURL=a.js.map\n');
+    await writeFile(join(dir, 'a.js.map'), '{"version":3}');
+    const run = vi.fn(async (args: string[]): Promise<SpawnResult> => {
+      if (args[1] === 'inject') {
+        await writeFile(join(dir, 'a.js'), '{{');
+        await chmod(dir, 0o555); // the restore cannot create its temp file
+        throw new Error('cli died');
+      }
+      return { code: 0, stdout: '', stderr: '' };
+    });
+    const errors: unknown[] = [];
+    await uploadSourcemaps({
+      ...base,
+      outDir: dir,
+      run,
+      findSri: async () => [],
+      onError: (e) => errors.push(e),
+    });
+    const text = errors.map(String).join('\n');
+    expect(text).toContain('cli died');
+    expect(text).toContain('COULD NOT restore');
+    expect(text).toContain('a.js');
+
+    await chmod(dir, 0o755);
+    await writeFile(join(dir, 'a.js'), 'a();\n//# sourceMappingURL=a.js.map\n');
+    await expect(
+      uploadSourcemaps({ ...base, outDir: dir, run, findSri: async () => [], failOnError: true }),
+    ).rejects.toThrow(/cli died[\s\S]*COULD NOT restore/);
+  });
+
+  it('a map owned by a SIBLING output is neither uploaded by this one nor noticed as foreign', async () => {
+    await writeFile(join(dir, 'a.js.map'), keyed);
+    await writeFile(join(dir, 'b.js.map'), keyed); // the sibling output's
+    await writeFile(join(dir, 'x.js.map'), keyed); // truly foreign
+    const calls: string[][] = [];
+    const notices: string[] = [];
+    await uploadSourcemaps({
+      ...base,
+      outDir: dir,
+      run: async (args) => {
+        calls.push(args);
+        return ok(args);
+      },
+      preStamped: true,
+      verifySri: async () => [],
+      ownFiles: ['a.js.map'],
+      siblingOwnFiles: ['b.js.map'],
+      onNotice: (m) => notices.push(m),
+    });
+    const upload = calls.find((c) => c[0] === 'debug-files') as string[];
+    expect(upload).toContain(join(dir, 'a.js.map'));
+    expect(upload).toContain(join(dir, 'x.js.map')); // foreign keyed maps are still uploaded (as before)
+    expect(upload).not.toContain(join(dir, 'b.js.map'));
+    expect(notices.join('\n')).toContain('x.js.map');
+    expect(notices.join('\n')).not.toContain('b.js.map');
+    expect(await readdir(dir)).toContain('b.js.map'); // untouched, left for its own output
+  });
+});

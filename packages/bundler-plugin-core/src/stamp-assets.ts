@@ -101,9 +101,21 @@ export async function stampAssets(
   // A map that is not the bundle's sibling is staged AS the sibling (and written back at its real name).
   const stageName = new Map<string, string>();
   const stagedSet = new Set(staged);
+  // Every map a bundle names (its own sibling included) belongs to ONE bundle: two claimants would be
+  // verified against the same file and one of them accepted with no map of its own.
+  const claimed = new Map<string, string>();
   for (const bundle of staged.filter((name) => BUNDLE.test(name))) {
     const map = store.mapOf?.(bundle);
     const sibling = `${bundle}.map`;
+    if (map !== undefined) {
+      const other = claimed.get(map);
+      if (other !== undefined) {
+        throw new Error(
+          `the map ${map} is claimed by more than one bundle (${other} and ${bundle}), so it cannot be stamped`,
+        );
+      }
+      claimed.set(map, bundle);
+    }
     if (map === undefined || map === sibling) {
       continue;
     }
@@ -119,13 +131,6 @@ export async function stampAssets(
           ...(staysInside(map) ? {} : { outside: true as const }),
         },
       ]);
-    }
-    if (stageName.has(map)) {
-      // Two bundles claim ONE map: it can be staged beside only one, and the other would be accepted as
-      // "stamped" with no map to check. Ambiguous, so the stamp is refused.
-      throw new Error(
-        `the map ${map} is claimed by more than one bundle (${bundle} and another), so it cannot be stamped`,
-      );
     }
     if (stagedSet.has(sibling)) {
       throw new Error(

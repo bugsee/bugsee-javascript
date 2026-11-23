@@ -1185,3 +1185,44 @@ describeReal('Vite: an own script with a broken map does not cost the other maps
     }
   }
 });
+
+// N Rollup outputs written CONCURRENTLY into one directory: each uploads and deletes ITS OWN maps, once, and none
+// reports another's maps as foreign.
+describeReal('several Rollup outputs written concurrently into one directory', () => {
+  it("uploads once per output (not N times everything) and never says another output's maps are foreign", async () => {
+    const app = makeApp('rollup-many-outputs', { lazy: false });
+    const names = ['a', 'b', 'c', 'd', 'e', 'f'];
+    const before = requests.length;
+    const notices: string[] = [];
+    const errors: unknown[] = [];
+    const bundle = await rollup({
+      input: join(app.dir, 'index.js'),
+      plugins: [
+        bugseeRollupPlugin({
+          ...pluginOptions(),
+          onNotice: (m: string) => notices.push(m),
+          onError: (e: unknown) => errors.push(e),
+        }),
+      ],
+    });
+    await Promise.all(
+      names.map((n) =>
+        bundle.write({
+          file: join(app.out, `${n}.js`),
+          format: 'iife',
+          name: `app_${n}`,
+          sourcemap: true,
+        }),
+      ),
+    );
+    await bundle.close();
+    expect(errors.map(String)).toEqual([]);
+    expect(notices.filter((m) => m.includes('not produced by this build'))).toEqual([]);
+    const files = readdirSync(app.out);
+    expect(files.filter((f) => f.endsWith('.map'))).toEqual([]);
+    expect(files.filter((f) => f.endsWith('.js')).sort()).toEqual(names.map((n) => `${n}.js`));
+    // one CLI upload call per output: a request per map, so at most the number of outputs
+    expect(requests.length - before).toBeLessThanOrEqual(names.length);
+    expect(requests.length - before).toBeGreaterThanOrEqual(1);
+  });
+});

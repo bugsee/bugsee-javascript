@@ -100,6 +100,11 @@ export interface UploadSourcemapsOptions {
    * said. Without it (a directory run where the output is not known) the directory-name fence applies.
    */
   ownFiles?: readonly string[];
+  /**
+   * The names OTHER outputs of the same directory emitted. This output neither uploads nor reports their
+   * maps: each output handles its own, so N outputs into one directory make N uploads, not N times everything.
+   */
+  siblingOwnFiles?: readonly string[];
   /** The in-build stamp's bundle -> map names (relative to `outDir`), for maps the pointer and sibling cannot name. */
   stampedMaps?: Readonly<Record<string, string>>;
   /** Where a non-failing observation goes (default: nowhere — callers that want it pass the notice sink). */
@@ -538,8 +543,18 @@ export async function uploadSourcemaps(
         // restore them BEFORE the failure propagates, so no unverified stamp stays on disk.
         if (original !== undefined) {
           try {
-            await verifyAndRestore(original);
-          } catch {
+            const { issues, restored, failed } = await verifyAndRestore(original);
+            if (failed.length > 0) {
+              // Files still carry the unverified rewrite: that must not go unmentioned.
+              throw new Error(
+                `${error instanceof Error ? error.message : String(error)}; ${verifyFailure(issues, restored, failed).message}`,
+                { cause: error },
+              );
+            }
+          } catch (restoreError) {
+            if (restoreError instanceof Error && restoreError.cause === error) {
+              throw restoreError;
+            }
             // the inject failure is the one to report
           }
         }
@@ -623,7 +638,10 @@ export async function uploadSourcemaps(
       // ONE walk: the uploadable maps are classified by key; the stylesheet / declaration maps of the same
       // walk are never uploaded but embed the source, so they are deleted with the uploaded ones.
       // Sorted here, so the CLI batches and the notice are stable whatever order a walk returns.
-      const everything = [...(await (options.listUploadMaps ?? listOutputMaps)(outDir))].sort();
+      const siblings = ownedBy(outDir, options.siblingOwnFiles ?? []);
+      const everything = [...(await (options.listUploadMaps ?? listOutputMaps)(outDir))]
+        .filter((map) => !siblings(map))
+        .sort();
       const { deletable, kept } = await (options.partitionMaps ?? partitionByKeyed)(
         everything.filter(isUploadableMap),
       );

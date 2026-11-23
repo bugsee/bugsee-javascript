@@ -265,8 +265,40 @@ export function resolvePluginOptions(
 /** What a plugin run reports: the source-map upload, plus the build registration when it ran. */
 export type PluginRunResult = UploadSourcemapsResult & { build?: RegisterJsBuildResult };
 
-/** Run the upload for a resolved config against a build output dir — a no-op when the plugin is disabled. */
+/** The ownFiles of every output of a directory that is pending or running (see {@link runPluginUpload}). */
+const ownersByDir = new Map<string, Set<readonly string[]>>();
+
+/**
+ * Run the upload for a resolved config against a build output dir — a no-op when the plugin is disabled.
+ *
+ * Every output of one directory that knows its own names (`ownFiles`) registers them while it is pending or
+ * running, so each run can leave the OTHERS' maps to their own output (N outputs: N uploads, not N times all).
+ */
 export async function runPluginUpload(
+  resolved: ResolvedPluginOptions,
+  outDir: string,
+  deps: Parameters<typeof runPluginUploadInner>[2] = {},
+): Promise<PluginRunResult | undefined> {
+  const mine = deps.files === undefined ? deps.ownFiles : undefined;
+  if (mine !== undefined) {
+    const group = ownersByDir.get(outDir) ?? new Set<readonly string[]>();
+    group.add(mine);
+    ownersByDir.set(outDir, group);
+  }
+  try {
+    return await runPluginUploadInner(resolved, outDir, deps, mine);
+  } finally {
+    if (mine !== undefined) {
+      const group = ownersByDir.get(outDir);
+      group?.delete(mine);
+      if (group?.size === 0) {
+        ownersByDir.delete(outDir);
+      }
+    }
+  }
+}
+
+async function runPluginUploadInner(
   resolved: ResolvedPluginOptions,
   outDir: string,
   deps: {
@@ -283,6 +315,8 @@ export async function runPluginUpload(
     stampedMaps?: Readonly<Record<string, string>>;
     /** The names this build emitted (relative to the output directory): what it may delete. */
     ownFiles?: readonly string[];
+    /** Names other outputs of the same directory announced (their maps are theirs to upload and delete). */
+    siblingOwnFiles?: readonly string[];
     /**
      * The build's own outputs (esbuild's metafile). The run then touches exactly these files, never joins another
      * run of the same directory, and registers from these bundles only.
@@ -293,6 +327,7 @@ export async function runPluginUpload(
       stylesheetMaps?: readonly string[];
     };
   } = {},
+  mine?: readonly string[],
 ): Promise<PluginRunResult | undefined> {
   if (!resolved.enabled) {
     return undefined;
@@ -339,7 +374,15 @@ export async function runPluginUpload(
       ...(deps.preStamped === true ? { preStamped: true } : {}),
       ...(deps.stampedBundles !== undefined ? { stampedBundles: deps.stampedBundles } : {}),
       ...(deps.stampedMaps !== undefined ? { stampedMaps: deps.stampedMaps } : {}),
-      ...(deps.ownFiles !== undefined ? { ownFiles: deps.ownFiles } : {}),
+      ...(deps.ownFiles !== undefined
+        ? {
+            ownFiles: deps.ownFiles,
+            siblingOwnFiles: [
+              ...(deps.siblingOwnFiles ?? []),
+              ...[...(ownersByDir.get(outDir) ?? [])].filter((names) => names !== mine).flat(),
+            ],
+          }
+        : {}),
       ...(deps.files !== undefined ? { files: deps.files } : {}),
     });
     // AFTER the upload, because the build id is derived from the debug-ids its inject step stamps
