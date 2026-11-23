@@ -13,6 +13,7 @@ import { type ResolvedPluginOptions, runPluginUpload } from '@bugsee/bundler-plu
 import { type BuildFiles, collectBuildFiles } from './build-files';
 import type { BugseeNextContext } from './context';
 import { isFile, SRI_MANIFEST, TURBOPACK_SRI_NOTICE } from './sri';
+import { removeFile } from './webpack-plugin';
 
 /** What Next hands `compiler.runAfterProductionCompile`. */
 export interface PostBuildMetadata {
@@ -25,6 +26,7 @@ export interface PostBuildDeps {
   upload?: typeof runPluginUpload;
   collect?: (dir: string) => Promise<BuildFiles>;
   exists?: (path: string) => Promise<boolean>;
+  remove?: (path: string) => Promise<void>;
 }
 
 /** Stamp, upload and delete for a finished Turbopack build. Skips (and says why) when it cannot be done safely. */
@@ -89,14 +91,43 @@ async function postBuild(
     dir: string,
     files: BuildFiles,
     options: Partial<ResolvedPluginOptions>,
-  ): Promise<void> => {
+  ): Promise<boolean> => {
     if (files.scripts.length === 0) {
+      return false;
+    }
+    const result = await upload({ ...resolved, ...options }, dir, { bundler, files });
+    return result?.uploaded === true;
+  };
+  // The browser maps Bugsee itself turned on are public in `.next/static`: when their upload is not confirmed (or
+  // throws), they must not stay there. Not on a dry run, and not with `deleteMaps: false` (an explicit "keep").
+  const discardForced = async (): Promise<void> => {
+    if (context.forcedMaps !== true || resolved.dryRun || resolved.deleteMaps === false) {
       return;
     }
-    await upload({ ...resolved, ...options }, dir, { bundler, files });
+    const remove = deps.remove ?? removeFile;
+    for (const map of [...client.maps, ...client.stylesheetMaps]) {
+      try {
+        await remove(map);
+      } catch (error) {
+        (
+          resolved.onError ??
+          ((e: unknown) =>
+            console.warn(
+              `[bugsee] could not remove the browser source maps Bugsee turned on: ${String(e)}`,
+            ))
+        )(error);
+      }
+    }
   };
   // Browser first (it registers the build once); the server and edge output follows its own deletion policy.
-  await runFor(join(distDir, 'static'), client, {});
+  let confirmed = false;
+  try {
+    confirmed = await runFor(join(distDir, 'static'), client, {});
+  } finally {
+    if (!confirmed) {
+      await discardForced();
+    }
+  }
   if (server !== undefined) {
     await runFor(join(distDir, 'server'), server, {
       deleteMaps: context.deleteServerMaps,

@@ -26,7 +26,7 @@ import {
 import { createServer, type Server } from 'node:http';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { type Browser, chromium } from 'playwright';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
@@ -34,7 +34,10 @@ const here = dirname(fileURLToPath(import.meta.url));
 const pkgDir = join(here, '..');
 const fixturesRoot = join(pkgDir, '.fixtures');
 const require_ = createRequire(import.meta.url);
-const tsxLoader = join(dirname(require_.resolve('tsx/package.json')), 'dist', 'loader.mjs');
+// A file URL: NODE_OPTIONS is split on spaces, so a checkout path containing one would break the raw path.
+const tsxLoader = pathToFileURL(
+  join(dirname(require_.resolve('tsx/package.json')), 'dist', 'loader.mjs'),
+).href;
 
 let server: Server;
 let browser: Browser;
@@ -645,5 +648,36 @@ describe.each([
       (m) => !m.includes('foreign.') && split(join(built.dir, '.next', 'static')).referenced.has(m),
     );
     expect(own).toEqual([]);
+  });
+});
+
+// A collector that is down: the upload fails (contained, failOnError false), and the browser maps Bugsee itself turned
+// on must not be left in `.next/static`, which `next start` and CDNs serve publicly.
+describe.each([
+  { name: 'upload-down-turbopack', next: 'next16' as const, args: [] as string[] },
+  { name: 'upload-down-webpack', next: 'next16' as const, args: ['--webpack'] },
+])('withBugsee — the upload fails ($name)', (spec) => {
+  let built: Built;
+  beforeAll(async () => {
+    built = await build({
+      ...spec,
+      options: "failOnError: false, endpoint: 'http://127.0.0.1:1',",
+    });
+  });
+
+  it('still builds, and leaves no public browser map behind', () => {
+    expect(built.status, built.log.split('\n').slice(-40).join('\n')).toBe(0);
+    // Same allowance as the happy path: a map no bundle points at, or the one two unstamped Turbopack runtime chunks
+    // share, is not the app's code and was never forced on by Bugsee.
+    const staticDir = join(built.dir, '.next', 'static');
+    const { shared, referenced } = split(staticDir);
+    const sharedMaps = new Set(
+      pointing(staticDir)
+        .filter((p) => shared.includes(p.file))
+        .map((p) => p.map),
+    );
+    for (const map of maps(staticDir)) {
+      expect(referenced.has(map) && !sharedMaps.has(map), `${map} is still served`).toBe(false);
+    }
   });
 });

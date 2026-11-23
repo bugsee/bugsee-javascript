@@ -2096,4 +2096,25 @@ describe('round-18: sibling outputs on the post-emit path, empty own set under f
       }),
     ).rejects.toThrow(/no source maps with a debug-ID were found/);
   });
+
+  it('a caller-classified stylesheet map with a script-map name (x1.map) is deleted with the upload and never kept or noticed', async () => {
+    await writeFile(join(dir, 'a.js'), 'a();\n');
+    await writeFile(join(dir, 'a.js.map'), keyed);
+    await writeFile(join(dir, 'x1.map'), '{"version":3,"mappings":""}'); // a CSS map, no debug id
+    const notices: string[] = [];
+    await uploadSourcemaps({
+      ...base,
+      outDir: dir,
+      run: ok,
+      files: {
+        scripts: [join(dir, 'a.js')],
+        maps: [join(dir, 'a.js.map')],
+        stylesheetMaps: [join(dir, 'x1.map')],
+      },
+      failOnError: true,
+      onNotice: (m) => notices.push(m),
+    });
+    expect(await readdir(dir)).toEqual(['a.js']);
+    expect(notices).toEqual([]);
+  });
 });

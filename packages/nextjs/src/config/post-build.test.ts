@@ -229,4 +229,83 @@ describe('runPostBuild: containment', () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  describe('the browser maps Bugsee forced on', () => {
+    const client = {
+      scripts: ['/d/c.js'],
+      maps: ['/d/c.js.map'],
+      stylesheetMaps: ['/d/c.css.map'],
+    };
+    const setup = (
+      upload: () => Promise<unknown>,
+      overrides = {},
+      extra: Partial<BugseeNextContext> = {},
+    ) => {
+      const remove = vi.fn(async (_path: string): Promise<void> => undefined);
+      const d = {
+        upload: vi.fn(upload) as never,
+        collect: vi.fn(async (dir: string) => (dir === '/app/.next/static' ? client : none)),
+        exists: vi.fn(async () => false),
+        remove,
+      };
+      return { d, remove, ctx: context(overrides, { forcedMaps: true, ...extra }) };
+    };
+
+    it('are removed when the upload is not confirmed', async () => {
+      const { d, remove, ctx } = setup(async () => ({ uploaded: false }));
+      await runPostBuild(ctx, metadata, d);
+      expect(remove).toHaveBeenCalledWith('/d/c.js.map');
+      expect(remove).toHaveBeenCalledWith('/d/c.css.map');
+    });
+
+    it('are removed when the upload throws (reported, or rethrown under failOnError)', async () => {
+      const boom = async () => {
+        throw new Error('upload broke');
+      };
+      const lenient = setup(boom, { onError: vi.fn() });
+      await runPostBuild(lenient.ctx, metadata, lenient.d);
+      expect(lenient.remove).toHaveBeenCalledTimes(2);
+      const strict = setup(boom, { failOnError: true });
+      await expect(runPostBuild(strict.ctx, metadata, strict.d)).rejects.toThrow('upload broke');
+      expect(strict.remove).toHaveBeenCalledTimes(2);
+    });
+
+    it('stay when the upload was confirmed, on a dry run, with deleteMaps: false, or when the app asked for them', async () => {
+      for (const [upload, overrides, extra] of [
+        [async () => ({ uploaded: true }), {}, {}],
+        [async () => undefined, { dryRun: true }, {}],
+        [async () => undefined, { deleteMaps: false }, {}],
+        [async () => undefined, {}, { forcedMaps: false }],
+      ] as const) {
+        const { d, remove, ctx } = setup(upload, overrides, extra);
+        await runPostBuild(ctx, metadata, d);
+        expect(remove).not.toHaveBeenCalled();
+      }
+    });
+
+    it('a removal that fails with no onError is a console warning', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      try {
+        const { d, ctx } = setup(async () => undefined);
+        d.remove = vi.fn(async () => {
+          throw new Error('EPERM');
+        });
+        await runPostBuild(ctx, metadata, d);
+        expect(warn).toHaveBeenCalledWith(expect.stringContaining('could not remove'));
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it('a removal that fails is reported and does not stop the others', async () => {
+      const onError = vi.fn();
+      const { d, ctx } = setup(async () => undefined, { onError });
+      d.remove = vi.fn(async (path: string) => {
+        if (path.endsWith('.js.map')) throw new Error('EPERM');
+      });
+      await runPostBuild(ctx, metadata, d);
+      expect(d.remove).toHaveBeenCalledTimes(2);
+      expect(onError).toHaveBeenCalledWith(expect.objectContaining({ message: 'EPERM' }));
+    });
+  });
 });

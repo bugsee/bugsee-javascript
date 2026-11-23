@@ -318,7 +318,9 @@ function readLinkTarget(path: string): string | undefined {
  */
 export function relativeUnder(parent: string, child: string): string | undefined {
   const rel = relative(parent, child);
-  return rel.startsWith('..') || isAbsolute(rel) ? undefined : rel.split(sep).join('/');
+  return rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)
+    ? undefined
+    : rel.split(sep).join('/');
 }
 
 /** The ownFiles of every output of a directory that is pending or running (see {@link runPluginUpload}). */

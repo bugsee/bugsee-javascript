@@ -252,8 +252,8 @@ describe('collectBuildFiles', () => {
     put('locked/a.js');
     chmodSync(join(root, 'locked'), 0o000);
     try {
-      if (process.getuid?.() === 0) {
-        return; // root reads it anyway
+      if (process.getuid?.() === 0 || process.platform === 'win32') {
+        return; // root reads it anyway, and Windows ignores the mode bits
       }
       await expect(collectBuildFiles(root)).rejects.toThrow(/EACCES/);
     } finally {

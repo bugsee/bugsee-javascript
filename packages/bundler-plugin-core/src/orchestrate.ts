@@ -746,10 +746,13 @@ export async function uploadSourcemaps(
         deletable = uploadedMaps.length > 0 ? [...uploadedMaps, ...unuploadableMaps] : [];
       } else {
         ({ deletable, kept } = await (options.partitionMaps ?? partitionByKeyed)(
-          files === undefined
-            ? (snapshot as string[])
-            : [...files.maps, ...(files.stylesheetMaps ?? [])],
+          files === undefined ? (snapshot as string[]) : files.maps,
         ));
+        // The caller's stylesheet maps are classified by the CALLER (a CSS map may be named `x1.map`, which the
+        // script-map key check would keep): they go with the uploaded maps, once an upload is confirmed.
+        if (files !== undefined) {
+          deletable = [...deletable, ...(files.stylesheetMaps ?? [])];
+        }
         if (files === undefined) {
           // A directory walk also sees foreign files; an unkeyed map in a fenced directory is not reported.
           kept = kept.filter((map) => !isFencedPath(relative(outDir, map)));

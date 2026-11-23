@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { UploadSourcemapsOptions, UploadSourcemapsResult } from './orchestrate';
-import { resolvePluginOptions, runPluginUpload } from './resolve';
+import { relativeUnder, resolvePluginOptions, runPluginUpload } from './resolve';
 import type { ResolveVcsMetadataOptions, VcsMetadata } from './vcs';
 
 /**
@@ -376,6 +376,13 @@ describe('one pipeline per output directory', () => {
     } finally {
       cwd.mockRestore();
     }
+  });
+
+  it('relativeUnder: a child directory whose NAME starts with two dots is still inside the parent', () => {
+    expect(relativeUnder('/build/dist', '/build/dist/..chunks')).toBe('..chunks');
+    expect(relativeUnder('/build/dist', '/build/dist')).toBe('');
+    expect(relativeUnder('/build/dist', '/build/dist-other')).toBeUndefined();
+    expect(relativeUnder('/build/dist', '/build')).toBeUndefined();
   });
 
   it('a failed in-flight run does not stop the waiting second output from running', async () => {

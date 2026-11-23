@@ -57,6 +57,7 @@ export {
   spawnProcess,
 } from './run-cli';
 export { type AssetStore, type StampAssetsOptions, stampAssets } from './stamp-assets';
+export { cutAtQuery } from './stamp-files';
 export {
   isWorkingTreeDirty,
   type ResolveVcsMetadataOptions,
