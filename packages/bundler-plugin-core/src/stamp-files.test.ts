@@ -29,6 +29,21 @@ import {
   verifyStampedOnDisk,
 } from './stamp-files';
 
+/** A root runner (CAP_DAC_OVERRIDE) writes into a 0o555 directory anyway: such tests cannot run there. */
+async function cannotBlockWrites(): Promise<boolean> {
+  const probe = await mkdtemp(join(tmpdir(), 'bugsee-perm-probe-'));
+  try {
+    await chmod(probe, 0o555);
+    await writeFile(join(probe, 'x'), '');
+    return true;
+  } catch {
+    return false;
+  } finally {
+    await chmod(probe, 0o755).catch(() => undefined);
+    await rm(probe, { recursive: true, force: true });
+  }
+}
+
 const ID = 'b039c7fb-d958-5fe6-b76f-136179e9a728';
 const STAMP = `\n;1;\n//# debugId=${ID}\n`;
 const plainMap = '{"version":3,"sources":[],"mappings":""}';
@@ -148,7 +163,10 @@ describe('snapshot + verifyAndRestore', () => {
     await snap.dispose();
   });
 
-  it('the default restore is write-temp-then-rename: when it cannot write, the target is left as it was and no temp file remains', async () => {
+  it('the default restore is write-temp-then-rename: when it cannot write, the target is left as it was and no temp file remains', async (ctx) => {
+    if (await cannotBlockWrites()) {
+      ctx.skip();
+    }
     const original = 'a();\n';
     await writeFile(join(dir, 'a.js'), original);
     const snap = await snapshotStampFiles({ dir });
@@ -552,6 +570,38 @@ describe("verifyStampedOnDisk — the build's own bundle -> map mapping", () => 
   });
 });
 
+describe('verifyStampedOnDisk — when the known map is gone', () => {
+  it('falls back to the bundle pointer, then reports a map the stamp named that cannot be read at all', async () => {
+    await mkdir(join(dir, 'maps'));
+    await writeFile(join(dir, 'a.js'), `a();\n//# sourceMappingURL=maps/current.map\n${STAMP}`);
+    await writeFile(join(dir, 'maps', 'current.map'), plainMap); // the pointed map exists and lost its id
+    const known = new Map([[join(dir, 'a.js'), join(dir, 'gone.map')]]);
+    // the missing known map must not leave the pointed one unchecked
+    expect((await verifyStampedOnDisk([join(dir, 'a.js')], known)).map((i) => i.name)).toEqual([
+      join(dir, 'maps', 'current.map'),
+    ]);
+    await rm(join(dir, 'maps', 'current.map'));
+    const lost = await verifyStampedOnDisk([join(dir, 'a.js')], known);
+    expect(lost.map((i) => i.name)).toEqual([join(dir, 'gone.map')]);
+    expect(lost[0]?.reason).toContain('could not be read');
+    // a bundle that never had a known map is no issue
+    expect(await verifyStampedOnDisk([join(dir, 'a.js')])).toEqual([]);
+  });
+});
+
+describe('verifyStampedOnDisk — the known map wins over the pointer', () => {
+  it('verifies the known map when both it and the pointed map exist', async () => {
+    await mkdir(join(dir, 'maps'));
+    await writeFile(join(dir, 'a.js'), `a();\n//# sourceMappingURL=maps/pointed.map\n${STAMP}`);
+    await writeFile(join(dir, 'maps', 'pointed.map'), stampedMap);
+    await writeFile(join(dir, 'maps', 'known.map'), plainMap); // lost its id: only the known map reveals it
+    const known = new Map([[join(dir, 'a.js'), join(dir, 'maps', 'known.map')]]);
+    expect((await verifyStampedOnDisk([join(dir, 'a.js')], known)).map((i) => i.name)).toEqual([
+      join(dir, 'maps', 'known.map'),
+    ]);
+  });
+});
+
 describe('verifyAndRestore — a dangling pointer is not an outside map', () => {
   it('raises nothing for a pointer at a file that does not exist anywhere', async () => {
     const original = 'a();\n//# sourceMappingURL=../../nowhere/a.js.map\n';
@@ -679,17 +729,26 @@ describe('review hardening of the snapshot / restore / on-disk check', () => {
     await writeFile(join(dir, 'a.js.map'), plainMap);
     await writeFile(join(dir, 'b.js'), 'b();\n//# sourceMappingURL=b.js.map\n');
     await writeFile(join(dir, 'b.js.map'), plainMap);
-    const snap = await snapshotStampFiles({ dir });
+    // explicit order (a before b): the walk order of a directory is not guaranteed
+    const snap = await snapshotStampFiles({
+      files: ['a.js', 'a.js.map', 'b.js', 'b.js.map'].map((n) => join(dir, n)),
+    });
     await writeFile(join(dir, 'a.js'), `${aOriginal}{{${STAMP}`);
     await writeFile(join(dir, 'b.js'), `b();\n//# sourceMappingURL=b.js.map\n${STAMP}`);
     const { rmSync } = await import('node:fs');
+    let removedWhileParsingA = false;
     const result = await verifyAndRestore(snap, {
       parse: (code) => {
         // verifying a.js: b.js vanishes before its own turn
-        rmSync(join(dir, 'b.js'), { force: true });
+        if (code.includes('{{')) {
+          rmSync(join(dir, 'b.js'), { force: true });
+          removedWhileParsingA = true;
+        }
         return !code.includes('{{');
       },
     });
+    expect(removedWhileParsingA).toBe(true);
+    expect(result.restored).not.toContain(join(dir, 'b.js'));
     expect(result.restored).toContain(join(dir, 'a.js'));
     expect(await readFile(join(dir, 'a.js'), 'utf8')).toBe(aOriginal);
     await snap.dispose();
@@ -763,7 +822,10 @@ describe('sameAsSnapshot / restorePaths', () => {
     await snap.dispose();
   });
 
-  it('restorePaths puts the originals back, skips unknown files, and returns what it could not restore', async () => {
+  it('restorePaths puts the originals back, skips unknown files, and returns what it could not restore', async (ctx) => {
+    if (await cannotBlockWrites()) {
+      ctx.skip();
+    }
     await writeFile(join(dir, 'a.js'), 'orig');
     const snap = await snapshotStampFiles({ dir });
     await writeFile(join(dir, 'a.js'), 'stamped');

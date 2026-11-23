@@ -463,16 +463,27 @@ export async function verifyStampedOnDisk(
     // The pair that was ACTUALLY loaded is the one verified (a missing known map must not make a loaded
     // sibling go unchecked).
     let hint: ReadonlyMap<string, string> = new Map();
-    try {
-      const first = hinted ?? pointed;
-      files.set(first, await readFile(first));
-      hint = known; // only once the known map was really loaded
-    } catch {
-      // The pointer names no file: the `<bundle>.map` sibling inject pairs by default.
-      await readFile(`${bundle}.map`).then(
-        (bytes) => files.set(`${bundle}.map`, bytes),
-        () => undefined,
-      );
+    // Candidates in order: the build's own map, the bundle's pointer, the `<bundle>.map` sibling inject pairs by
+    // default. The first that loads is the one verified.
+    const candidates = [...new Set([hinted, pointed, `${bundle}.map`])].filter(
+      (name): name is string => name !== undefined,
+    );
+    let loaded = false;
+    for (const candidate of candidates) {
+      try {
+        files.set(candidate, await readFile(candidate));
+        loaded = true;
+        if (candidate === hinted) {
+          hint = known; // only once the known map was really loaded
+        }
+        break;
+      } catch {
+        // try the next candidate
+      }
+    }
+    if (!loaded && hinted !== undefined) {
+      issues.push({ name: hinted, reason: 'the stamped map could not be read' });
+      continue;
     }
     issues.push(...verifyStampedPairs(files, hint));
   }

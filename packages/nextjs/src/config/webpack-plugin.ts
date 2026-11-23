@@ -13,6 +13,7 @@ import { stat, unlink } from 'node:fs/promises';
 import { relative, resolve } from 'node:path';
 import {
   type AssetStore,
+  cutAtQuery,
   type ResolvedPluginOptions,
   runPluginUpload,
   stampAssets,
@@ -108,8 +109,13 @@ export async function removeFile(path: string): Promise<void> {
 async function fileExists(path: string): Promise<boolean> {
   try {
     return (await stat(path)).isFile();
-  } catch {
-    return false;
+  } catch (error) {
+    // Only "not there" means absent: an EIO / EACCES is a failure to look, which must not read as "no maps".
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT' || code === 'ENOTDIR') {
+      return false;
+    }
+    throw error;
   }
 }
 
@@ -117,7 +123,7 @@ async function fileExists(path: string): Promise<boolean> {
  * An asset name without its `?query`: webpack drops `?...` when it writes a file and keeps `#` (measured on real
  * builds by the core's own asset store, which this follows).
  */
-const withoutQuery = (name: string): string => name.replace(/\?.*$/, '');
+const withoutQuery = cutAtQuery;
 
 /** Strict, BOM-preserving UTF-8: a lenient decode would silently corrupt an asset. */
 const utf8 = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
@@ -205,7 +211,7 @@ export function pairRecorded(
   );
   for (const { name } of compilation.getAssets()) {
     const script = resolve(outDir, withoutQuery(name));
-    if (!SCRIPT_ASSET.test(name) || scripts.has(script) || !present.has(script)) {
+    if (!SCRIPT_ASSET.test(name) || !present.has(script)) {
       continue;
     }
     const related = compilation.getAsset(name)?.info?.related?.sourceMap;
@@ -316,8 +322,19 @@ export function createNextWebpackPlugin(
         for (const { name } of compilation.getAssets()) {
           // The file on disk has no `?query` (webpack drops it when it writes the file).
           const path = resolve(outDir, withoutQuery(name));
-          if (await exists(path)) {
-            emitted.push(path);
+          try {
+            if (await exists(path)) {
+              emitted.push(path);
+            }
+          } catch (error) {
+            if (resolved.failOnError) {
+              throw error;
+            }
+            (
+              resolved.onError ??
+              ((e: unknown) =>
+                console.warn(`[bugsee] could not look for an emitted asset: ${String(e)}`))
+            )(error);
           }
         }
         const files: BuildFiles = pairRecorded(compilation, outDir, emitted);
@@ -333,7 +350,12 @@ export function createNextWebpackPlugin(
             return { removed: false, failed: false };
           }
           const failures: unknown[] = [];
-          for (const map of [...files.maps, ...files.stylesheetMaps]) {
+          const owned = new Set([
+            ...files.maps,
+            ...files.stylesheetMaps,
+            ...emitted.filter((path) => path.endsWith('.map')),
+          ]);
+          for (const map of owned) {
             try {
               await remove(map);
             } catch (error) {
@@ -377,14 +399,18 @@ export function createNextWebpackPlugin(
           // The REASON goes through onError / console.warn, never through the notice sink: `silent` mutes notices,
           // and a failure must not vanish with them. Nothing failed when nothing could be staged (no cause was
           // thrown), so that case is given one.
+          const refusal =
+            state.failure ??
+            new Error(`none of the ${kind} build's script assets could be staged for stamping`);
           (
             resolved.onError ??
             ((e: unknown) =>
               console.warn(`[bugsee] in-build debug-ID stamping did not apply: ${String(e)}`))
-          )(
-            state.failure ??
-              new Error(`none of the ${kind} build's script assets could be staged for stamping`),
-          );
+          )(refusal);
+          if (resolved.failOnError) {
+            // Strict: a build that uploads no maps must not pass. Nothing was rewritten (SRI-protected output).
+            throw refusal;
+          }
           return;
         }
         if (state.failure !== undefined) {
@@ -397,6 +423,15 @@ export function createNextWebpackPlugin(
           )(state.failure);
         }
         if (files.scripts.length === 0) {
+          if (state.preStamped && (state.stampedWithMaps ?? 0) > 0) {
+            const lost = new Error(
+              `${state.stampedWithMaps} bundle(s) stamped inside the ${kind} build have no map left on disk: something removed them after Bugsee stamped them`,
+            );
+            if (resolved.failOnError) {
+              throw lost;
+            }
+            (resolved.onError ?? ((e: unknown) => console.warn(`[bugsee] ${String(e)}`)))(lost);
+          }
           if (kind === 'client' && context.browserMaps !== false) {
             context.say(
               'the browser build emitted no source maps, so nothing was uploaded for it. Set `productionBrowserSourceMaps: true` (withBugsee does this unless you set it to false).',
@@ -435,6 +470,8 @@ export function createNextWebpackPlugin(
                 ))
             )(error);
           }
+          // A count, not an identity: the names the stamp saw are not the final (contenthash-renamed) ones, so a lost id
+          // is detected per COUNT. (A later stage that ADDS a pair already carrying an id could offset one lost id.)
           const missing = state.stampedWithMaps - onDisk.length - unreadable.length;
           if (missing > 0) {
             const failure = new Error(
@@ -446,22 +483,37 @@ export function createNextWebpackPlugin(
             (resolved.onError ?? ((e: unknown) => console.warn(`[bugsee] ${String(e)}`)))(failure);
           }
         }
-        await upload(forKind, outDir, {
-          bundler: { isProduction: true, configuration: kind },
-          preStamped: state.preStamped,
-          ...(onDisk !== undefined
-            ? {
-                stampedBundles: onDisk.map((script) => relative(outDir, script)),
-                stampedMaps: Object.fromEntries(
-                  onDisk.map((script) => [
-                    relative(outDir, script),
-                    relative(outDir, files.pairs?.[script] ?? `${script}.map`),
-                  ]),
-                ),
-              }
-            : {}),
-          files,
-        });
+        // The maps Bugsee itself turned on are public in `.next/static`: when the upload is not confirmed (or
+        // throws), they must not be left there. Not with `deleteMaps: false`, which is an explicit "keep them".
+        const unconfirmed = wouldDiscard && resolved.deleteMaps !== false;
+        try {
+          await upload(forKind, outDir, {
+            bundler: { isProduction: true, configuration: kind },
+            preStamped: state.preStamped,
+            ...(onDisk !== undefined
+              ? {
+                  stampedBundles: onDisk.map((script) => relative(outDir, script)),
+                  stampedMaps: Object.fromEntries(
+                    onDisk.map((script) => [
+                      relative(outDir, script),
+                      relative(outDir, files.pairs?.[script] ?? `${script}.map`),
+                    ]),
+                  ),
+                }
+              : {}),
+            files,
+          });
+        } catch (error) {
+          if (unconfirmed) {
+            await discardForcedMaps().catch(() => undefined); // the upload failure is the one to report
+          }
+          throw error;
+        }
+        // Whatever is still on disk (an upload that failed, or a map that was never keyed and so was kept) goes;
+        // maps a confirmed upload deleted are already gone (removal tolerates ENOENT).
+        if (unconfirmed) {
+          await discardForcedMaps();
+        }
       });
     },
   };

@@ -74,7 +74,7 @@ export {
   snapshotScriptDigests,
 } from './sri';
 export { type AssetStore, type StampAssetsOptions, stampAssets } from './stamp-assets';
-export { isFencedPath } from './stamp-files';
+export { cutAtQuery, isFencedPath } from './stamp-files';
 export {
   isWorkingTreeDirty,
   type ResolveVcsMetadataOptions,

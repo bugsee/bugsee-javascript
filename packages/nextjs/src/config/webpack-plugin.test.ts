@@ -1,3 +1,6 @@
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import type { BugseeNextContext } from './context';
 import {
@@ -723,15 +726,17 @@ describe('createNextWebpackPlugin: no public maps Bugsee asked for when nothing 
   };
   const run = async (kind: 'client' | 'server', ctx: BugseeNextContext, d: WebpackPluginDeps) => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
-    const fake = fakeCompiler({ path: '/out/.next' });
-    createNextWebpackPlugin(ctx, kind, d).apply(fake.compiler);
-    const c = fakeCompilation(assets);
-    fake.startCompilation(c.compilation);
-    await c.run();
-    await fake.emit(c.compilation);
-    const warned = warn.mock.calls.map((call) => String(call[0]));
-    warn.mockRestore();
-    return warned;
+    try {
+      const fake = fakeCompiler({ path: '/out/.next' });
+      createNextWebpackPlugin(ctx, kind, d).apply(fake.compiler);
+      const c = fakeCompilation(assets);
+      fake.startCompilation(c.compilation);
+      await c.run();
+      await fake.emit(c.compilation);
+      return warn.mock.calls.map((call) => String(call[0]));
+    } finally {
+      warn.mockRestore(); // also when the hook rejects
+    }
   };
 
   it('deletes the browser maps it turned on when an SRI build\u2019s stamp failed (nothing is uploaded)', async () => {
@@ -772,11 +777,143 @@ describe('createNextWebpackPlugin: no public maps Bugsee asked for when nothing 
     expect(d.remove).toHaveBeenCalledTimes(2);
   });
 
-  it('leaves them alone when the upload runs (it deletes them itself after confirming)', async () => {
-    const d = deps();
+  it('after a CONFIRMED upload it still removes a forced map that was kept on disk (an unkeyed, restored one)', async () => {
+    const d = deps({ upload: vi.fn(async () => ({ uploaded: true }) as never) });
     await run('client', context({}, { forcedMaps: true }), d);
     expect(d.upload).toHaveBeenCalledTimes(1);
-    expect(d.remove).not.toHaveBeenCalled();
+    // the sweep tolerates what the upload already deleted (removeFile ignores ENOENT) and takes what is left
+    expect(d.remove).toHaveBeenCalledWith('/out/.next/static/a.js.map');
+  });
+
+  it('deletes them when the upload ran but was NOT confirmed (contained failure), and when it throws', async () => {
+    const unconfirmed = deps(); // resolves undefined: nothing confirmed
+    await run('client', context({}, { forcedMaps: true }), unconfirmed);
+    expect(unconfirmed.remove).toHaveBeenCalledWith('/out/.next/static/a.js.map');
+    expect(unconfirmed.remove).toHaveBeenCalledWith('/out/.next/static/a.css.map');
+
+    const notUploaded = deps({ upload: vi.fn(async () => ({ uploaded: false }) as never) });
+    await run('client', context({}, { forcedMaps: true }), notUploaded);
+    expect(notUploaded.remove).toHaveBeenCalledTimes(2);
+
+    const throwing = deps({
+      upload: vi.fn(async () => {
+        throw new Error('upload broke');
+      }),
+    });
+    await expect(run('client', context({}, { forcedMaps: true }), throwing)).rejects.toThrow(
+      'upload broke',
+    );
+    expect(throwing.remove).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps them with deleteMaps: false, on a dry run, when the app asked for them, and on a server compilation', async () => {
+    for (const [overrides, extra, kind] of [
+      [{ deleteMaps: false }, { forcedMaps: true }, 'client'],
+      [{ dryRun: true }, { forcedMaps: true }, 'client'],
+      [{}, {}, 'client'],
+      [{}, { forcedMaps: true }, 'server'],
+    ] as const) {
+      const d = deps();
+      await run(kind, context({ ...overrides }, { ...extra }), d);
+      expect(d.upload).toHaveBeenCalledTimes(1);
+      expect(d.remove).not.toHaveBeenCalled();
+    }
+  });
+
+  it('an SRI refusal removes forced maps whose script a later stage dropped, too', async () => {
+    const ctx = context({}, { sri: true, forcedMaps: true });
+    const d = deps({ stamp: failing() });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const fake = fakeCompiler({ path: '/out/.next' });
+      createNextWebpackPlugin(ctx, 'client', d).apply(fake.compiler);
+      const c = fakeCompilation({ 'static/a.js': 'x', 'static/orphan.js.map': 'm' });
+      fake.startCompilation(c.compilation);
+      await c.run();
+      await fake.emit(c.compilation);
+    } finally {
+      warn.mockRestore();
+    }
+    expect(d.remove).toHaveBeenCalledWith('/out/.next/static/orphan.js.map');
+  });
+
+  it('strict: an SRI build whose scripts could not be staged fails (nothing was rewritten or uploaded)', async () => {
+    const ctx = context({ failOnError: true }, { sri: true });
+    const d = deps({ stamp: vi.fn(async () => ({ stamped: [], maps: {}, bundles: 0 })) });
+    await expect(run('client', ctx, d)).rejects.toThrow(/could be staged/);
+    expect(d.upload).not.toHaveBeenCalled();
+    // not strict: reported, returns
+    const lenient = deps({ stamp: vi.fn(async () => ({ stamped: [], maps: {}, bundles: 0 })) });
+    await expect(run('client', context({}, { sri: true }), lenient)).resolves.toBeDefined();
+  });
+
+  it('strict: a stamped bundle whose map vanished before the upload is a failure, otherwise reported', async () => {
+    const stampedOne = () =>
+      vi.fn(async () => ({ stamped: [], maps: { 'static/a.js': 'static/a.js.map' }, bundles: 1 }));
+    const emitOnlyScript = async (ctx: BugseeNextContext, d: WebpackPluginDeps) => {
+      const fake = fakeCompiler({ path: '/out/.next' });
+      createNextWebpackPlugin(ctx, 'client', d).apply(fake.compiler);
+      const c = fakeCompilation({ 'static/a.js': 'x' });
+      fake.startCompilation(c.compilation);
+      await c.run();
+      await fake.emit(c.compilation);
+    };
+    await expect(
+      emitOnlyScript(context({ failOnError: true }), deps({ stamp: stampedOne() })),
+    ).rejects.toThrow(/no map left on disk/);
+    const onError = vi.fn();
+    await emitOnlyScript(context({ onError }), deps({ stamp: stampedOne() }));
+    expect(onError).toHaveBeenCalledWith(
+      expect.objectContaining({ message: expect.stringContaining('no map left') }),
+    );
+  });
+
+  it('a lost pair with no onError is a console warning; an upload failure wins over a failing cleanup', async () => {
+    const lostPair = deps({
+      stamp: vi.fn(async () => ({
+        stamped: [],
+        maps: { 'static/a.js': 'static/a.js.map' },
+        bundles: 1,
+      })),
+    });
+    const fake = fakeCompiler({ path: '/out/.next' });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      createNextWebpackPlugin(context(), 'client', lostPair).apply(fake.compiler);
+      const c = fakeCompilation({ 'static/a.js': 'x' });
+      fake.startCompilation(c.compilation);
+      await c.run();
+      await fake.emit(c.compilation);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('no map left on disk'));
+    } finally {
+      warn.mockRestore();
+    }
+    const both = deps({
+      upload: vi.fn(async () => {
+        throw new Error('upload broke');
+      }),
+      remove: vi.fn(async () => {
+        throw new Error('EPERM');
+      }),
+    });
+    await expect(
+      run('client', context({ failOnError: true }, { forcedMaps: true }), both),
+    ).rejects.toThrow('upload broke');
+  });
+
+  it('an existence check that fails for a reason other than "not there" is reported (strict: thrown), not read as "no maps"', async () => {
+    const eio = () =>
+      vi.fn(async () => {
+        throw Object.assign(new Error('EIO'), { code: 'EIO' });
+      });
+    await expect(
+      run('client', context({ failOnError: true }), deps({ exists: eio() })),
+    ).rejects.toThrow('EIO');
+    const onError = vi.fn();
+    await run('client', context({ onError }), deps({ exists: eio() }));
+    expect(onError).toHaveBeenCalledWith(expect.objectContaining({ message: 'EIO' }));
+    const warned = await run('client', context(), deps({ exists: eio() }));
+    expect(warned.join('\n')).toContain('could not look for an emitted asset');
   });
 
   it('prints ONE accurate message on an SRI build, never "falling back"', async () => {
@@ -1005,6 +1142,19 @@ describe('pairRecorded', () => {
     expect(files.maps).toEqual(['/o/maps/a.js.map', '/o/static/b.js.map']);
   });
 
+  it('the map the compilation recorded wins over a same-named sibling a later stage emitted', () => {
+    const { compilation } = fakeCompilation(
+      { 'a.js': 'x', 'a.js.map': 'unrelated', 'maps/original.map': 'm' },
+      { 'a.js': 'maps/original.map' },
+    );
+    const files = pairRecorded(
+      compilation,
+      '/o',
+      emitted(['a.js', 'a.js.map', 'maps/original.map']),
+    );
+    expect(files.pairs?.['/o/a.js']).toBe('/o/maps/original.map');
+  });
+
   it('accepts a recorded list and a ?query on the recorded map', () => {
     const { compilation } = fakeCompilation(
       { 'a.js': 'x', 'm/a.js.map?v': 'm' },
@@ -1161,5 +1311,45 @@ describe('createNextWebpackPlugin: the on-disk scan and the no-maps notice', () 
     const expected = context({}, { browserMaps: true });
     await emitWith(expected, deps(), { 'a.js': 'x' });
     expect(expected.say).toHaveBeenCalledWith(expect.stringContaining('emitted no source maps'));
+  });
+});
+
+describe('the real existence check', () => {
+  it('"not there" (ENOENT, ENOTDIR) is absent; an unreadable parent (EACCES) is reported', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'bugsee-next-exists-'));
+    try {
+      writeFileSync(join(dir, 'file'), 'x');
+      mkdirSync(join(dir, 'locked'));
+      writeFileSync(join(dir, 'locked', 'a.js'), 'x');
+      const emit = async (name: string, onError: (e: unknown) => void) => {
+        const fake = fakeCompiler({ path: dir });
+        const ctx = context({ onError });
+        createNextWebpackPlugin(ctx, 'client', {
+          stamp: vi.fn(async () => ({ stamped: [], maps: {}, bundles: 0 })),
+          upload: vi.fn(async () => undefined),
+          hasSriManifest: vi.fn(async () => false),
+        }).apply(fake.compiler);
+        const c = fakeCompilation({ [name]: 'x' });
+        fake.startCompilation(c.compilation);
+        await c.run();
+        await fake.emit(c.compilation);
+      };
+      const quiet = vi.fn();
+      await emit('missing.js', quiet); // ENOENT
+      await emit('file/inside.js', quiet); // ENOTDIR
+      expect(quiet).not.toHaveBeenCalled();
+      if (process.getuid?.() !== 0 && process.platform !== 'win32') {
+        chmodSync(join(dir, 'locked'), 0o000);
+        const loud = vi.fn();
+        try {
+          await emit('locked/a.js', loud);
+        } finally {
+          chmodSync(join(dir, 'locked'), 0o755);
+        }
+        expect(loud).toHaveBeenCalledWith(expect.objectContaining({ code: 'EACCES' }));
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

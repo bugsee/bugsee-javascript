@@ -8,6 +8,21 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { listMapFiles, uploadSourcemaps } from './orchestrate';
 import type { SpawnResult } from './run-cli';
 
+/** A root runner (CAP_DAC_OVERRIDE) writes into a 0o555 directory anyway: such tests cannot run there. */
+async function cannotBlockWrites(): Promise<boolean> {
+  const probe = await mkdtemp(join(tmpdir(), 'bugsee-perm-probe-'));
+  try {
+    await chmod(probe, 0o555);
+    await writeFile(join(probe, 'x'), '');
+    return true;
+  } catch {
+    return false;
+  } finally {
+    await chmod(probe, 0o755).catch(() => undefined);
+    await rm(probe, { recursive: true, force: true });
+  }
+}
+
 const base = {
   outDir: '/build/dist',
   appToken: 'tok',
@@ -228,7 +243,10 @@ describe('post-emit stamp verification', () => {
     expect(await read('a.js')).toBe('a();\n//# sourceMappingURL=a.js.map\n');
   });
 
-  it('names a file it could not restore, and says it still carries the unverified stamp', async () => {
+  it('names a file it could not restore, and says it still carries the unverified stamp', async (ctx) => {
+    if (await cannotBlockWrites()) {
+      ctx.skip();
+    }
     await seed();
     const run = vi.fn(async (args: string[]): Promise<SpawnResult> => {
       if (args[1] === 'inject') {
@@ -1312,7 +1330,10 @@ describe('catch-up is best effort and never costs the build its other maps', () 
     );
   });
 
-  it('a stamp that does not verify AND cannot be restored is a failOnError failure (unsafe state)', async () => {
+  it('a stamp that does not verify AND cannot be restored is a failOnError failure (unsafe state)', async (ctx) => {
+    if (await cannotBlockWrites()) {
+      ctx.skip();
+    }
     await seedPair('v.js');
     const sneaky = vi.fn(async (args: string[]): Promise<SpawnResult> => {
       if (args[1] === 'inject') {
@@ -1778,7 +1799,10 @@ describe('catch-up edge cases (pointer search, failed restore of a pinned bundle
     expect(run.mock.calls.some((c) => c[0][1] === 'inject')).toBe(false);
   });
 
-  it('says which files could not be put back when the pinned bundle inject changed cannot be restored', async () => {
+  it('says which files could not be put back when the pinned bundle inject changed cannot be restored', async (ctx) => {
+    if (await cannotBlockWrites()) {
+      ctx.skip();
+    }
     const stamped = `w();\n//# sourceMappingURL=w.js.map\n${STAMP}`;
     await writeFile(join(dir, 'w.js'), stamped);
     await writeFile(join(dir, 'w.js.map'), plain);
@@ -1819,7 +1843,10 @@ describe('round-17 hardening: failed restore after a rejected inject, sibling ou
   const keyed = JSON.stringify({ debugId: ID });
   const ok = async (_args: string[]): Promise<SpawnResult> => ({ code: 0, stdout: '', stderr: '' });
 
-  it('a rejected inject whose rewrite could NOT be restored says so (default and failOnError)', async () => {
+  it('a rejected inject whose rewrite could NOT be restored says so (default and failOnError)', async (ctx) => {
+    if (await cannotBlockWrites()) {
+      ctx.skip();
+    }
     await writeFile(join(dir, 'a.js'), 'a();\n//# sourceMappingURL=a.js.map\n');
     await writeFile(join(dir, 'a.js.map'), '{"version":3}');
     const run = vi.fn(async (args: string[]): Promise<SpawnResult> => {
@@ -2011,5 +2038,83 @@ describe('round-18: sibling outputs on the post-emit path, empty own set under f
       onNotice: () => undefined,
     });
     expect(calls.some((c) => c[0] === 'debug-files')).toBe(false); // nothing to upload, and not the directory
+  });
+
+  it("a stale map that is not this output's does not defeat the empty-own-set exception", async () => {
+    await writeFile(join(dir, 'u.js'), 'u();\n');
+    await writeFile(join(dir, 'old.js.map'), '{"version":3}'); // stale, unkeyed, nobody's
+    await uploadSourcemaps({
+      ...base,
+      outDir: dir,
+      run: ok,
+      findSri: async () => [],
+      failOnError: true,
+      preStamped: true,
+      verifySri: async () => [],
+      ownFiles: ['u.js'],
+      siblingsHaveMaps: true,
+      onNotice: () => undefined,
+    });
+    expect(await readdir(dir)).toContain('old.js.map'); // left alone
+  });
+
+  it("catch-up never hands another output's bundle to inject, even when this output emitted its map", async () => {
+    await writeFile(join(dir, 'w.js'), 'w();\n//# sourceMappingURL=w.js.map\n'); // the sibling's bundle
+    await writeFile(join(dir, 'w.js.map'), '{"version":3,"sources":[],"mappings":""}'); // this output's map
+    const calls: string[][] = [];
+    await uploadSourcemaps({
+      ...base,
+      outDir: dir,
+      run: async (args) => {
+        calls.push(args);
+        return ok(args);
+      },
+      preStamped: true,
+      verifySri: async () => [],
+      findSri: async () => [],
+      onNotice: () => undefined,
+      ownFiles: ['w.js.map'],
+      siblingOwnFiles: ['w.js'],
+    });
+    expect(calls.some((c) => c[1] === 'inject')).toBe(false);
+  });
+
+  it('without known output names, a map found in the directory still defeats the empty-own-set exception', async () => {
+    await writeFile(join(dir, 'u.js'), 'u();\n');
+    await writeFile(join(dir, 'old.js.map'), '{"version":3}');
+    await expect(
+      uploadSourcemaps({
+        ...base,
+        outDir: dir,
+        run: ok,
+        findSri: async () => [],
+        failOnError: true,
+        preStamped: true,
+        verifySri: async () => [],
+        siblingsHaveMaps: true,
+        onNotice: () => undefined,
+      }),
+    ).rejects.toThrow(/no source maps with a debug-ID were found/);
+  });
+
+  it('a caller-classified stylesheet map with a script-map name (x1.map) is deleted with the upload and never kept or noticed', async () => {
+    await writeFile(join(dir, 'a.js'), 'a();\n');
+    await writeFile(join(dir, 'a.js.map'), keyed);
+    await writeFile(join(dir, 'x1.map'), '{"version":3,"mappings":""}'); // a CSS map, no debug id
+    const notices: string[] = [];
+    await uploadSourcemaps({
+      ...base,
+      outDir: dir,
+      run: ok,
+      files: {
+        scripts: [join(dir, 'a.js')],
+        maps: [join(dir, 'a.js.map')],
+        stylesheetMaps: [join(dir, 'x1.map')],
+      },
+      failOnError: true,
+      onNotice: (m) => notices.push(m),
+    });
+    expect(await readdir(dir)).toEqual(['a.js']);
+    expect(notices).toEqual([]);
   });
 });

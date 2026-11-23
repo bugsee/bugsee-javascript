@@ -7,6 +7,7 @@
 // its result back as a string source.
 //
 // Real webpack and Rspack builds, the real bugsee-cli, a real Chromium that triggers the lazy `import()`.
+import { createHash } from 'node:crypto';
 import {
   mkdirSync,
   mkdtempSync,
@@ -32,7 +33,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import webpack from 'webpack';
 
 const requests: string[] = [];
-let collector: Server;
+let collector: Server | undefined;
 let endpoint: string;
 let root: string;
 let browser: Browser;
@@ -75,17 +76,18 @@ interface PageOutcome {
 
 async function load(dir: string): Promise<PageOutcome> {
   const { url, server } = await serve(dir);
-  const page = await browser.newPage();
   const failed: string[] = [];
-  page.on('response', (r) => {
-    if (r.status() >= 400) failed.push(`${r.status()} ${r.url()}`);
-  });
-  page.on('console', (m) => {
-    if (/ChunkLoadError|Loading chunk|Failed to load resource/i.test(m.text()))
-      failed.push(m.text());
-  });
-  page.on('pageerror', (e) => failed.push(String(e)));
+  let page: Awaited<ReturnType<typeof browser.newPage>> | undefined;
   try {
+    page = await browser.newPage();
+    page.on('response', (r) => {
+      if (r.status() >= 400) failed.push(`${r.status()} ${r.url()}`);
+    });
+    page.on('console', (m) => {
+      if (/ChunkLoadError|Loading chunk|Failed to load resource/i.test(m.text()))
+        failed.push(m.text());
+    });
+    page.on('pageerror', (e) => failed.push(String(e)));
     await page.goto(url);
     await page
       .waitForFunction(() => (window as { __lazy?: string }).__lazy !== undefined, null, {
@@ -102,8 +104,11 @@ async function load(dir: string): Promise<PageOutcome> {
     });
     return { ...state, failed };
   } finally {
-    await page.close();
-    await new Promise<void>((r) => server.close(() => r()));
+    try {
+      await page?.close();
+    } finally {
+      await new Promise<void>((r) => server.close(() => r()));
+    }
   }
 }
 
@@ -152,7 +157,7 @@ describe('a content-hashed lazy chunk still loads after the in-build stamp', () 
       "window.__ran = true;\nimport('./lazy.js').then((m) => { window.__lazy = m.value; });\n",
     );
     writeFileSync(join(root, 'src', 'lazy.js'), "export const value = 'lazy-ok';\n");
-    collector = createServer((req, res) => {
+    const created = createServer((req, res) => {
       requests.push(req.url ?? '');
       req.resume();
       req.on('end', () => {
@@ -162,14 +167,17 @@ describe('a content-hashed lazy chunk still loads after the in-build stamp', () 
         );
       });
     });
-    await new Promise<void>((r) => collector.listen(0, '127.0.0.1', r));
-    endpoint = `http://127.0.0.1:${(collector.address() as { port: number }).port}`;
+    collector = created;
+    await new Promise<void>((r) => created.listen(0, '127.0.0.1', r));
+    endpoint = `http://127.0.0.1:${(created.address() as { port: number }).port}`;
     browser = await chromium.launch({ headless: true });
   }, 60_000);
 
   afterAll(async () => {
     await browser?.close();
-    await new Promise<void>((r) => collector?.close(() => r()));
+    const done = collector;
+    collector = undefined; // a failed later setup must not reuse a closed server
+    if (done) await new Promise<void>((r) => done.close(() => r()));
     if (root) rmSync(root, { recursive: true, force: true });
   });
 
@@ -285,6 +293,19 @@ describe('a content-hashed lazy chunk still loads after the in-build stamp', () 
       );
     });
     expect(readFileSync(join(out, 'index.html'), 'utf8')).toMatch(/integrity="?sha384-/);
+    // the LAZY chunk is pinned too: its digest (of the stamped bytes on disk) sits in the runtime's table
+    const scripts = readdirSync(out).filter((f) => f.endsWith('.js'));
+    const runtimeText = scripts.map((f) => readFileSync(join(out, f), 'utf8')).join('\n');
+    const lazyChunks = scripts.filter(
+      (f) => !readFileSync(join(out, 'index.html'), 'utf8').includes(f),
+    );
+    expect(lazyChunks.length, 'a lazy chunk exists').toBeGreaterThan(0);
+    for (const f of lazyChunks) {
+      const digest = `sha384-${createHash('sha384')
+        .update(readFileSync(join(out, f)))
+        .digest('base64')}`;
+      expect(runtimeText, `${f} pinned by its stamped bytes`).toContain(digest);
+    }
     await expectHealthy(out, before);
   }, 120_000);
 
@@ -349,7 +370,7 @@ describe('Vite workers in a real browser', () => {
   beforeAll(async () => {
     wroot = realpathSync(mkdtempSync(join(tmpdir(), 'bugsee-worker-e2e-')));
     // The previous describe closed the shared collector in its afterAll: start our own.
-    collector = createServer((req, res) => {
+    const created = createServer((req, res) => {
       requests.push(req.url ?? '');
       req.resume();
       req.on('end', () => {
@@ -359,13 +380,16 @@ describe('Vite workers in a real browser', () => {
         );
       });
     });
-    await new Promise<void>((r) => collector.listen(0, '127.0.0.1', r));
-    endpoint = `http://127.0.0.1:${(collector.address() as { port: number }).port}`;
+    collector = created;
+    await new Promise<void>((r) => created.listen(0, '127.0.0.1', r));
+    endpoint = `http://127.0.0.1:${(created.address() as { port: number }).port}`;
     wbrowser = await chromium.launch({ headless: true });
   }, 60_000);
   afterAll(async () => {
     await wbrowser?.close();
-    await new Promise<void>((r) => collector?.close(() => r()));
+    const done = collector;
+    collector = undefined; // a failed later setup must not reuse a closed server
+    if (done) await new Promise<void>((r) => done.close(() => r()));
     if (wroot) rmSync(wroot, { recursive: true, force: true });
   });
 
