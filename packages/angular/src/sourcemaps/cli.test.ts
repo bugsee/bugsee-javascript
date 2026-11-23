@@ -11,6 +11,7 @@ describe('parseArgs', () => {
         '--configuration=production',
         '--dist',
         'out',
+        '--output-path=moved',
         '--app-version=1.0.0',
         '--app-build',
         '42',
@@ -28,6 +29,7 @@ describe('parseArgs', () => {
         project: 'demo',
         configuration: 'production',
         dist: 'out',
+        outputPath: 'moved',
         appVersion: '1.0.0',
         appBuild: '42',
         endpoint: 'https://api.test',
@@ -148,8 +150,8 @@ describe('runCli', () => {
     expect(err.join('')).toContain('did not complete');
   });
 
-  it('is quiet for a skipped, disabled or refused run, whose notice was already printed', async () => {
-    for (const status of ['skipped', 'disabled', 'refused'] as const) {
+  it('is quiet for a skipped, disabled or misconfigured run, whose notice was already printed', async () => {
+    for (const status of ['skipped', 'disabled', 'misconfigured'] as const) {
       const { io: i, out, err } = io();
       const { result: _drop, ...rest } = (await uploaded()({})) as AngularUploadResult;
       expect(

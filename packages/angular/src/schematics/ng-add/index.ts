@@ -288,9 +288,9 @@ function explain(located: Located, token: string | undefined): Rule {
       );
     }
     if (effective.serviceWorker) {
-      context.logger.warn(
-        `Bugsee: serviceWorker is on. ngsw.json pins a hash of every file, so the upload step refuses to stamp ` +
-          `such a build (it would make the service worker reject the app) and uploads nothing for it.`,
+      context.logger.info(
+        `Bugsee: serviceWorker is on. ngsw.json (one per locale) pins a SHA-1 of every file, so the upload step ` +
+          `re-computes those hashes after stamping and checks them; if one cannot be reconciled it restores the build and uploads nothing.`,
       );
     }
     if (token === undefined) {

@@ -210,9 +210,12 @@ esbuild `application` builder (the default since 17, output in `dist/<project>/b
   its server serves. The step stamps the bundles,
   then re-writes those hashes to match and checks them, so the page keeps loading. (The CLI on its own refuses such a
   build; this is what `--allow-sri` assumes you do.)
-- **A build with a service worker (`serviceWorker` in `angular.json`, an `ngsw.json` in the output) is not stamped.**
-  `ngsw.json` pins a hash of every file and the service worker rejects a changed one. The step says so and uploads
-  nothing; build without it for the release you symbolicate.
+- **A build with a service worker works.** `ngsw.json` (one per locale for a localized build) lists the SHA-1 of every
+  file it caches and the service worker rejects a changed one, so after stamping the step re-computes those entries
+  and checks them; if one cannot be reconciled it restores the build and uploads nothing.
+- **If the output moved** (`ng build --output-path other`), pass `--output-path other` (or `--dist <browser dir>`). A
+  problem locating the output is printed and the command exits 0, so it cannot fail a pipeline whose build
+  succeeded; `--fail-on-error` makes it exit non-zero.
 - **Only `browser/` is uploaded.** An SSR server bundle's errors are reported by the Node SDK.
 - `outputHashing: "all"` (the default in production) keeps the file names unique per build; the debug-ID, not the
   file name, is what links a frame to its map.

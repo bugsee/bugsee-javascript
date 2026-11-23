@@ -553,13 +553,13 @@ describe('ng add @bugsee/angular — what the build step cannot do, said up fron
     expect(logged('info')).toMatch(/subresourceIntegrity.*re-written/);
   });
 
-  it('warns that a service worker build is not stamped', async () => {
+  it('explains that service worker manifests are re-computed', async () => {
     const tree = await workspace();
     setBuild(tree, (b) => {
       b.options.serviceWorker = 'ngsw-config.json';
     });
     await run(tree, { appToken: 'T' });
-    expect(logged('warn')).toMatch(/serviceWorker.*ngsw\.json/);
+    expect(logged('info')).toMatch(/serviceWorker.*re-computes/);
   });
 
   it('says nothing about either when neither is on', async () => {

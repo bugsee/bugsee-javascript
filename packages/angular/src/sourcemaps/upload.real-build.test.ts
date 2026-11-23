@@ -231,6 +231,57 @@ describeReal('uploadAngularSourcemaps on real Angular output with subresourceInt
     }
   });
 
+  // A localized build with a service worker has a manifest per locale. Each lists the SHA-1 of every file it caches
+  // (measured: sha1 of the bytes, keyed by path from the manifest's directory); stamping and re-sealing change
+  // those bytes, so they are re-computed, or the worker would treat the app as corrupt.
+  it('re-computes the service worker manifest of every locale', async () => {
+    const { dir, browser } = workspace('locales');
+    const sha1 = (path: string) => createHash('sha1').update(readFileSync(path)).digest('hex');
+    for (const locale of ['', 'fr']) {
+      const at = join(browser, locale);
+      mkdirSync(at, { recursive: true });
+      if (locale !== '') {
+        cpSync(join(browser, ENTRY), join(at, ENTRY));
+        cpSync(join(browser, 'index.html'), join(at, 'index.html'));
+      }
+      writeFileSync(
+        join(at, 'ngsw.json'),
+        JSON.stringify(
+          {
+            configVersion: 1,
+            hashTable: {
+              [`/${ENTRY}`]: sha1(join(at, ENTRY)),
+              '/index.html': sha1(join(at, 'index.html')),
+            },
+          },
+          null,
+          2,
+        ),
+      );
+    }
+    const errors: unknown[] = [];
+
+    const out = await uploadAngularSourcemaps({
+      cwd: dir,
+      appToken: 'tok',
+      endpoint,
+      vcs: false,
+      registerBuild: false,
+      env: {},
+      onError: (e) => errors.push(e),
+    });
+
+    expect(errors).toEqual([]);
+    expect(out.status).toBe('uploaded');
+    for (const locale of ['', 'fr']) {
+      const at = join(browser, locale);
+      const table = JSON.parse(readFileSync(join(at, 'ngsw.json'), 'utf8')).hashTable;
+      expect(table[`/${ENTRY}`]).toBe(sha1(join(at, ENTRY)));
+      expect(table['/index.html']).toBe(sha1(join(at, 'index.html')));
+    }
+    expect(readFileSync(join(browser, 'fr', ENTRY), 'utf8')).toContain('_bugseeDebugIds');
+  });
+
   it('the guard still refuses to stamp this build WITHOUT re-sealing: the import map is seen', async () => {
     const { browser } = workspace('refused');
     const errors: unknown[] = [];

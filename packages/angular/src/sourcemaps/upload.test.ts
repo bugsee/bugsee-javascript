@@ -205,12 +205,6 @@ describe('uploadAngularSourcemaps', () => {
     expect(notices.filter((m) => m.includes('BUGSEE_APP_TOKEN'))).toHaveLength(2);
   });
 
-  it('still fails on an unlocatable output when there IS a token', async () => {
-    await expect(
-      uploadAngularSourcemaps(base({ cwd }), { runPluginUpload: ran() }),
-    ).rejects.toThrow(/angular\.json/);
-  });
-
   it('is silent when disabled on purpose', async () => {
     await builtApp();
     const notices: string[] = [];
@@ -224,44 +218,104 @@ describe('uploadAngularSourcemaps', () => {
     expect(notices).toEqual([]);
   });
 
-  it('fails when the build output is not there, saying which build to run', async () => {
-    await write(
-      'angular.json',
-      JSON.stringify({
-        projects: {
-          demo: {
-            projectType: 'application',
-            root: '',
-            architect: { build: { builder: '@angular/build:application' } },
+  describe('a build whose output cannot be found', () => {
+    const noDist = async () =>
+      write(
+        'angular.json',
+        JSON.stringify({
+          projects: {
+            demo: {
+              projectType: 'application',
+              root: '',
+              architect: { build: { builder: '@angular/build:application' } },
+            },
           },
-        },
-      }),
-    );
-    await expect(
-      uploadAngularSourcemaps(base({ cwd }), { runPluginUpload: ran() }),
-    ).rejects.toThrow(/dist.*demo.*browser.*ng build/);
+        }),
+      );
+    const run = (extra: Record<string, unknown>, notices: string[] = []) =>
+      uploadAngularSourcemaps(base({ cwd, onNotice: (m: string) => notices.push(m), ...extra }), {
+        runPluginUpload: ran(),
+      });
+
+    it('missing output directory: says which build to run and how to point at another, exits cleanly', async () => {
+      await noDist();
+      const notices: string[] = [];
+      const out = await run({}, notices);
+      expect(out.status).toBe('misconfigured');
+      expect(notices.join('\n')).toMatch(
+        /dist.*demo.*browser.*ng build.*--output-path.*Nothing was uploaded/s,
+      );
+    });
+
+    it('no angular.json, several applications, an unparseable angular.json: each said, none thrown', async () => {
+      const notices: string[] = [];
+      expect((await run({}, notices)).status).toBe('misconfigured');
+      await write(
+        'angular.json',
+        JSON.stringify({
+          projects: {
+            one: { projectType: 'application', root: '', architect: { build: {} } },
+            two: { projectType: 'application', root: '', architect: { build: {} } },
+          },
+        }),
+      );
+      expect((await run({}, notices)).status).toBe('misconfigured');
+      await write('angular.json', '{ nope');
+      expect((await run({}, notices)).status).toBe('misconfigured');
+      expect(notices).toHaveLength(3);
+      expect(notices[0]).toMatch(/--output-path/);
+    });
+
+    it('under failOnError each of them throws', async () => {
+      await expect(run({ failOnError: true })).rejects.toThrow(/angular\.json/);
+      await noDist();
+      await expect(run({ failOnError: true })).rejects.toThrow(/ng build/);
+    });
+
+    it('--output-path points at the base of an application build, and at a flat one', async () => {
+      await write('moved/browser/main.js', 'x();');
+      await write('moved/browser/main.js.map', '{}');
+      await write('moved/server/server.mjs', '');
+      await write('flat/main.js', 'x();');
+      await write('flat/main.js.map', '{}');
+      const runPluginUpload = ran();
+      const a = await uploadAngularSourcemaps(base({ cwd, outputPath: 'moved' }), {
+        runPluginUpload,
+      });
+      expect(a.outDir).toBe(join(cwd, 'moved', 'browser'));
+      expect(runPluginUpload.mock.calls[0]?.[2]).toMatchObject({
+        resealDirs: [join(cwd, 'moved')],
+      });
+      const b = await uploadAngularSourcemaps(base({ cwd, outputPath: 'flat' }), {
+        runPluginUpload,
+      });
+      expect(b.outDir).toBe(join(cwd, 'flat'));
+      expect(runPluginUpload.mock.calls[1]?.[2]).toMatchObject({ resealDirs: [join(cwd, 'flat')] });
+    });
+
+    it('--output-path that does not exist is misconfigured too, and a tokenless run still no-ops', async () => {
+      const out = await run({ outputPath: 'nowhere' });
+      expect(out.status).toBe('misconfigured');
+      const none = await uploadAngularSourcemaps(
+        { cwd, vcs: false, env: {}, outputPath: 'nowhere', onNotice: () => undefined },
+        { runPluginUpload: ran() },
+      );
+      expect(none).toMatchObject({ status: 'disabled', outDir: join(cwd, 'nowhere') });
+    });
   });
 
-  it('refuses a build with a service worker manifest, which pins a hash of every file', async () => {
+  it('stamps a build with service worker manifests, one per locale: it re-computes them, it does not refuse', async () => {
     await builtApp({ ngsw: true });
+    await write('dist/demo/browser/fr/ngsw.json', '{}');
     const runPluginUpload = ran();
     const notices: string[] = [];
     const out = await uploadAngularSourcemaps(
       base({ cwd, onNotice: (m: string) => notices.push(m) }),
-      {
-        runPluginUpload,
-      },
+      { runPluginUpload },
     );
-    expect(out.status).toBe('refused');
-    expect(runPluginUpload).not.toHaveBeenCalled();
-    expect(notices.join('\n')).toMatch(/ngsw\.json/);
-  });
-
-  it('throws that refusal under failOnError', async () => {
-    await builtApp({ ngsw: true });
-    await expect(
-      uploadAngularSourcemaps(base({ cwd, failOnError: true }), { runPluginUpload: ran() }),
-    ).rejects.toThrow(/ngsw\.json/);
+    expect(out.status).toBe('uploaded');
+    expect(runPluginUpload).toHaveBeenCalledTimes(1);
+    expect(notices).toEqual([]);
   });
 
   it('says so when the build has no source maps, and still runs (the CLI tolerates an empty directory)', async () => {

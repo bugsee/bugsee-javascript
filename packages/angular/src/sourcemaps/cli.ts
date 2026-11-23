@@ -19,6 +19,7 @@ Options
   --project <name>            Application project (default: the only application in angular.json)
   -c, --configuration <name>  The ng build configuration the output came from (default: the target's default)
   --dist <dir>                The browser output directory, when it is not where angular.json says
+  --output-path <dir>         What you gave ng build --output-path (browser/ below it is used when present)
   --app-version <version>     App version (default: BUGSEE_APP_VERSION, then package.json)
   --app-build <build>         Build number (default: BUGSEE_APP_BUILD, then the CI commit)
   --endpoint <url>            API endpoint (default: BUGSEE_ENDPOINT)
@@ -38,6 +39,7 @@ const VALUE_FLAGS: Record<string, keyof Options> = {
   '--configuration': 'configuration',
   '-c': 'configuration',
   '--dist': 'dist',
+  '--output-path': 'outputPath',
   '--app-version': 'appVersion',
   '--app-build': 'appBuild',
   '--endpoint': 'endpoint',

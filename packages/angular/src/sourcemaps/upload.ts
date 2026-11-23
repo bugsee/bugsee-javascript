@@ -22,7 +22,7 @@ import {
   resolvePluginOptions,
   runPluginUpload,
 } from '@bugsee/bundler-plugin-core';
-import { resolveAngularOutput } from './output';
+import { type AngularOutput, resolveAngularOutput } from './output';
 
 export interface AngularUploadOptions extends BugseePluginOptions {
   /** Workspace directory (angular.json is looked for here and above). Default: the working directory. */
@@ -33,6 +33,8 @@ export interface AngularUploadOptions extends BugseePluginOptions {
   configuration?: string;
   /** The browser output directory, when it is not where angular.json says (skips the angular.json lookup). */
   dist?: string;
+  /** What `ng build --output-path` was given: the output base (its `browser/` is used when present). Skips the lookup. */
+  outputPath?: string;
   /** Environment to read BUGSEE_* from. Default: `process.env`, plus `.env.bugsee-build-plugin`. */
   env?: EnvRecord;
 }
@@ -40,10 +42,10 @@ export interface AngularUploadOptions extends BugseePluginOptions {
 export interface AngularUploadResult {
   /**
    * `uploaded`: the pipeline ran (its result says how far it got — a contained failure is reported, not thrown).
-   * `disabled`: no token or `disabled: true`. `skipped`: a development build. `refused`: a build this tool
-   * cannot stamp safely (see the notice).
+   * `disabled`: no token or `disabled: true`. `skipped`: a development build. `misconfigured`: the output could
+   * not be found (said; thrown under `failOnError`).
    */
-  status: 'uploaded' | 'disabled' | 'skipped' | 'refused';
+  status: 'uploaded' | 'disabled' | 'skipped' | 'misconfigured';
   outDir: string;
   configuration: string | undefined;
   result?: PluginRunResult;
@@ -130,26 +132,67 @@ export async function uploadAngularSourcemaps(
     }
     return {
       status: 'disabled',
-      outDir: options.dist !== undefined ? resolve(cwd, options.dist) : '',
+      outDir:
+        options.dist !== undefined
+          ? resolve(cwd, options.dist)
+          : options.outputPath !== undefined
+            ? resolve(cwd, options.outputPath)
+            : '',
       configuration: options.configuration,
     };
   }
-  const located =
-    options.dist !== undefined
-      ? undefined
-      : resolveAngularOutput({
-          cwd,
-          ...(options.project !== undefined ? { project: options.project } : {}),
-          ...(options.configuration !== undefined ? { configuration: options.configuration } : {}),
-        });
-  const outDir =
-    options.dist !== undefined ? resolve(cwd, options.dist) : (located?.browserDir as string);
+  // Where the output is. A problem here is a misconfiguration of THIS step (no angular.json, several applications, a
+  // moved output path, ng build not run), not a failed upload: it must not fail a pipeline whose build succeeded,
+  // so it is said and the step stops, unless `failOnError` asks for the strict reading.
+  const misconfigured = (message: string, outDir: string, configuration?: string) => {
+    if (resolved.failOnError) {
+      throw new Error(message);
+    }
+    say(`${message} Nothing was uploaded.`);
+    return { status: 'misconfigured' as const, outDir, configuration };
+  };
+  let located: AngularOutput | undefined;
+  let outDir: string;
+  if (options.dist !== undefined) {
+    outDir = resolve(cwd, options.dist);
+  } else if (options.outputPath !== undefined) {
+    // `ng build --output-path <base>`: the base of an application build (browser/ and server/ below it), or the
+    // browser directory itself for a flat one.
+    const base = resolve(cwd, options.outputPath);
+    outDir = existsSync(join(base, 'browser')) ? join(base, 'browser') : base;
+    located = {
+      project: options.project ?? '',
+      builder: undefined,
+      layout: outDir === base ? 'flat' : 'application',
+      configuration: options.configuration,
+      baseDir: base,
+      browserDir: outDir,
+      ...(outDir === base ? {} : { serverDir: join(base, 'server') }),
+    };
+  } else {
+    try {
+      located = resolveAngularOutput({
+        cwd,
+        ...(options.project !== undefined ? { project: options.project } : {}),
+        ...(options.configuration !== undefined ? { configuration: options.configuration } : {}),
+      });
+    } catch (error) {
+      return misconfigured(
+        `${(error as Error).message}. If you built to a different directory, give it with --output-path (or --dist).`,
+        '',
+        options.configuration,
+      );
+    }
+    outDir = located.browserDir;
+  }
   const configuration = located?.configuration ?? options.configuration;
 
   if (!existsSync(outDir)) {
-    throw new Error(
-      `the build output ${outDir} does not exist. Run \`ng build\` first (this step uploads what it wrote), or ` +
-        `give the directory with --dist.`,
+    return misconfigured(
+      `the build output ${outDir} does not exist. Run \`ng build\` first (this step uploads what it wrote); if you ` +
+        `built to a different directory, give it with --output-path (or --dist).`,
+      outDir,
+      configuration,
     );
   }
   const isProduction = !(configuration?.split(',').includes('development') ?? false);
@@ -159,21 +202,6 @@ export async function uploadAngularSourcemaps(
         '`uploadInDevelopment: true` (--upload-in-development) to upload from it too.',
     );
     return { status: 'skipped', outDir, configuration };
-  }
-  if (existsSync(join(outDir, 'ngsw.json'))) {
-    // ngsw.json carries a hash of every file; the service worker treats a file that no longer matches as
-    // corrupt and stops serving the app. Stamping changes the bytes, so it is refused rather than guessed at.
-    const failure = new Error(
-      `${join(outDir, 'ngsw.json')} is the Angular service worker's manifest: it pins a hash of every file, and ` +
-        `stamping debug-IDs changes them, which would make the service worker reject the app. Source maps were ` +
-        `NOT uploaded. Build without \`serviceWorker\` for the build you symbolicate, or upload the maps yourself ` +
-        `with \`bugsee-cli debug-files upload\` (the symbol match then falls back to app version/build).`,
-    );
-    if (resolved.failOnError) {
-      throw failure;
-    }
-    say(failure.message);
-    return { status: 'refused', outDir, configuration };
   }
   if (!hasSourceMaps(outDir)) {
     say(

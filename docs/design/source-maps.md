@@ -444,9 +444,14 @@ the real `bugsee-cli`, a mock collector, Chromium via Playwright; `outputHashing
 CI keeps the bytes half of this: `upload.real-build.test.ts` runs the real CLI over two real Angular 22.3 chunks with
 the SRI page shapes above (script tag, import map, SSR copy); the browser half is not in CI.
 
-**What it refuses.** A build with a service worker (`ngsw.json` in the output): the manifest pins a hash of every
-file, a service worker treats a changed file as corrupt, and rewriting `ngsw.json` was not built. The tool says so and
-uploads nothing (throws under `failOnError`). It also stamps `browser/` only: a server bundle's errors are the Node
+**Service worker manifests.** `ngsw.json` (one per locale for a localized build; measured on `@angular/build` 22.3 with
+`@angular/service-worker`) carries `hashTable`: SHA-1 hex of each cached file's bytes, keyed by path from the manifest's
+directory. A service worker that finds a mismatch treats the app as corrupt and stops serving it, and the SRI re-seal
+(sha256/384/512) never touched it: the first version only refused a top-level manifest and so missed the per-locale
+ones. `resealIntegrity` now recomputes every entry after the last pass (a targeted text swap, formatting untouched;
+the file is found by dropping leading URL segments, which covers a base href), `findStaleServiceWorkerEntries` verifies,
+and an entry that cannot be reconciled rolls the build back like a stale SRI hash. No other manifest field depends on
+file contents in the version checked. **What it refuses:** nothing for a service worker now. It also stamps `browser/` only: a server bundle's errors are the Node
 SDK's, symbolicated by `@bugsee/node`.
 
 **The legacy webpack `browser` builder** (`@angular-devkit/build-angular:browser`) takes the same route: the post-build
