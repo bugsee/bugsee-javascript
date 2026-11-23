@@ -286,11 +286,18 @@ without a shared id (a worker crash could not be symbolicated). The user's plugi
 sub-build unless it is listed in `worker.plugins` (verified with real Vite 7 and 8), so detecting and skipping
 that sub-build is not the issue; the fix is a **catch-up before the upload**: the build's OWN (`ownFiles`, the
 final bundle at `writeBundle`, which does list the worker and its map) script maps that carry no debug-id are
-run through `sourcemaps inject` (an explicit file list). Measured with bugsee-cli 0.9.0: inject on an
-already-stamped bundle leaves its bytes unchanged and writes its id into the map, so a bundle stamped in memory
-is not stamped twice and a Subresource-Integrity pin on it is not invalidated. A bundle that is NOT stamped yet
-and is pinned by an integrity hash is left alone and said (stamping it would break the page). A `public/` copy
-is not in `ownFiles` and is never touched. The result is verified (and restored on failure) like any other
+run through `sourcemaps inject` (an explicit file list). Measured with bugsee-cli 0.9.0: inject on a
+bundle that already carries BOTH its debug-id comment and the runtime registration leaves its bytes unchanged
+and writes its id into the map, so such a bundle is not stamped twice and a Subresource-Integrity pin on it is
+not invalidated. "Stamped" therefore means both (a foreign `//# debugId=` comment alone would still get the
+registration appended): a pinned bundle that is not fully stamped is left alone and said (stamping it would
+change pinned bytes). A `public/` copy is not in `ownFiles` and is never touched. The catch-up is **best
+effort** and never costs the build its other maps: a map that is not a JSON object (empty, garbage, `[]`,
+`null`; the CLI rejects the whole batch for one) is skipped and left untouched, a batch the CLI rejects is
+retried pair by pair, a failing pair is reported (`onError`) and the rest still stamp and upload, whatever was
+rewritten is verified and restored, and an unexpected failure inside it is reported and the upload goes on.
+Only a stamp that did not verify AND could not be restored (an unverified stamp still on disk) is a
+`failOnError` failure. The result is verified (and restored on failure) like any other
 stamp. Covered by real Vite 7 and 8 builds with `new Worker(new URL(...))` and `?worker`, and in Chromium
 (`instrumentation-tests/test/lazy-chunk.e2e.ts`): the worker runs, registers its id, and its map has the same
 id. (The hand-rolled SRI step pins only the entry chunks in `index.html`, never worker files.)

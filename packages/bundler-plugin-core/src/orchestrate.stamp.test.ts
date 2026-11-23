@@ -1024,7 +1024,7 @@ describe("catch-up: the build's OWN script maps that carry no debug-id (Vite wor
   });
   const STAMPED = `w();\n//# sourceMappingURL=w.js.map\n${STAMP_FOR_CATCHUP()}`;
   function STAMP_FOR_CATCHUP(): string {
-    return `\n;1;\n//# debugId=${ID}\n`;
+    return `\n;!function(){try{var e=globalThis;e._bugseeDebugIds=e._bugseeDebugIds||{}}catch(e){}}();\n//# debugId=${ID}\n`;
   }
   const plainMap = '{"version":3,"sources":["w.ts"],"names":[],"mappings":"AAAA"}';
   /** A faithful-enough CLI: inject stamps the bundle if it is not (appending), and puts its id in the map. */
@@ -1171,7 +1171,7 @@ describe("catch-up: the build's OWN script maps that carry no debug-id (Vite wor
     expect(await readFile(join(dir, 'x.ts'), 'utf8')).toBe('x();\n');
   });
 
-  it('a catch-up stamp that does not verify is restored and reported (thrown under failOnError)', async () => {
+  it('a catch-up stamp that does not verify is restored and reported', async () => {
     await writeFile(join(dir, 'w.js'), 'w();\n//# sourceMappingURL=w.js.map\n');
     await writeFile(join(dir, 'w.js.map'), plainMap);
     const broken = vi.fn(async (args: string[]): Promise<SpawnResult> => {
@@ -1184,8 +1184,256 @@ describe("catch-up: the build's OWN script maps that carry no debug-id (Vite wor
     await uploadSourcemaps(opts({ run: broken, onError: (e: unknown) => errors.push(e) }));
     expect(await readFile(join(dir, 'w.js'), 'utf8')).toBe('w();\n//# sourceMappingURL=w.js.map\n');
     expect(String(errors[0])).toContain('did not verify');
-    await expect(uploadSourcemaps(opts({ run: broken, failOnError: true }))).rejects.toThrow(
-      /did not verify/,
+  });
+});
+
+describe('catch-up is best effort and never costs the build its other maps', () => {
+  let dir: string;
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'bugsee-catchup2-'));
+  });
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+  const REG =
+    '!function(){try{var e=globalThis;e._bugseeDebugIds=e._bugseeDebugIds||{}}catch(e){}}();';
+  const STAMP = `\n;${REG}\n//# debugId=${ID}\n`;
+  const plainMap = '{"version":3,"sources":["w.ts"],"names":[],"mappings":"AAAA"}';
+  const keyed = JSON.stringify({ debugId: ID });
+  const cli = (failFor?: string) => {
+    const calls: string[][] = [];
+    const run = vi.fn(async (args: string[]): Promise<SpawnResult> => {
+      calls.push(args);
+      if (args[1] === 'inject') {
+        const paths = args.slice(2);
+        if (failFor !== undefined && paths.some((x) => x.includes(failFor))) {
+          for (const x of paths.filter((y) => y.includes(failFor) && y.endsWith('.js'))) {
+            await writeFile(x, '{{'); // a partial, broken rewrite before the CLI dies
+          }
+          throw new Error('bugsee-cli exited 11');
+        }
+        for (const x of paths.filter((y) => /\.[cm]?js$/.test(y))) {
+          const code = await readFile(x, 'utf8');
+          if (!code.includes('//# debugId=')) await writeFile(x, code + STAMP);
+        }
+        for (const x of paths.filter((y) => y.endsWith('.map'))) {
+          await writeFile(
+            x,
+            JSON.stringify({ ...JSON.parse(await readFile(x, 'utf8')), debugId: ID }),
+          );
+        }
+      }
+      return { code: 0, stdout: '', stderr: '' };
+    });
+    return { run, calls };
+  };
+  const opts = (extra: object = {}) => ({
+    ...base,
+    outDir: dir,
+    preStamped: true,
+    verifySri: async () => [],
+    findSri: async () => [],
+    ownFiles: [] as string[],
+    onNotice: () => undefined,
+    ...extra,
+  });
+  const own = (...names: string[]) => names.flatMap((n) => [n, `${n}.map`]);
+  const seedPair = async (name: string, map = plainMap): Promise<void> => {
+    await writeFile(join(dir, name), `${name}();\n//# sourceMappingURL=${name}.map\n`);
+    await writeFile(join(dir, `${name}.map`), map);
+  };
+
+  for (const [label, bad] of [
+    ['empty', ''],
+    ['not JSON', 'not json'],
+    ['an array', '[]'],
+    ['null', 'null'],
+  ] as const) {
+    it(`a ${label} own map is skipped (never fed to the CLI), left untouched, and the good worker + a keyed map still upload`, async () => {
+      await writeFile(join(dir, 'k.js.map'), keyed); // keyed, uploaded and deleted
+      await seedPair('good.js');
+      await seedPair('ext.js', bad);
+      const { run, calls } = cli();
+      const onError = vi.fn();
+      const result = await uploadSourcemaps(
+        opts({
+          run,
+          onError,
+          failOnError: true,
+          ownFiles: [...own('good.js', 'ext.js'), 'k.js.map'],
+        }),
+      );
+      const inject = calls.filter((c) => c[1] === 'inject');
+      expect(inject.flatMap((c) => c.slice(2)).some((x) => x.includes('ext.js'))).toBe(false);
+      expect(onError).not.toHaveBeenCalled();
+      expect(result.uploaded).toBe(true);
+      expect(await readFile(join(dir, 'ext.js.map'), 'utf8')).toBe(bad);
+      expect(await readdir(dir)).toContain('ext.js.map');
+      expect(await readdir(dir)).not.toContain('good.js.map'); // stamped, uploaded, deleted
+    });
+  }
+
+  it('a batch the CLI rejects is retried pair by pair: the good pair is stamped, the bad one restored and reported, the upload goes on', async () => {
+    await seedPair('good.js');
+    await seedPair('bad.js');
+    const { run, calls } = cli('bad.js');
+    const errors: unknown[] = [];
+    const result = await uploadSourcemaps(
+      opts({ run, onError: (e: unknown) => errors.push(e), ownFiles: own('good.js', 'bad.js') }),
     );
+    expect(await readFile(join(dir, 'good.js'), 'utf8')).toContain('//# debugId=');
+    expect(await readFile(join(dir, 'bad.js'), 'utf8')).toBe(
+      'bad.js();\n//# sourceMappingURL=bad.js.map\n',
+    ); // restored
+    expect(errors.map(String).join('\n')).toContain('bad.js');
+    expect(errors.map(String).join('\n')).toContain('exited 11');
+    expect(calls.some((c) => c[0] === 'debug-files')).toBe(true);
+    expect(result.uploaded).toBe(true);
+  });
+
+  it('a CLI failure (rewrite restored) is reported, never thrown, even under failOnError', async () => {
+    await seedPair('bad.js');
+    await writeFile(join(dir, 'k.js.map'), keyed);
+    const errors: unknown[] = [];
+    const result = await uploadSourcemaps(
+      opts({
+        run: cli('bad.js').run,
+        failOnError: true,
+        onError: (e: unknown) => errors.push(e),
+        ownFiles: [...own('bad.js'), 'k.js.map'],
+      }),
+    );
+    expect(result).toBeDefined();
+    expect(errors.map(String).join('\n')).toContain('bad.js');
+    expect(await readFile(join(dir, 'bad.js'), 'utf8')).toBe(
+      'bad.js();\n//# sourceMappingURL=bad.js.map\n',
+    );
+  });
+
+  it('a stamp that does not verify AND cannot be restored is a failOnError failure (unsafe state)', async () => {
+    await seedPair('v.js');
+    const sneaky = vi.fn(async (args: string[]): Promise<SpawnResult> => {
+      if (args[1] === 'inject') {
+        await writeFile(join(dir, 'v.js'), '{{');
+        await chmod(dir, 0o555); // the restore cannot create its temp file
+      }
+      return { code: 0, stdout: '', stderr: '' };
+    });
+    try {
+      await expect(
+        uploadSourcemaps(
+          opts({ run: sneaky, failOnError: true, ownFiles: own('v.js'), onError: () => undefined }),
+        ),
+      ).rejects.toThrow(/COULD NOT restore/);
+    } finally {
+      await chmod(dir, 0o755);
+    }
+  });
+
+  it('a stamp that does not verify but IS restored is reported (safe state)', async () => {
+    await seedPair('v.js');
+    await writeFile(join(dir, 'k.js.map'), keyed);
+    const sneaky = vi.fn(async (args: string[]): Promise<SpawnResult> => {
+      if (args[1] === 'inject') await writeFile(join(dir, 'v.js'), '{{');
+      return { code: 0, stdout: '', stderr: '' };
+    });
+    const errors: unknown[] = [];
+    await uploadSourcemaps(
+      opts({
+        run: sneaky,
+        failOnError: true,
+        ownFiles: [...own('v.js'), 'k.js.map'],
+        onError: (e: unknown) => errors.push(e),
+      }),
+    );
+    expect(String(errors[0])).toContain('did not verify');
+    expect(await readFile(join(dir, 'v.js'), 'utf8')).toBe(
+      'v.js();\n//# sourceMappingURL=v.js.map\n',
+    );
+  });
+
+  it('an unexpected failure inside the catch-up is reported and the upload still happens', async () => {
+    await writeFile(join(dir, 'k.js.map'), keyed);
+    await seedPair('w.js');
+    const { run, calls } = cli();
+    const errors: unknown[] = [];
+    await uploadSourcemaps(
+      opts({
+        run,
+        onError: (e: unknown) => errors.push(e),
+        ownFiles: [...own('w.js'), 'k.js.map'],
+        findSri: async () => {
+          throw new Error('sri scan exploded');
+        },
+      }),
+    );
+    expect(errors.map(String).join('\n')).toContain('sri scan exploded');
+    expect(calls.some((c) => c[0] === 'debug-files')).toBe(true);
+  });
+
+  it('stamps .mjs and .cjs pairs too', async () => {
+    await seedPair('m.mjs');
+    await seedPair('c.cjs');
+    const { run, calls } = cli();
+    await uploadSourcemaps(opts({ run, ownFiles: own('m.mjs', 'c.cjs') }));
+    const injected = calls.filter((c) => c[1] === 'inject').flatMap((c) => c.slice(2));
+    expect(injected).toEqual(expect.arrayContaining([join(dir, 'm.mjs'), join(dir, 'c.cjs')]));
+    expect(await readFile(join(dir, 'm.mjs'), 'utf8')).toContain('//# debugId=');
+    expect(await readFile(join(dir, 'c.cjs'), 'utf8')).toContain('//# debugId=');
+  });
+
+  it('says nothing about blocked scripts when none is blocked, and removes its spill directory', async () => {
+    await seedPair('w.js');
+    const notices: string[] = [];
+    const spillRoot = await mkdtemp(join(tmpdir(), 'bugsee-spill-cu-'));
+    try {
+      await uploadSourcemaps(
+        opts({
+          run: cli().run,
+          ownFiles: own('w.js'),
+          onNotice: (m: string) => notices.push(m),
+          spillRoot,
+        }),
+      );
+      expect(notices.join('\n')).not.toContain('Subresource Integrity');
+      expect(await readdir(spillRoot)).toEqual([]);
+    } finally {
+      await rm(spillRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('a pinned bundle with the registration but NO debugId comment is not "stamped" either', async () => {
+    await writeFile(join(dir, 'r.js'), `r();\n//# sourceMappingURL=r.js.map\n;${REG}\n`);
+    await writeFile(join(dir, 'r.js.map'), plainMap);
+    const { run, calls } = cli();
+    await uploadSourcemaps(
+      opts({
+        run,
+        ownFiles: own('r.js'),
+        findSri: async () => [
+          { html: join(dir, 'i.html'), script: join(dir, 'r.js'), integrity: 'sha384-X' },
+        ],
+      }),
+    );
+    expect(calls.some((c) => c[1] === 'inject')).toBe(false);
+  });
+
+  it('a pinned bundle with a FOREIGN debugId comment but no registration snippet is not "stamped" (inject would append the snippet): left alone', async () => {
+    await writeFile(join(dir, 'f.js'), `f();\n//# sourceMappingURL=f.js.map\n//# debugId=${ID}\n`);
+    await writeFile(join(dir, 'f.js.map'), plainMap);
+    const { run, calls } = cli();
+    const notices: string[] = [];
+    await uploadSourcemaps(
+      opts({
+        run,
+        ownFiles: own('f.js'),
+        onNotice: (m: string) => notices.push(m),
+        findSri: async () => [
+          { html: join(dir, 'i.html'), script: join(dir, 'f.js'), integrity: 'sha384-X' },
+        ],
+      }),
+    );
+    expect(calls.some((c) => c[1] === 'inject')).toBe(false);
+    expect(notices.join('\n')).toContain('f.js');
   });
 });
