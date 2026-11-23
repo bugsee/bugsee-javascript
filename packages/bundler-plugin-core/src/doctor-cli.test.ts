@@ -198,6 +198,33 @@ describe('runDoctorCli', () => {
     }
   });
 
+  it('`--project-root=--x` takes the value; `-- --a=b` is one directory (not truncated at `=`)', async () => {
+    writeFileSync(join(dist, 'a.js'), stamped);
+    const { code } = await cli([dist, '--project-root=--x', '--json']);
+    expect(code).toBe(0);
+    const here = process.cwd();
+    process.chdir(root);
+    try {
+      mkdirSync(join(root, '--a=b'));
+      const out = await cli(['--no-env', '--', '--a=b']);
+      expect(out.out).toContain('--a=b');
+      expect(out.out).toContain('0 bundle(s)');
+    } finally {
+      process.chdir(here);
+    }
+  });
+
+  it('--ignore of a hard-failure ID warns that it cannot be ignored and still fails', async () => {
+    const { code, err } = await cli([
+      join(root, 'nope'),
+      '--no-env',
+      '--ignore',
+      'output.dir-missing',
+    ]);
+    expect(code).toBe(2);
+    expect(err).toContain('output.dir-missing cannot be ignored');
+  });
+
   it('an unknown --ignore ID is warned about on stderr but not fatal', async () => {
     writeFileSync(join(dist, 'a.js'), stamped);
     const { code, err } = await cli([dist, '--no-env', '--ignore', 'map.public-leftvoer']);

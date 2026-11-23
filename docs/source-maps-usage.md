@@ -232,7 +232,7 @@ npx bugsee-sourcemaps-doctor dist --strict     # warnings fail the step too (exi
 npx bugsee-sourcemaps-doctor dist --deployed   # the directory is served: leftover .map files warn
 ```
 
-`--strict` passes straight after a default plugin run (maps removed after upload, bundles stamped). Other options: `--ignore <id>` (repeatable), `--project-root`, `--max-map-mb`, `--no-env`, `--`.
+`--strict` passes straight after a default plugin run (maps removed after upload, bundles stamped). Other options: `--ignore <id>` (repeatable; hard failures such as `output.no-js` cannot be ignored), `--project-root`, `--max-map-mb`, `--no-env`, `--`.
 
 Exit codes: `0` ok, `1` warnings only (with `--strict`), `2` errors. The package is `@bugsee/bundler-plugin-core`; the same report is available in code as `diagnoseBuildOutput(dir, options)`.
 

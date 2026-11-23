@@ -7,7 +7,7 @@
 import { createHash } from 'node:crypto';
 import type { Dirent } from 'node:fs';
 import { existsSync } from 'node:fs';
-import { lstat, readdir, readFile, stat } from 'node:fs/promises';
+import { lstat, readdir, readFile, realpath, stat } from 'node:fs/promises';
 import nodePath, { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { findAppIdentity } from './app-identity';
@@ -118,6 +118,13 @@ export const DOCTOR_CHECK_IDS = [
 ] as const;
 export type DoctorCheckId = (typeof DOCTOR_CHECK_IDS)[number];
 
+/** Hard failures: `--ignore` never hides these (it would turn "nothing was checked" into a pass). */
+export const NON_IGNORABLE_CHECK_IDS: ReadonlySet<string> = new Set([
+  'output.dir-missing',
+  'output.no-js',
+  'doctor.internal-error',
+]);
+
 const posix = (path: string): string => path.split('\\').join('/');
 
 /** `bundle.js.map` -> the same name as written in the report; always relative to `dir`. */
@@ -154,7 +161,10 @@ export async function walk(root: string): Promise<string[]> {
         if (!skip) {
           pending.push({ dir: full, depth: next.depth + 1 });
         }
-      } else if (entry.isFile() && (BUNDLE.test(entry.name) || MAP.test(entry.name))) {
+      } else if (
+        (entry.isFile() || entry.isSymbolicLink()) &&
+        (BUNDLE.test(entry.name) || MAP.test(entry.name))
+      ) {
         found.push(full);
       }
     }
@@ -234,7 +244,8 @@ type ReadResult =
 
 /**
  * Read a REGULAR file of at most `limit` bytes. `lstat` first, so a FIFO, a device (`/dev/zero`) or a symlink
- * is never opened, and the size is judged before a single byte is read. A failure is a value, not a throw.
+ * is never opened (callers pass only paths that cannot run through a symlinked directory: the walk does not
+ * descend into one, and a pointer target is `realpath`-checked against the output directory first), and the size is judged before a single byte is read. A failure is a value, not a throw.
  */
 async function readRegular(path: string, limit: number): Promise<ReadResult> {
   try {
@@ -355,6 +366,7 @@ async function diagnose(dirInput: string, options: DoctorOptions): Promise<Docto
     return finish(dir, findings, 0, 0, [], options.ignore);
   }
 
+  const realDir = await realpath(dir);
   const files = await walk(dir);
   const bundles = files.filter((f) => BUNDLE.test(f));
   const maps = files.filter((f) => MAP.test(f));
@@ -424,16 +436,19 @@ async function diagnose(dirInput: string, options: DoctorOptions): Promise<Docto
           if (!isInside(dir, target)) {
             // Never read it: a pointer can name `/dev/zero`, a FIFO or someone else's file.
             outsideDir.push(`${name} -> ${pointer}`);
-          } else if (
-            mapSet.has(target) ||
-            (await lstat(target).then(
-              () => true,
-              () => false,
-            ))
-          ) {
+          } else if (mapSet.has(target)) {
             mapPath = target;
           } else {
-            dangling.push(`${name} -> ${pointer}`);
+            // A symlinked DIRECTORY on the way can lead out although the path looks inside: judge the
+            // real path, never read through it.
+            const real = await realpath(target).catch(() => undefined);
+            if (real === undefined) {
+              dangling.push(`${name} -> ${pointer}`);
+            } else if (!isInside(realDir, real)) {
+              outsideDir.push(`${name} -> ${pointer}`);
+            } else {
+              mapPath = target;
+            }
           }
         }
       }
@@ -887,6 +902,7 @@ function finish(
   passed: readonly string[],
   ignore: readonly string[] = [],
 ): DoctorReport {
+  ignore = ignore.filter((id) => !NON_IGNORABLE_CHECK_IDS.has(id));
   const dropped = ignore.filter((id) => findings.some((f) => f.id === id));
   if (dropped.length > 0) {
     findings = findings.filter((f) => !ignore.includes(f.id));

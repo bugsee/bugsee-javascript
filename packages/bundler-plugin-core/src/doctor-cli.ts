@@ -11,6 +11,7 @@ import {
   diagnoseBuildOutput,
   doctorExitCode,
   formatDoctorReport,
+  NON_IGNORABLE_CHECK_IDS,
 } from './doctor';
 import type { EnvRecord } from './run-cli';
 
@@ -99,7 +100,11 @@ export async function runDoctorCli(argv: readonly string[], io: DoctorCliIo): Pr
       if (arg === '--project-root') {
         projectRoot = value;
       } else if (arg === '--ignore') {
-        if (!(DOCTOR_CHECK_IDS as readonly string[]).includes(value)) {
+        if (NON_IGNORABLE_CHECK_IDS.has(value)) {
+          io.stderr(
+            `Warning: ${value} cannot be ignored (it means nothing was checked); it stays in the report.\n`,
+          );
+        } else if (!(DOCTOR_CHECK_IDS as readonly string[]).includes(value)) {
           io.stderr(
             `Warning: --ignore ${value} is not a known check ID (see DOCTOR_CHECK_IDS); ignored.\n`,
           );

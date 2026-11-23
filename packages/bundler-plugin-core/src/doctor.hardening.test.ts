@@ -82,13 +82,14 @@ describe('never throws', () => {
     expect(report.findings[0]?.message).toContain('boom');
     expect(report.summary.errors).toBe(1);
     expect(report.dir).toBe(dist);
-    // a non-Error rejection is reported too, and `ignore` still applies
+    // a hard failure cannot be ignored away
     const ignored = await diagnoseBuildOutput(dist, {
       env,
       projectRoot: root,
       ignore: ['doctor.internal-error'],
     });
-    expect(ignored.findings).toEqual([]);
+    expect(ignored.findings.map((f) => f.id)).toEqual(['doctor.internal-error']);
+    expect(ignored.ignored).toBeUndefined();
   });
 
   it('a non-Error throw is stringified', async () => {
@@ -377,5 +378,91 @@ describe('CRLF bundles (a Windows toolchain)', () => {
     expect(find(report, 'map.inline')?.details).toEqual({ files: ['a.js'] });
     expect(find(report, 'stamp.map-id-mismatch')?.file).toBe('maps/b.map');
     expect(ids(report)).not.toContain('map.hidden');
+  });
+});
+
+describe('symlinks never lead outside the output directory (round 3)', () => {
+  const secretMap = (): string =>
+    JSON.stringify({
+      version: 3,
+      debugId: ID_B,
+      sources: ['TOP-SECRET-SOURCE-PATH.ts'],
+      sourcesContent: ['TOP-SECRET-CONTENT'],
+      mappings: 'AAAA',
+    });
+
+  it('a pointer through a symlinked DIRECTORY is not read: no outside content in any output', async () => {
+    const outside = join(root, 'outside');
+    mkdirSync(outside);
+    writeFileSync(join(outside, 'secret.json'), secretMap());
+    symlinkSync(outside, join(dist, 'link'));
+    put('app.js', `a\n//# sourceMappingURL=link/secret.json${stamp(ID_A)}`);
+    const report = await run();
+    expect(find(report, 'map.pointer-outside-dir')?.details).toEqual({
+      pointers: ['app.js -> link/secret.json'],
+    });
+    const everything = JSON.stringify(report);
+    expect(everything).not.toContain('TOP-SECRET');
+    expect(everything).not.toContain(ID_B);
+    expect(ids(report)).not.toContain('stamp.map-id-mismatch');
+    expect(ids(report)).not.toContain('map.sources-unresolvable');
+  });
+
+  it('a pointer through a symlinked directory that stays INSIDE the directory is read normally', async () => {
+    put('real/x.map', mapJson({ debugId: ID_B }));
+    symlinkSync(join(dist, 'real'), join(dist, 'alias'));
+    put('app.js', `a\n//# sourceMappingURL=alias/x.map${stamp(ID_A)}`);
+    const report = await run();
+    expect(find(report, 'stamp.map-id-mismatch')).toBeDefined();
+  });
+
+  it('a symlinked directory is never descended into by the walk', async () => {
+    const outside = join(root, 'outside');
+    mkdirSync(outside);
+    writeFileSync(join(outside, 'o.js'), 'x');
+    symlinkSync(outside, join(dist, 'linkdir'));
+    put('a.js', `a${stamp(ID_A)}`);
+    expect((await walk(dist)).map((f) => f.slice(dist.length + 1))).toEqual(['a.js']);
+  });
+
+  it('a symlinked bundle is reported, not silently invisible (no misleading output.no-js)', async () => {
+    const real = join(root, 'real.js');
+    writeFileSync(real, `a${stamp(ID_A)}`);
+    symlinkSync(real, join(dist, 'app.js'));
+    const report = await run();
+    expect(ids(report)).not.toContain('output.no-js');
+    expect(find(report, 'output.unreadable')?.details).toEqual({
+      files: ['app.js is a symbolic link'],
+    });
+    expect(report.summary.bundles).toBe(1);
+  });
+
+  it('a manifest that is a symlink to a file outside is not read', async () => {
+    const outside = join(root, 'outside-manifest.json');
+    writeFileSync(outside, '{"integrity":"x"}');
+    symlinkSync(outside, join(dist, 'asset-manifest.json'));
+    put('a.js', `a${stamp(ID_A)}`);
+    expect(ids(await run())).not.toContain('sri.manifest-hashes');
+  });
+
+  it('an uppercase MANIFEST.JSON is still a manifest', async () => {
+    put('a.js', `a${stamp(ID_A)}`);
+    put('ASSET-MANIFEST.JSON', '{"integrity":"x"}');
+    expect(ids(await run())).toContain('sri.manifest-hashes');
+  });
+});
+
+describe('--ignore cannot hide a hard failure (round 3)', () => {
+  it('output.dir-missing, output.no-js and doctor.internal-error stay in the report', async () => {
+    const missing = await diagnoseBuildOutput(join(root, 'nope'), {
+      ignore: ['output.dir-missing'],
+      skipEnv: true,
+    });
+    expect(ids(missing)).toEqual(['output.dir-missing']);
+    expect(missing.summary.errors).toBe(1);
+    expect(missing.ignored).toBeUndefined();
+    const empty = await run({ ignore: ['output.no-js', 'map.public-leftover'] });
+    expect(ids(empty)).toEqual(['output.no-js']);
+    expect(empty.ignored).toBeUndefined();
   });
 });
