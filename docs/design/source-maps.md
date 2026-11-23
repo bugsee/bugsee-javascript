@@ -276,6 +276,32 @@ affected; a hashed-lazy-chunk real build of each runs in Chromium (`instrumentat
 which also covers Rspack with `SubresourceIntegrityPlugin` and checks that every bundle's `sourceMappingURL` and
 map `file` name a file that exists).
 
+### Vite workers (sub-builds), and the catch-up
+
+Vite builds a worker through its OWN sub-build and then puts it into the output: measured, on Vite 8 the worker's
+JS is an asset of the main bundle at `generateBundle` (so it is stamped in memory) while its `.map` is
+REGENERATED afterwards WITHOUT the id; on Vite 7 neither worker file is in the bundle at `generateBundle`
+(both are emitted later), so the worker is not stamped at all. Either way the worker file and its map end up
+without a shared id (a worker crash could not be symbolicated). The user's plugin does not run inside the worker
+sub-build unless it is listed in `worker.plugins` (verified with real Vite 7 and 8), so detecting and skipping
+that sub-build is not the issue; the fix is a **catch-up before the upload**: the build's OWN (`ownFiles`, the
+final bundle at `writeBundle`, which does list the worker and its map) script maps that carry no debug-id are
+run through `sourcemaps inject` (an explicit file list). Measured with bugsee-cli 0.9.0: inject on a
+bundle that already carries BOTH its debug-id comment and the runtime registration leaves its bytes unchanged
+and writes its id into the map, so such a bundle is not stamped twice and a Subresource-Integrity pin on it is
+not invalidated. "Stamped" therefore means both (a foreign `//# debugId=` comment alone would still get the
+registration appended): a pinned bundle that is not fully stamped is left alone and said (stamping it would
+change pinned bytes). A `public/` copy is not in `ownFiles` and is never touched. The catch-up is **best
+effort** and never costs the build its other maps: a map that is not a JSON object (empty, garbage, `[]`,
+`null`; the CLI rejects the whole batch for one) is skipped and left untouched, a batch the CLI rejects is
+retried pair by pair, a failing pair is reported (`onError`) and the rest still stamp and upload, whatever was
+rewritten is verified and restored, and an unexpected failure inside it is reported and the upload goes on.
+Only a stamp that did not verify AND could not be restored (an unverified stamp still on disk) is a
+`failOnError` failure. The result is verified (and restored on failure) like any other
+stamp. Covered by real Vite 7 and 8 builds with `new Worker(new URL(...))` and `?worker`, and in Chromium
+(`instrumentation-tests/test/lazy-chunk.e2e.ts`): the worker runs, registers its id, and its map has the same
+id. (The hand-rolled SRI step pins only the entry chunks in `index.html`, never worker files.)
+
 ### Maps that are not the bundle sibling
 
 `sourcemapFileNames` can put a map anywhere in the output (`maps/[name].js.map`, bundles in `js/`). `inject`
