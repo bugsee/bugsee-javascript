@@ -158,26 +158,29 @@ describe('post-emit stamp verification', () => {
     expect(result.uploaded).toBe(true);
   });
 
-  it('the snapshot skips node_modules, dot-directories and non-stampable files', async () => {
+  it('the snapshot covers the WHOLE output directory (inject stamps everything there): a bad stamp under src/, node_modules/ or a dot-directory is restored', async () => {
     await mkdir(join(dir, 'node_modules'));
     await writeFile(join(dir, 'node_modules', 'dep.js'), 'dep();\n');
     await mkdir(join(dir, '.hidden'));
     await writeFile(join(dir, '.hidden', 'c.js'), 'c();\n');
+    await mkdir(join(dir, 'src'));
+    await writeFile(join(dir, 'src', 'm.js'), 'm();\n');
     await writeFile(join(dir, 'a.css'), 'a{}');
     const { run } = cli({});
-    const onError = vi.fn();
-    // Rewrites skipped files: were they snapshotted, the broken result would be flagged and restored.
+    const errors: unknown[] = [];
     const spy = vi.fn(async (args: string[]): Promise<SpawnResult> => {
       if (args[1] === 'inject') {
-        await writeFile(join(dir, 'node_modules', 'dep.js'), '{{');
-        await writeFile(join(dir, '.hidden', 'c.js'), '{{');
+        for (const f of ['node_modules/dep.js', '.hidden/c.js', 'src/m.js']) {
+          await writeFile(join(dir, f), '{{');
+        }
       }
       return run(args);
     });
-    await uploadSourcemaps(opts({ run: spy, onError }));
-    expect(onError).not.toHaveBeenCalled();
-    expect(await readFile(join(dir, 'node_modules', 'dep.js'), 'utf8')).toBe('{{');
-    expect(await readFile(join(dir, '.hidden', 'c.js'), 'utf8')).toBe('{{');
+    await uploadSourcemaps(opts({ run: spy, onError: (e: unknown) => errors.push(e) }));
+    expect(errors).toHaveLength(1);
+    expect(await readFile(join(dir, 'node_modules', 'dep.js'), 'utf8')).toBe('dep();\n');
+    expect(await readFile(join(dir, '.hidden', 'c.js'), 'utf8')).toBe('c();\n');
+    expect(await readFile(join(dir, 'src', 'm.js'), 'utf8')).toBe('m();\n');
   });
 
   it('the snapshot stops at the depth limit, like the map walk (a mis-resolved root must not traverse a disk)', async () => {
@@ -200,14 +203,29 @@ describe('post-emit stamp verification', () => {
   });
 
   it('does not snapshot or restore a directory that is the project root (or above): it says so, and inject still runs', async () => {
-    await writeFile(join(dir, 'package.json'), '{}');
     await seed();
     const { run } = cli({ 'a.js': '{{' });
     const errors: unknown[] = [];
-    await uploadSourcemaps(opts({ run, onError: (e: unknown) => errors.push(e) }));
+    const start = process.cwd();
+    process.chdir(dir);
+    try {
+      await uploadSourcemaps(opts({ run, onError: (e: unknown) => errors.push(e) }));
+    } finally {
+      process.chdir(start);
+    }
     expect(run.mock.calls.some((c) => c[0][1] === 'inject')).toBe(true);
     expect(String(errors[0])).toContain('project root');
     expect(await read('a.js')).toBe('{{'); // nothing was restored: nothing was snapshotted
+  });
+
+  it('does snapshot and verify an output dir that merely holds a package.json marker (dist/cjs)', async () => {
+    await writeFile(join(dir, 'package.json'), '{"type":"commonjs"}');
+    await seed();
+    const { run } = cli({ 'a.js': `a();\n{{${STAMP}`, 'a.js.map': stampedMap });
+    const errors: unknown[] = [];
+    await uploadSourcemaps(opts({ run, onError: (e: unknown) => errors.push(e) }));
+    expect(String(errors[0])).toContain('no longer parses');
+    expect(await read('a.js')).toBe('a();\n//# sourceMappingURL=a.js.map\n');
   });
 
   it('names a file it could not restore, and says it still carries the unverified stamp', async () => {
@@ -303,6 +321,26 @@ describe('maps are deleted only when they were actually keyed for upload', () =>
     expect(String(errors[0])).toContain('broken.js.map');
     expect(String(errors[0])).toContain('not uploaded');
     expect(result.uploaded).toBe(true);
+  });
+
+  it('an EMPTY debugId / debug_id is not a key: that map is kept and reported', async () => {
+    await writeFile(join(dir, 'camel.js.map'), JSON.stringify({ debugId: '' }));
+    await writeFile(join(dir, 'snake.js.map'), JSON.stringify({ debug_id: '' }));
+    await writeFile(join(dir, 'num.js.map'), JSON.stringify({ debugId: 7 }));
+    const errors: unknown[] = [];
+    const result = await uploadSourcemaps({
+      ...base,
+      outDir: dir,
+      run: ok,
+      listMapFiles,
+      findSri: async () => [],
+      onError: (e) => errors.push(e),
+    });
+    expect(result.deletedMaps).toEqual([]);
+    expect((await readdir(dir)).sort()).toEqual(['camel.js.map', 'num.js.map', 'snake.js.map']);
+    for (const name of ['camel', 'snake', 'num']) {
+      expect(String(errors[0])).toContain(`${name}.js.map`);
+    }
   });
 
   it('throws under failOnError (a map that was not uploaded is a failed upload), after deleting the rest', async () => {

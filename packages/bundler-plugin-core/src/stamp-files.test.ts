@@ -1,4 +1,15 @@
-import { chmod, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import {
+  chmod,
+  lstat,
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  rm,
+  stat,
+  symlink,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -155,6 +166,59 @@ describe('snapshot + verifyAndRestore', () => {
   });
 });
 
+describe("restoreAtomically keeps the target's identity", () => {
+  it('keeps the file mode (a 0755 shebang bundle stays executable)', async () => {
+    await writeFile(join(dir, 'spill'), '#!/usr/bin/env node\n');
+    await writeFile(join(dir, 'cli.js'), 'stamped');
+    await chmod(join(dir, 'cli.js'), 0o755);
+    await restoreAtomically(join(dir, 'spill'), join(dir, 'cli.js'));
+    expect((await stat(join(dir, 'cli.js'))).mode & 0o777).toBe(0o755);
+    expect(await readFile(join(dir, 'cli.js'), 'utf8')).toBe('#!/usr/bin/env node\n');
+  });
+  it('restores THROUGH a symlink: the link stays a link and its real file is replaced', async () => {
+    await writeFile(join(dir, 'spill'), 'original');
+    await writeFile(join(dir, 'real.js'), 'stamped');
+    await symlink('real.js', join(dir, 'link.js'));
+    await restoreAtomically(join(dir, 'spill'), join(dir, 'link.js'));
+    expect((await lstat(join(dir, 'link.js'))).isSymbolicLink()).toBe(true);
+    expect(await readFile(join(dir, 'real.js'), 'utf8')).toBe('original');
+    expect((await readdir(dir)).sort()).toEqual(['link.js', 'real.js', 'spill']);
+  });
+  it('a target that no longer exists is simply recreated', async () => {
+    await writeFile(join(dir, 'spill'), 'original');
+    await restoreAtomically(join(dir, 'spill'), join(dir, 'gone.js'));
+    expect(await readFile(join(dir, 'gone.js'), 'utf8')).toBe('original');
+  });
+});
+
+describe('restore order: the bundle goes back before its map, whatever they are called', () => {
+  it('records bundle-then-map for a map that sorts BEFORE its bundle', async () => {
+    const pairs = [
+      ['b.js', 'a.map'],
+      ['z.js', 'a.js.map'],
+    ] as const;
+    for (const [bundle, map] of pairs) {
+      const original = `x();\n//# sourceMappingURL=${map}\n`;
+      await writeFile(join(dir, bundle), original);
+      await writeFile(join(dir, map), plainMap);
+    }
+    const snap = await snapshotStampFiles({ dir });
+    for (const [bundle, map] of pairs) {
+      await writeFile(join(dir, bundle), `x();\n//# sourceMappingURL=${map}\n{{${STAMP}`);
+      await writeFile(join(dir, map), stampedMap);
+    }
+    const order: string[] = [];
+    await verifyAndRestore(snap, {
+      restoreFile: async (spill, path) => {
+        order.push(path.slice(dir.length + 1));
+        await writeFile(path, await readFile(spill));
+      },
+    });
+    expect(order).toEqual(['b.js', 'z.js', 'a.js.map', 'a.map']);
+    await snap.dispose();
+  });
+});
+
 describe('restoreAtomically', () => {
   it('replaces the target via a temp file, and removes the temp file when the rename fails', async () => {
     await writeFile(join(dir, 'spill'), 'original');
@@ -187,16 +251,83 @@ describe('isProjectRootOrAbove — the working directory itself', () => {
 });
 
 describe('isProjectRootOrAbove', () => {
-  it('is true for a directory holding a package.json, the cwd, and any ancestor of the cwd', async () => {
-    await writeFile(join(dir, 'package.json'), '{}');
-    expect(await isProjectRootOrAbove(dir)).toBe(true);
+  it('is true for the cwd, "." and any ancestor of the cwd', async () => {
     expect(await isProjectRootOrAbove(process.cwd())).toBe(true);
     expect(await isProjectRootOrAbove(dirname(process.cwd()))).toBe(true);
     expect(await isProjectRootOrAbove('.')).toBe(true);
   });
-  it('is false for an ordinary output directory', async () => {
-    await mkdir(join(dir, 'dist'));
+  it('is false for an ordinary output directory, even one with a package.json marker (dist/cjs, ng-packagr)', async () => {
+    await mkdir(join(dir, 'dist', 'cjs'), { recursive: true });
+    await writeFile(join(dir, 'dist', 'cjs', 'package.json'), '{"type":"commonjs"}');
+    await writeFile(join(dir, 'dist', 'package.json'), '{"name":"copied"}');
+    expect(await isProjectRootOrAbove(join(dir, 'dist', 'cjs'))).toBe(false);
     expect(await isProjectRootOrAbove(join(dir, 'dist'))).toBe(false);
+  });
+  it('is false for a directory that merely shares a name prefix with the cwd', async () => {
+    expect(await isProjectRootOrAbove(`${process.cwd()}-sibling`)).toBe(false);
+    expect(await isProjectRootOrAbove(process.cwd().slice(0, -1))).toBe(false); // a prefix of the name, not an ancestor
+  });
+});
+
+describe('isProjectRootOrAbove — a working directory that no longer exists', () => {
+  it('is false rather than throwing', async () => {
+    const start = process.cwd();
+    const gone = join(dir, 'gone');
+    await mkdir(gone);
+    process.chdir(gone);
+    await rm(gone, { recursive: true });
+    try {
+      expect(await isProjectRootOrAbove(dir)).toBe(false);
+    } finally {
+      process.chdir(start);
+    }
+  });
+});
+
+describe('a dist/cjs with a package.json marker is snapshotted and verified like any output dir', () => {
+  it('restores a bad stamp there', async () => {
+    await mkdir(join(dir, 'cjs'));
+    await writeFile(join(dir, 'cjs', 'package.json'), '{"type":"commonjs"}');
+    await writeFile(join(dir, 'cjs', 'a.js'), 'a();\n');
+    const snap = await snapshotStampFiles({ dir: join(dir, 'cjs') });
+    expect(snap.entries.has(join(dir, 'cjs', 'a.js'))).toBe(true);
+    await writeFile(join(dir, 'cjs', 'a.js'), `a();\n{{${STAMP}`);
+    expect((await verifyAndRestore(snap)).restored).toEqual([join(dir, 'cjs', 'a.js')]);
+    await snap.dispose();
+  });
+});
+
+describe('snapshot walk fence (4): only a project root is fenced', () => {
+  it('walks src, test and dot-directories of an ordinary output dir (preserveModules: dist/src/a.js)', async () => {
+    await mkdir(join(dir, 'out', 'src'), { recursive: true });
+    await mkdir(join(dir, 'out', '.hidden'));
+    await mkdir(join(dir, 'out', 'node_modules'));
+    await writeFile(join(dir, 'out', 'src', 'a.js'), 'a();\n');
+    await writeFile(join(dir, 'out', '.hidden', 'h.js'), 'h();\n');
+    await writeFile(join(dir, 'out', 'node_modules', 'n.js'), 'n();\n');
+    const snap = await snapshotStampFiles({ dir: join(dir, 'out') });
+    const names = [...snap.entries.keys()].map((k) => k.slice(join(dir, 'out').length + 1)).sort();
+    expect(names).toEqual(['.hidden/h.js', 'node_modules/n.js', 'src/a.js']);
+    await writeFile(join(dir, 'out', 'src', 'a.js'), `a();\n{{${STAMP}`);
+    expect((await verifyAndRestore(snap)).restored).toEqual([join(dir, 'out', 'src', 'a.js')]);
+    await snap.dispose();
+  });
+  it('fences src, test, node_modules and dot-directories when the directory IS the project root', async () => {
+    const start = process.cwd();
+    await mkdir(join(dir, 'src'));
+    await mkdir(join(dir, '.hidden'));
+    await mkdir(join(dir, 'lib'));
+    await writeFile(join(dir, 'src', 's.js'), 's();\n');
+    await writeFile(join(dir, '.hidden', 'g.js'), 'g();\n');
+    await writeFile(join(dir, 'lib', 'l.js'), 'l();\n');
+    process.chdir(dir);
+    try {
+      const snap = await snapshotStampFiles({ dir });
+      expect([...snap.entries.keys()].map((k) => k.slice(dir.length + 1))).toEqual(['lib/l.js']);
+      await snap.dispose();
+    } finally {
+      process.chdir(start);
+    }
   });
 });
 

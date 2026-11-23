@@ -228,10 +228,15 @@ After ANY stamp (in-build or post-emit), `verify-stamp.ts` checks it, because st
 In-build, a failure writes NOTHING back (all or nothing: the asset table is exactly what the bundler produced),
 reports through `onError` (throws under `failOnError`) and falls back to the post-emit path. Post-emit, the
 originals are SPILLED to a temp directory before `inject` with a content hash (not held in memory; one bundle
-and its map are in memory at a time), covering the build's own scripts and maps under the same walk fence as map
-deletion. A directory that is the project root or above (a bare `output.file` resolves to `.`) is never
-snapshotted or restored, and says so. A failing file is restored to its original bytes **together with its pair**
-(bundle first, via write-temp-then-rename); a restore that fails is reported by name as still carrying the
+and its map are in memory at a time), covering everything inject can change: the whole output directory. The
+walk skips `src`, `test`, `node_modules` and dot-directories ONLY when the directory is the project root or
+above, where it keeps the walk out of the source tree (Rollup `preserveModules` writes `dist/src/*.js`, which
+inject stamps and the snapshot must therefore cover). A directory that IS the working directory or contains it
+(a bare `output.file` resolves to `.`) is never snapshotted or restored, and says so; an ordinary output
+directory is verified even when it holds a `package.json` (`dist/cjs` `{"type":"commonjs"}`, ng-packagr). If
+the spill itself fails (a full disk) the spill directory is removed, inject does NOT run, and it is reported
+(an unverifiable, unrestorable stamp is not applied). A failing file is restored to its original bytes **together with its pair**
+(bundle first, via write-temp-then-rename, keeping the file mode and writing through a symlink); a restore that fails is reported by name as still carrying the
 unverified stamp. The pair is resolved from the bundle's `sourceMappingURL` (custom `sourcemapFileName(s)`
 names), falling back to `<bundle>.map`. After the bundler wrote an in-build stamp, the files are re-checked on
 disk (every bundle with a map carries a debugId its map shares), which is what catches a later step regenerating

@@ -11,13 +11,14 @@
 import { createHash } from 'node:crypto';
 import type { Dirent } from 'node:fs';
 import {
-  access,
+  chmod,
   mkdtemp,
   readdir,
   readFile,
   realpath,
   rename,
   rm,
+  stat,
   unlink,
   writeFile,
 } from 'node:fs/promises';
@@ -57,7 +58,7 @@ export const MAX_WALK_DEPTH = 6;
 const STAMPABLE = /\.([cm]?js|map)$/;
 
 /** Every stampable file under `dir`. An unreadable directory contributes nothing (never throws). */
-async function walkStampable(dir: string, depth = 0): Promise<string[]> {
+async function walkStampable(dir: string, fenced: boolean, depth = 0): Promise<string[]> {
   if (depth > MAX_WALK_DEPTH) {
     return [];
   }
@@ -73,8 +74,8 @@ async function walkStampable(dir: string, depth = 0): Promise<string[]> {
   for (const entry of entries) {
     const full = join(dir, entry.name);
     if (entry.isDirectory()) {
-      if (!NEVER_WALK.has(entry.name) && !entry.name.startsWith('.')) {
-        found.push(...(await walkStampable(full, depth + 1)));
+      if (!fenced || (!NEVER_WALK.has(entry.name) && !entry.name.startsWith('.'))) {
+        found.push(...(await walkStampable(full, fenced, depth + 1)));
       }
     } else if (entry.isFile() && STAMPABLE.test(entry.name)) {
       found.push(full);
@@ -103,53 +104,65 @@ export interface StampSnapshot {
 const sha1 = (bytes: Buffer): string => createHash('sha1').update(bytes).digest('hex');
 
 /**
- * Whether `dir` is a project root or something that contains one: the working directory, any ancestor of
- * it, or a directory holding a `package.json`. That is what a mis-resolved output directory looks like
- * (a bare `output.file: 'bundle.js'` resolves to `'.'`), and a snapshot-and-restore there would reach
- * across the project tree. Callers refuse to snapshot or restore it.
+ * Whether `dir` IS the working directory or CONTAINS it. That is what a mis-resolved output directory
+ * looks like (a bare `output.file: 'bundle.js'` resolves to `'.'`), and a snapshot-and-restore there would
+ * reach across the project tree, so callers refuse to snapshot or restore it.
+ *
+ * Deliberately not "has a package.json": `dist/cjs` with a `{"type":"commonjs"}` marker, or a `dist/` with
+ * a copied manifest (ng-packagr), are ordinary output directories and must be verified like any other.
  */
 export async function isProjectRootOrAbove(dir: string): Promise<boolean> {
   // Real paths: the cwd is reported resolved (macOS /private/var), an output directory may be spelled
   // through a symlink.
   const full = await realpath(dir).catch(() => resolve(dir));
-  let cwd = '';
+  let cwd: string;
   try {
     cwd = await realpath(process.cwd());
   } catch {
-    // The working directory is gone: only the package.json test below can still answer.
-  }
-  if (cwd !== '' && (cwd === full || cwd.startsWith(full.endsWith(sep) ? full : full + sep))) {
-    return true;
-  }
-  try {
-    await access(join(full, 'package.json'));
-    return true;
-  } catch {
+    // The working directory is gone: nothing can be the project root.
     return false;
   }
+  return cwd === full || cwd.startsWith(full.endsWith(sep) ? full : full + sep);
 }
 
-/** Spill the originals of every stampable file in `target`. A file that is gone is skipped. */
+/**
+ * Spill the originals of every stampable file in `target`. A file that is gone is skipped. If spilling
+ * fails (a full disk), the spill directory is removed and the error propagates: the caller has not
+ * injected yet, and an unverifiable, unrestorable stamp is exactly what this layer exists to prevent.
+ *
+ * The walk is fenced (`src`, `test`, `node_modules`, dot-directories skipped) ONLY when the directory is
+ * the project root or above: there it keeps the walk out of the source tree. In an ordinary output
+ * directory inject stamps everything (Rollup `preserveModules` writes `dist/src/*.js`), so the snapshot
+ * must see everything inject can change.
+ */
 export async function snapshotStampFiles(
   target: SnapshotTarget,
   /** Where the spill directory is created (default: the OS temp directory). */
   spillRoot: string = tmpdir(),
 ): Promise<StampSnapshot> {
-  const paths = 'dir' in target ? await walkStampable(target.dir) : target.files;
+  const paths =
+    'dir' in target
+      ? await walkStampable(target.dir, await isProjectRootOrAbove(target.dir))
+      : target.files;
   const spillDir = await mkdtemp(join(spillRoot, 'bugsee-orig-'));
   const entries = new Map<string, SnapshotEntry>();
-  let index = 0;
-  for (const original of paths) {
-    let bytes: Buffer;
-    try {
-      bytes = await readFile(original);
-    } catch {
-      // Gone between listing and reading (a concurrent build's cleanup): nothing to verify or restore.
-      continue;
+  try {
+    let index = 0;
+    for (const original of paths) {
+      let bytes: Buffer;
+      try {
+        bytes = await readFile(original);
+      } catch {
+        // Gone between listing and reading (a concurrent build's cleanup): nothing to verify or restore.
+        continue;
+      }
+      const spill = join(spillDir, String(index++));
+      await writeFile(spill, bytes);
+      entries.set(original, { spill, hash: sha1(bytes) });
     }
-    const spill = join(spillDir, String(index++));
-    await writeFile(spill, bytes);
-    entries.set(original, { spill, hash: sha1(bytes) });
+  } catch (error) {
+    await rm(spillDir, { recursive: true, force: true });
+    throw error;
   }
   return {
     entries,
@@ -165,12 +178,24 @@ export interface RestoreOptions {
   restoreFile?: (spill: string, target: string) => Promise<void>;
 }
 
-/** Atomic restore: the target is either the stamped file or the original, never half of either. */
+/**
+ * Atomic restore: the target is either the stamped file or the original, never half of either, and it
+ * keeps its identity — the file mode (a 0755 shebang bundle stays executable) and, when the path is a
+ * symlink, the link itself (the real file behind it is replaced).
+ */
 export async function restoreAtomically(spill: string, target: string): Promise<void> {
-  const temp = join(dirname(target), `.bugsee-restore-${process.pid}-${Date.now()}`);
+  const real = await realpath(target).catch(() => target);
+  const mode = await stat(real).then(
+    (info) => info.mode & 0o7777,
+    () => undefined,
+  );
+  const temp = join(dirname(real), `.bugsee-restore-${process.pid}-${Date.now()}`);
   try {
     await writeFile(temp, await readFile(spill));
-    await rename(temp, target);
+    if (mode !== undefined) {
+      await chmod(temp, mode);
+    }
+    await rename(temp, real);
   } catch (error) {
     await unlink(temp).catch(() => undefined);
     throw error;
