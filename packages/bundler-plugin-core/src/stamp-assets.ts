@@ -25,6 +25,13 @@ export interface AssetStore {
   names(): string[];
   read(name: string): Buffer | string;
   update(name: string, content: Buffer): void;
+  /**
+   * The asset that is the source map of the bundle `name`, when the bundler can say (a Rollup chunk's
+   * `sourcemapFileName`). inject pairs a bundle with its map by the sibling name `<bundle>.map`, so a map
+   * the bundler MOVED is staged under that name; without this a moved map is simply not found and the
+   * bundle would be stamped with an id that was never put in the map.
+   */
+  mapOf?(name: string): string | undefined;
 }
 
 export interface StampAssetsOptions {
@@ -41,6 +48,10 @@ export interface StampAssetsOptions {
  */
 export class StampVerificationError extends Error {
   readonly issues: StampIssue[];
+  /** A map lies outside the output: stamping after emit cannot reach it either, so a retry would half-stamp. */
+  get unreachableMap(): boolean {
+    return this.issues.some((issue) => issue.outside === true);
+  }
   constructor(issues: StampIssue[]) {
     super(`the debug-ID stamp did not verify, so none of it was applied (${formatIssues(issues)})`);
     this.name = 'StampVerificationError';
@@ -49,13 +60,17 @@ export class StampVerificationError extends Error {
 }
 
 export interface StampAssetsResult {
-  /** The bundles inject rewrote (their maps are rewritten alongside, and not listed). */
+  /** The bundles inject rewrote (their maps are rewritten alongside, and not listed), sorted. */
   stamped: string[];
+  /** How many bundles were staged for inject (0: nothing the stamp could match, whatever the store holds). */
+  bundles: number;
+  /** Each stamped bundle's source map, by real asset name, where it has one: what the on-disk re-check uses. */
+  maps: Record<string, string>;
 }
 
 /** What inject stamps (`.js`/`.cjs`/`.mjs`), and the maps it pairs them with. */
-const BUNDLE = /\.[cm]?js$/;
-const STAGED = /\.([cm]?js|map)$/;
+const BUNDLE = /\.[cm]?js$/i;
+const STAGED = /\.([cm]?js|map)$/i;
 
 /** A relative asset name that stays inside the staging directory once joined to it. */
 function staysInside(name: string): boolean {
@@ -76,7 +91,51 @@ export async function stampAssets(
 ): Promise<StampAssetsResult> {
   const staged = store.names().filter((name) => STAGED.test(name) && staysInside(name));
   if (!staged.some((name) => BUNDLE.test(name))) {
-    return { stamped: [] };
+    return { stamped: [], maps: {}, bundles: 0 };
+  }
+  // A map that is not the bundle's sibling is staged AS the sibling (and written back at its real name).
+  const stageName = new Map<string, string>();
+  const stagedSet = new Set(staged);
+  for (const bundle of staged.filter((name) => BUNDLE.test(name))) {
+    const map = store.mapOf?.(bundle);
+    const sibling = `${bundle}.map`;
+    if (map === undefined || map === sibling) {
+      continue;
+    }
+    if (!stagedSet.has(map)) {
+      // Not something that can be staged (not a .map name): stamping the bundle alone would be a silent
+      // half-stamp, so the whole stamp is refused and the caller falls back.
+      throw new StampVerificationError([
+        {
+          name: map,
+          reason: staysInside(map)
+            ? `the map of ${bundle} cannot be staged for stamping (not a .map file)`
+            : `the map of ${bundle} lies outside the output directory, so it cannot be stamped with the bundle. Emit the maps inside the output directory, or upload them yourself with bugsee-cli (sourcemaps inject, then debug-files upload).`,
+          ...(staysInside(map) ? {} : { outside: true as const }),
+        },
+      ]);
+    }
+    if (stagedSet.has(sibling)) {
+      throw new Error(
+        `the map ${map} of ${bundle} cannot be staged as ${sibling}: another asset already has that name`,
+      );
+    }
+    stageName.set(map, sibling);
+  }
+  const stagedAs = (name: string): string => stageName.get(name) ?? name;
+  // Staging writes each asset to a file named after it. Two names that differ only by case are two
+  // assets in the bundler but ONE file on a case-insensitive disk (macOS, Windows), where the second would
+  // overwrite the first and verification would compare the wrong bytes. Refuse rather than guess: the
+  // caller's fallback stamps the real output directory, where such a collision cannot exist.
+  const seen = new Map<string, string>();
+  for (const name of staged.map(stagedAs)) {
+    const clash = seen.get(name.toLowerCase());
+    if (clash !== undefined && clash !== name) {
+      throw new Error(
+        `assets ${clash} and ${name} differ only by case, so they cannot be staged side by side on a case-insensitive file system`,
+      );
+    }
+    seen.set(name.toLowerCase(), name);
   }
   const dryRun = options.dryRun ?? false;
   const root = await mkdtemp(join(tmpdir(), 'bugsee-stamp-'));
@@ -85,8 +144,8 @@ export async function stampAssets(
     for (const name of staged) {
       const content = store.read(name);
       const bytes = typeof content === 'string' ? Buffer.from(content) : content;
-      before.set(name, bytes);
-      const path = join(root, name);
+      before.set(stagedAs(name), bytes);
+      const path = join(root, stagedAs(name));
       await mkdir(dirname(path), { recursive: true });
       await writeFile(path, bytes);
     }
@@ -97,14 +156,15 @@ export async function stampAssets(
       {},
     );
 
+    const bundles = staged.filter((name) => BUNDLE.test(name)).length;
     if (dryRun) {
-      return { stamped: [] };
+      return { stamped: [], maps: {}, bundles };
     }
     // Read everything back and verify BEFORE writing anything: a bad stamp must leave the build exactly
     // as the bundler produced it, which an interleaved read-and-update could not promise.
     const after = new Map<string, Buffer>();
     for (const name of staged) {
-      after.set(name, await readFile(join(root, name)));
+      after.set(stagedAs(name), await readFile(join(root, stagedAs(name))));
     }
     const issues = verifyStamp(before, after, options.parse);
     if (issues.length > 0) {
@@ -112,17 +172,24 @@ export async function stampAssets(
     }
     const stamped: string[] = [];
     for (const name of staged) {
-      const afterBytes = after.get(name) as Buffer;
+      const afterBytes = after.get(stagedAs(name)) as Buffer;
       // Only what inject actually changed goes back. An untouched asset keeps its original Source
       // object, so webpack's caching and any map information it carries are not disturbed.
-      if (!afterBytes.equals(before.get(name) as Buffer)) {
+      if (!afterBytes.equals(before.get(stagedAs(name)) as Buffer)) {
         store.update(name, afterBytes);
         if (BUNDLE.test(name)) {
           stamped.push(name);
         }
       }
     }
-    return { stamped: stamped.sort() };
+    const maps: Record<string, string> = {};
+    for (const bundle of stamped) {
+      const map = store.mapOf?.(bundle) ?? `${bundle}.map`;
+      if (stagedSet.has(map)) {
+        maps[bundle] = map;
+      }
+    }
+    return { stamped: stamped.sort(), maps, bundles };
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -157,6 +224,14 @@ export type RollupBundleLike = Record<string, RollupChunkLike | RollupAssetLike>
 export function rollupAssetStore(bundle: RollupBundleLike): AssetStore {
   return {
     names: () => Object.keys(bundle).filter((name) => STAGED.test(name)),
+    mapOf: (name) => {
+      const entry = bundle[name];
+      if (entry?.type !== 'chunk') {
+        return undefined;
+      }
+      const map = entry.sourcemapFileName ?? `${name}.map`;
+      return bundle[map] === undefined ? undefined : map;
+    },
     read: (name) => {
       const entry = bundle[name];
       if (entry === undefined) {

@@ -8,6 +8,7 @@
 //
 // Pure: it takes the bytes from before and after and returns what is wrong. What to DO about it
 // (leave the asset alone in-build, restore the file after emit) is the caller's.
+import path, { posix } from 'node:path';
 import { parse } from 'acorn';
 import { readDebugId } from './debug-ids';
 
@@ -16,6 +17,8 @@ export interface StampIssue {
   /** The asset, as named in the staged set (its path relative to the output root). */
   name: string;
   reason: string;
+  /** The asset's source map lies outside the output: no later attempt can stamp it either. */
+  outside?: true;
 }
 
 /** The first few issues as one line, for an error message. */
@@ -29,10 +32,10 @@ export function formatIssues(issues: readonly StampIssue[]): string {
 }
 
 /** What inject stamps (`.js`/`.cjs`/`.mjs`); the map of `x.js` is `x.js.map`. */
-const BUNDLE = /\.[cm]?js$/;
+const BUNDLE = /\.[cm]?js$/i;
 
 /** A source-map pointer comment, `//# sourceMappingURL=…` or the legacy `//@` spelling. */
-const SOURCE_MAPPING_URL = /^[ \t]*\/\/[#@][ \t]*sourceMappingURL=(\S*)[ \t]*$/gm;
+const SOURCE_MAPPING_URL = /^[ \t]*\/\/[#@][ \t]*sourceMappingURL=(.*?)[ \t\r]*$/gm;
 
 /**
  * Whether `code` is syntactically valid JavaScript, as a module or as a classic script.
@@ -67,6 +70,48 @@ function lastSourceMappingUrl(code: string): string | undefined {
   }
   return last;
 }
+
+/**
+ * The name of the map that belongs to the bundle `name` whose text is `text`.
+ *
+ * The map a debugger loads is the one the bundle's `sourceMappingURL` points at, and a bundler may name it
+ * anything (`sourcemapFileName(s)`, Rolldown), so the pair is resolved from the pointer, relative to the
+ * bundle's directory. A pointer that is absent, remote, `data:`, root-absolute, malformed or that names a
+ * file `exists` does not know falls back to the `<bundle>.map` sibling inject pairs by default.
+ */
+export function resolveMapName(
+  name: string,
+  text: string,
+  exists: (candidate: string) => boolean,
+  api: Pick<typeof posix, 'dirname' | 'join'> = posix,
+): string {
+  const candidate = localPointerTarget(name, text, api);
+  return candidate !== undefined && exists(candidate) ? candidate : `${name}.map`;
+}
+
+/**
+ * Where a bundle's LOCAL `sourceMappingURL` points, resolved from the bundle's directory (and
+ * percent-decoded). Undefined for no pointer, a remote or `data:` one, a root-absolute one, or a malformed
+ * escape. The pointer is read to the end of the line: a bundler can emit an unencoded space.
+ */
+export function localPointerTarget(
+  name: string,
+  text: string,
+  api: Pick<typeof posix, 'dirname' | 'join'> = posix,
+): string | undefined {
+  const pointer = lastSourceMappingUrl(text);
+  if (pointer === undefined || pointer === '' || /^([a-z][a-z0-9+.-]*:|\/)/i.test(pointer)) {
+    return undefined;
+  }
+  try {
+    return api.join(api.dirname(name), decodeURI(pointer));
+  } catch {
+    return undefined;
+  }
+}
+
+/** Whether a relative path climbs out of its root (`../x`). */
+const escapesRoot = (relative: string): boolean => /^\.\.([\\/]|$)/.test(relative);
 
 /** Reasons a changed bundle is not a faithful stamp of `before`. */
 function bundleIssues(
@@ -133,6 +178,8 @@ export function verifyStamp(
   before: ReadonlyMap<string, Buffer>,
   after: ReadonlyMap<string, Buffer>,
   parser: (code: string) => boolean = parseScript,
+  /** The path implementation the names follow: posix for bundler asset names, the native one for disk paths. */
+  api: Pick<typeof posix, 'dirname' | 'join'> = posix,
 ): StampIssue[] {
   const issues: StampIssue[] = [];
   const changed = (name: string): boolean => {
@@ -141,6 +188,7 @@ export function verifyStamp(
     return was !== undefined && now !== undefined && !now.equals(was);
   };
   const ids = new Map<string, string | undefined>();
+  const mapOf = new Map<string, string>();
 
   for (const name of before.keys()) {
     if (!BUNDLE.test(name) || !changed(name)) {
@@ -152,6 +200,20 @@ export function verifyStamp(
       parser,
     );
     ids.set(name, id);
+    const target = localPointerTarget(name, (after.get(name) as Buffer).toString('utf8'), api);
+    if (target !== undefined && escapesRoot(target)) {
+      // The map is outside what is staged: inject cannot stamp it, so this bundle would carry an id that
+      // never reaches its map. Refused, so the caller falls back (post-emit) or restores.
+      issues.push({
+        name,
+        reason: `its source map (${target}) lies outside the output directory, so it cannot be stamped with the bundle. Emit the maps inside the output directory, or upload them yourself with bugsee-cli (sourcemaps inject, then debug-files upload).`,
+        outside: true,
+      });
+    }
+    mapOf.set(
+      name,
+      resolveMapName(name, (after.get(name) as Buffer).toString('utf8'), (n) => after.has(n), api),
+    );
     for (const reason of reasons) {
       issues.push({ name, reason });
     }
@@ -159,7 +221,7 @@ export function verifyStamp(
 
   // Every stamped bundle's map (changed or not) must now carry the bundle's id.
   for (const [bundle, bundleId] of ids) {
-    const map = `${bundle}.map`;
+    const map = mapOf.get(bundle) as string;
     const bytes = after.get(map);
     if (bytes === undefined) {
       continue; // a bundle with no map: nothing to symbolicate against, nothing to match
@@ -178,8 +240,9 @@ export function verifyStamp(
   }
 
   // A changed map whose bundle was not stamped in this run: only held to being a JSON object.
+  const pairedMaps = new Set(mapOf.values());
   for (const name of before.keys()) {
-    if (name.endsWith('.map') && changed(name) && !ids.has(name.slice(0, -'.map'.length))) {
+    if (name.endsWith('.map') && changed(name) && !pairedMaps.has(name)) {
       if (mapDebugId(after.get(name) as Buffer) === null) {
         issues.push({ name, reason: 'the stamped map is not valid JSON (an object)' });
       }
@@ -198,17 +261,26 @@ export function verifyStamp(
  * map must carry a debugId comment, and the map the SAME id, or the build ships bytes that look stamped
  * and cannot be symbolicated. Bundles without a map are left alone (nothing to match).
  */
-export function verifyStampedPairs(files: ReadonlyMap<string, Buffer>): StampIssue[] {
+export function verifyStampedPairs(
+  files: ReadonlyMap<string, Buffer>,
+  /** The build's own bundle -> map mapping, where the pointer and sibling cannot say. */
+  known: ReadonlyMap<string, string> = new Map(),
+): StampIssue[] {
   const issues: StampIssue[] = [];
   for (const [name, bytes] of files) {
-    const mapBytes = files.get(`${name}.map`);
-    if (!BUNDLE.test(name) || mapBytes === undefined) {
+    if (!BUNDLE.test(name)) {
       continue;
     }
-    const bundleId = readDebugId(bytes.toString('utf8'));
+    const text = bytes.toString('utf8');
+    const map = known.get(name) ?? resolveMapName(name, text, (n) => files.has(n), path);
+    const mapBytes = files.get(map);
+    if (mapBytes === undefined) {
+      continue;
+    }
+    const bundleId = readDebugId(text);
     const mapId = mapDebugId(mapBytes);
     if (mapId === null) {
-      issues.push({ name: `${name}.map`, reason: 'the map is not valid JSON (an object)' });
+      issues.push({ name: map, reason: 'the map is not valid JSON (an object)' });
     } else if (bundleId === undefined && mapId === undefined) {
       issues.push({
         name,
@@ -221,12 +293,12 @@ export function verifyStampedPairs(files: ReadonlyMap<string, Buffer>): StampIss
       });
     } else if (mapId === undefined) {
       issues.push({
-        name: `${name}.map`,
+        name: map,
         reason: `the map has no debugId (its bundle carries ${bundleId})`,
       });
     } else if (mapId !== bundleId) {
       issues.push({
-        name: `${name}.map`,
+        name: map,
         reason: `the map's debugId ${mapId} does not match its bundle's debugId comment ${bundleId}`,
       });
     }
