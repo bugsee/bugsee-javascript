@@ -29,10 +29,16 @@ const outsideError = () =>
 const makePlugin = (options?: BugseePluginOptions, framework = 'rollup'): UnpluginOptions =>
   bugseeUnpluginFactory(options, { framework } as never) as UnpluginOptions;
 
-const depsOf = (call: number) =>
-  uploadSpy.mock.calls[call]?.[2] as
-    | { preStamped?: boolean; bundler?: unknown; stampedBundles?: string[] }
-    | undefined;
+/** The deps of the nth upload call. A missing call FAILS the test: "the upload was skipped" is never a pass. */
+const depsOf = (call: number) => {
+  const entry = uploadSpy.mock.calls[call];
+  if (entry === undefined) {
+    throw new Error(
+      `expected an upload call #${call}, but only ${uploadSpy.mock.calls.length} happened`,
+    );
+  }
+  return entry[2] as { preStamped?: boolean; bundler?: unknown; stampedBundles?: string[] };
+};
 
 beforeEach(() => {
   uploadSpy.mockClear();
@@ -98,11 +104,14 @@ describe('rspack: stamps inside the compilation', () => {
       processAssets,
       updated,
       afterEmit: () => afterEmit[0]?.(),
+      afterEmitWith: (c: unknown) => (afterEmit[0] as (c: unknown) => Promise<void>)(c),
       compile: async () => {
+        // Each compilation runs ITS OWN processAssets taps only (taps registered by earlier ones are gone).
+        const first = processAssets.length;
         for (const fn of compilations) {
           fn(compilation);
         }
-        for (const tap of processAssets) {
+        for (const tap of processAssets.slice(first)) {
           await tap.fn();
         }
       },
@@ -265,6 +274,7 @@ describe('rspack: stamps inside the compilation', () => {
     });
     await r.compile();
     await r.afterEmit();
+    expect(stampSpy).toHaveBeenCalledTimes(2); // once per compilation, not once per accumulated tap
     expect(depsOf(1)?.preStamped).toBe(false);
   });
 
@@ -351,6 +361,28 @@ describe('rspack: stamps inside the compilation', () => {
     expect(outcome[1]).toContain('not valid UTF-8');
     expect(r.updated).toHaveLength(1); // only the explicit update wrote anything
     expect((r.updated[0]?.source as { value: string }).value).toBe('\uFEFFbom');
+  });
+
+  it('after [contenthash] renames, the on-disk re-check is told the FINAL script names (the stamp ran before the rename)', async () => {
+    stampSpy.mockImplementation(async () => ({
+      stamped: ['main.OLDHASH.js'],
+      maps: { 'main.OLDHASH.js': 'main.OLDHASH.js.map' },
+      bundles: 1,
+    }));
+    const r = rspackCompiler();
+    apply({ appToken: 'tok' }, r.compiler);
+    await r.compile();
+    await (r.afterEmitWith as (c: unknown) => Promise<void>)({
+      getAssets: () => [
+        { name: 'main.NEWHASH.js' },
+        { name: 'main.NEWHASH.js.map' },
+        { name: 'x.css' },
+        { name: 'q.js?h' },
+      ],
+    });
+    const deps = depsOf(0) as { stampedBundles?: string[]; stampedMaps?: unknown };
+    expect(deps.stampedBundles).toEqual(['main.NEWHASH.js', 'q.js']);
+    expect(deps.stampedMaps).toBeUndefined();
   });
 
   it('does not stamp for a disabled plugin', async () => {
@@ -816,5 +848,50 @@ describe('the zero-staged guard: only ? ends a webpack extension (# is part of t
     await hooks.writeBundle(output);
     expect(notices).toEqual([]);
     expect((uploadSpy.mock.calls[0]?.[2] as { preStamped?: boolean }).preStamped).toBe(true);
+  });
+});
+
+describe('webpack: after [contenthash] renames, the on-disk re-check gets the FINAL script names', () => {
+  it('passes the final script asset names (query cut) and no stale map names', async () => {
+    stampSpy.mockImplementation(async () => ({
+      stamped: ['m.OLD.js'],
+      maps: { 'm.OLD.js': 'm.OLD.js.map' },
+      bundles: 1,
+    }));
+    const after: Array<(c?: unknown) => Promise<void>> = [];
+    const taps: Array<() => Promise<void>> = [];
+    const compilations: Array<(c: unknown) => void> = [];
+    const compilation = {
+      hooks: {
+        processAssets: { tapPromise: (_o: unknown, fn: () => Promise<void>) => taps.push(fn) },
+      },
+      getAssets: () => [{ name: 'm.NEW.js' }, { name: 'm.NEW.js.map' }, { name: 'q.js?h' }],
+      getAsset: () => undefined,
+      updateAsset: () => undefined,
+    };
+    const compiler = {
+      options: { output: { path: '/o' }, mode: 'production', devtool: 'source-map' },
+      hooks: {
+        afterEmit: {
+          tapPromise: (_n: string, fn: (c?: unknown) => Promise<void>) => after.push(fn),
+        },
+        thisCompilation: { tap: (_n: string, fn: (c: unknown) => void) => compilations.push(fn) },
+      },
+      webpack: {
+        Compilation: { PROCESS_ASSETS_STAGE_DEV_TOOLING: 500 },
+        sources: { RawSource: class {} },
+      },
+    };
+    (
+      makePlugin({ appToken: 'tok', onNotice: () => undefined }, 'webpack').webpack as (
+        c: unknown,
+      ) => void
+    )(compiler);
+    for (const fn of compilations) fn(compilation);
+    for (const t of taps) await t();
+    await after[0]?.(compilation);
+    const deps = depsOf(0) as { stampedBundles?: string[]; stampedMaps?: unknown };
+    expect(deps.stampedBundles).toEqual(['m.NEW.js', 'q.js']);
+    expect(deps.stampedMaps).toBeUndefined();
   });
 });

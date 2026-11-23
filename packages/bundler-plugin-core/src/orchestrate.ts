@@ -2,7 +2,7 @@
 // delete the client `.map` files (privacy). Each side-effecting step is behind an injectable seam so the
 // orchestration is unit-tested without a real binary or filesystem.
 import { access, readdir, readFile, unlink } from 'node:fs/promises';
-import { join, relative, resolve } from 'node:path';
+import path, { join, relative, resolve } from 'node:path';
 import { readDebugId } from './debug-ids';
 import { type RunBugseeCliOptions, runBugseeCli, type SpawnResult } from './run-cli';
 import { findIntegrityMismatches, findSriProtectedScripts, type SriProtectedScript } from './sri';
@@ -15,14 +15,16 @@ import {
   NEVER_WALK,
   ownedBy,
   partitionByKeyed,
+  restorePaths,
   type SnapshotTarget,
   type StampSnapshot,
+  sameAsSnapshot,
   snapshotStampFiles,
   verifyAndRestore,
   verifyStampedOnDisk,
 } from './stamp-files';
 import type { VcsMetadata } from './vcs';
-import { formatIssues } from './verify-stamp';
+import { formatIssues, localPointerTarget } from './verify-stamp';
 
 /** The `runBugseeCli` shape, injectable for tests. */
 export type RunFn = (args: string[], options: RunBugseeCliOptions) => Promise<SpawnResult>;
@@ -287,6 +289,29 @@ export async function uploadSourcemaps(
         pairs.push({ bundle, map });
       }
     }
+    // Maps that are not the bundle's sibling (a moved `maps/w.js.map`): found through the OWN bundles' pointers.
+    const matched = new Set(pairs.map((pair) => pair.map));
+    const loose = unkeyed.filter((map) => !matched.has(map));
+    if (loose.length > 0) {
+      for (const name of ownFiles) {
+        const bundle = resolve(outDir, name);
+        if (!/\.[cm]?js$/i.test(bundle)) {
+          continue;
+        }
+        let text: string;
+        try {
+          text = await readFile(bundle, 'utf8');
+        } catch {
+          continue;
+        }
+        const target = localPointerTarget(bundle, text, path);
+        const map =
+          target === undefined ? undefined : loose.find((m) => resolve(m) === resolve(target));
+        if (map !== undefined && (await isMapObject(map))) {
+          pairs.push({ bundle, map });
+        }
+      }
+    }
     if (pairs.length === 0) {
       return undefined;
     }
@@ -297,6 +322,7 @@ export async function uploadSourcemaps(
     );
     const eligible: typeof pairs = [];
     const blocked: typeof pairs = [];
+    const pinnedAndStamped: typeof pairs = [];
     for (const pair of pairs) {
       let code: string;
       try {
@@ -308,6 +334,9 @@ export async function uploadSourcemaps(
       // the registration appended, which changes pinned bytes.
       const stamped = readDebugId(code) !== undefined && code.includes('_bugseeDebugIds');
       (pinned.has(resolve(pair.bundle)) && !stamped ? blocked : eligible).push(pair);
+      if (pinned.has(resolve(pair.bundle)) && stamped) {
+        pinnedAndStamped.push(pair);
+      }
     }
     if (blocked.length > 0) {
       notice(
@@ -340,6 +369,21 @@ export async function uploadSourcemaps(
       // Whatever was rewritten (even by a CLI that then failed) is verified, and restored if it is not sound:
       // BEFORE anything is reported, so a user handler that throws cannot skip it.
       const { issues, restored, failed } = await verifyAndRestore(snapshot);
+      // ENFORCE the claim the pinned-bundle exception rests on: inject leaves an already-stamped bundle's
+      // bytes alone. If it did not, the pinned bytes changed: put them (and the map) back, and say so.
+      for (const pair of pinnedAndStamped) {
+        if (!(await sameAsSnapshot(snapshot, pair.bundle))) {
+          const undone = await restorePaths(snapshot, [pair.bundle, pair.map]);
+          reportContinuing(
+            new Error(
+              `bugsee-cli changed ${pair.bundle}, which Subresource Integrity pins and which was already stamped; its original bytes were restored` +
+                (undone.length > 0
+                  ? ` (could not restore: ${undone.map((u) => u.path).join(', ')})`
+                  : ''),
+            ),
+          );
+        }
+      }
       for (const error of pairErrors) {
         reportContinuing(error);
       }
@@ -359,6 +403,7 @@ export async function uploadSourcemaps(
   };
 
   let original: StampSnapshot | undefined;
+  let restoredAny = false;
   try {
     if (options.preStamped === true) {
       // 0'. Stamped in the build, so this run rewrites nothing and cannot break SRI. What it CAN do is
@@ -478,14 +523,27 @@ export async function uploadSourcemaps(
       }
 
       // 1. Inject debug-IDs (rewrites the built .js + .map in place).
-      if (files === undefined) {
-        await run(['sourcemaps', 'inject', outDir, ...dryFlag], cliOptions);
-      } else {
-        // A script and its map may land in different batches: harmless, the debug-id is derived from the
-        // bundle's content, so each side stamps the same id (measured with 250 entries, none mismatched).
-        for (const batch of inBatches([...files.scripts, ...files.maps])) {
-          await run(['sourcemaps', 'inject', ...batch, ...dryFlag], cliOptions);
+      try {
+        if (files === undefined) {
+          await run(['sourcemaps', 'inject', outDir, ...dryFlag], cliOptions);
+        } else {
+          // A script and its map may land in different batches: harmless, the debug-id is derived from the
+          // bundle's content, so each side stamps the same id (measured with 250 entries, none mismatched).
+          for (const batch of inBatches([...files.scripts, ...files.maps])) {
+            await run(['sourcemaps', 'inject', ...batch, ...dryFlag], cliOptions);
+          }
         }
+      } catch (error) {
+        // A rejected inject may already have rewritten files (an earlier batch, or a partial write): verify and
+        // restore them BEFORE the failure propagates, so no unverified stamp stays on disk.
+        if (original !== undefined) {
+          try {
+            await verifyAndRestore(original);
+          } catch {
+            // the inject failure is the one to report
+          }
+        }
+        throw error;
       }
 
       // 1b. VERIFY what inject wrote (verify-stamp.ts): every changed bundle still parses and keeps its map
@@ -496,6 +554,7 @@ export async function uploadSourcemaps(
       //     maps carry no debugId, so the keyed check at deletion keeps them.
       if (original !== undefined) {
         const { issues, restored, failed } = await verifyAndRestore(original);
+        restoredAny = restored.length > 0;
         if (issues.length > 0) {
           const failure = verifyFailure(issues, restored, failed);
           if (options.failOnError === true) {
@@ -526,7 +585,9 @@ export async function uploadSourcemaps(
     // deleted afterwards and that is reported. A FILE run (`files`) names its maps up front.
     // A PRE-STAMPED directory is uploaded as an explicit file set (below), and what is deleted is exactly
     // that set: no second walk to disagree with the first about which maps exist.
-    const explicitUpload = files === undefined && options.preStamped === true && !dryRun;
+    // (Also after a restore: a restored map is unkeyed again, and the CLI rejects a DIRECTORY that holds one.)
+    const explicitUpload =
+      files === undefined && (options.preStamped === true || restoredAny) && !dryRun;
     let uploadedMaps: string[] = [];
     let unuploadableMaps: string[] = [];
     let snapshot: string[] | undefined;

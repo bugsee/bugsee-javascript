@@ -29,6 +29,7 @@ import {
   rollupUnstampableMaps,
   stampAssets,
 } from './stamp-assets';
+import { cutAtQuery } from './stamp-files';
 
 /** The subset of a rollup/vite output-options object we read. */
 export interface OutputLike {
@@ -208,7 +209,7 @@ function asText(name: string, content: Buffer): string {
  * An asset name without its `?query`. Measured on real Rspack builds: webpack/Rspack drop `?...` when they write
  * a file (`x.js?h` is written as `x.js`) and KEEP `#` (`a#1.js` is written as `a#1.js`), so only `?` is cut.
  */
-const withoutQuery = (name: string): string => name.replace(/\?.*$/, '');
+const withoutQuery = cutAtQuery;
 
 /**
  * A compilation's asset table as the core's `AssetStore`.
@@ -334,6 +335,26 @@ function esbuildOutputDir(options: EsbuildBuildLike['initialOptions']): string |
 interface AssetNamesLike {
   getAssets?(): ReadonlyArray<{ name: string }>;
 }
+
+/**
+ * The stamp's bundle / map names as the DISK has them. webpack's RealContentHashPlugin renames `[contenthash]`
+ * assets AFTER the in-build stamp, so the names the stamp reported are stale; when the compilation is known,
+ * the on-disk re-check is given the final script names instead (every script asset was staged, so every one
+ * was stamped) and finds each map by its pointer.
+ */
+const finalStampNames = (
+  compilation: AssetNamesLike | undefined,
+): { stampedBundles?: string[]; stampedMaps?: undefined } => {
+  const assets = compilation?.getAssets?.();
+  return assets === undefined
+    ? {}
+    : {
+        stampedBundles: assets
+          .map((asset) => cutAtQuery(asset.name))
+          .filter((name) => /\.[cm]?js$/i.test(name)),
+        stampedMaps: undefined,
+      };
+};
 
 /** The names this build emitted, as the `ownFiles` the upload deletes by (absent when not known). */
 const ownFilesOf = (compilation: AssetNamesLike | undefined): { ownFiles?: string[] } => {
@@ -823,6 +844,7 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
               bundler,
               ...ownFilesOf(compilation),
               ...stamp,
+              ...(stamp.preStamped ? finalStampNames(compilation) : {}),
             });
           }
         }
@@ -849,6 +871,7 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
               bundler: webpackBuild(compiler.options.mode),
               ...ownFilesOf(compilation),
               ...stamp,
+              ...(stamp.preStamped ? finalStampNames(compilation) : {}),
             });
           }
         }

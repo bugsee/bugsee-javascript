@@ -210,7 +210,7 @@ stamp degrades to the POST-EMIT path below — never to an unchecked page: a chu
   id on `chunk.map` (`debugId`/`debug_id`), which is the one thing Vite keeps. Both are covered by real builds
   (`plugin.in-build.real-build.test.ts`, and a Chromium run in `instrumentation-tests/test/sri-vite-rollup.e2e.ts`).
 - A plugin that rewrites chunks AFTER the Bugsee stamp changes bytes that were already hashed or stamped. The
-  post-build checks below detect (not prevent) it.
+  post-build checks below detect (not prevent) it, and only what they check: a debug-ID inconsistency between a bundle and its map, and an HTML integrity pin that no longer matches the bytes. A later plugin that changes executable JS, keeps both debug-IDs, and then emits a pin that matches the changed bytes passes both checks; they report those two inconsistencies, not every rewrite.
 
 ### Verify the stamp
 
@@ -301,6 +301,22 @@ Only a stamp that did not verify AND could not be restored (an unverified stamp 
 stamp. Covered by real Vite 7 and 8 builds with `new Worker(new URL(...))` and `?worker`, and in Chromium
 (`instrumentation-tests/test/lazy-chunk.e2e.ts`): the worker runs, registers its id, and its map has the same
 id. (The hand-rolled SRI step pins only the entry chunks in `index.html`, never worker files.)
+
+### Hardening details (review follow-ups)
+
+- **Post-emit inject failures and restores.** A rejected `inject` (any batch) is followed by a verify-and-restore of
+  everything it may already have rewritten, before the failure propagates. If verification restored any pair, the
+  upload is an EXPLICIT keyed set (a restored map is unkeyed again, and the CLI rejects a directory that holds one).
+  A snapshot that cannot read a file (anything but ENOENT) aborts before inject runs. The rollback partner of a bundle
+  is the map its ORIGINAL pointer named; a map is not restored when its bundle could not be (reported as incomplete).
+- **On-disk re-check.** A bundle the stamp named that cannot be read is reported. After webpack's RealContentHashPlugin
+  renames `[contenthash]` assets, the re-check is given the FINAL script names from the compilation (the names the
+  stamp reported are stale). A changed map is also held to an unchanged, already-stamped bundle's id.
+- **Catch-up.** Pairs are found by the sibling name AND by the own bundles' `sourceMappingURL` (a moved
+  `maps/w.js.map`). The claim that inject leaves an already-stamped, SRI-pinned bundle alone is ENFORCED: if its bytes
+  changed they are restored (with its map) and reported. Two bundles claiming one map refuse the in-build stamp.
+- **Concurrent outputs.** A second output with its own `ownFiles` for the same directory waits for the in-flight
+  upload and then runs itself, so its maps are not mistaken for foreign ones.
 
 ### Maps that are not the bundle sibling
 

@@ -120,6 +120,13 @@ export async function stampAssets(
         },
       ]);
     }
+    if (stageName.has(map)) {
+      // Two bundles claim ONE map: it can be staged beside only one, and the other would be accepted as
+      // "stamped" with no map to check. Ambiguous, so the stamp is refused.
+      throw new Error(
+        `the map ${map} is claimed by more than one bundle (${bundle} and another), so it cannot be stamped`,
+      );
+    }
     if (stagedSet.has(sibling)) {
       throw new Error(
         `the map ${map} of ${bundle} cannot be staged as ${sibling}: another asset already has that name`,

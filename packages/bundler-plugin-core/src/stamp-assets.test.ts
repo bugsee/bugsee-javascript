@@ -723,3 +723,17 @@ describe('stampAssets — a store can refuse the write-back (store.check), befor
     expect(checked).toEqual([]);
   });
 });
+
+describe('stampAssets — two bundles that claim the same map', () => {
+  it('refuses (before inject) rather than stage the map for only one of them', async () => {
+    const run = vi.fn(async () => ({ code: 0, stdout: '', stderr: '' }));
+    const store = {
+      ...memoryStore({ 'a.js': 'a\n', 'b.js': 'b\n', 'shared.map': '{}' }),
+      mapOf: () => 'shared.map',
+    };
+    await expect(stampAssets(store, { run })).rejects.toThrow(
+      /shared\.map.*a\.js.*b\.js|shared\.map/,
+    );
+    expect(run).not.toHaveBeenCalled();
+  });
+});

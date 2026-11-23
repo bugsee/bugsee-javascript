@@ -246,6 +246,62 @@ describe('one pipeline per output directory', () => {
     expect(await a).toEqual(await b); // …and the joiner gets the same result, not `undefined`
   });
 
+  it('a second OUTPUT with its own ownFiles waits for the in-flight run and then runs itself (its maps are not "foreign")', async () => {
+    const h = held();
+    const seen: Array<{ ownFiles?: readonly string[] }> = [];
+    const upload = async (opts: { outDir: string; ownFiles?: readonly string[] }) => {
+      seen.push(opts);
+      return h.uploadSourcemaps(opts);
+    };
+    const a = runPluginUpload(resolved, 'dist', {
+      uploadSourcemaps: upload as never,
+      ownFiles: ['a.js', 'a.js.map'],
+      ...noVcs,
+    });
+    const b = runPluginUpload(resolved, 'dist', {
+      uploadSourcemaps: upload as never,
+      ownFiles: ['b.js', 'b.js.map'],
+      ...noVcs,
+    });
+    await tick();
+    expect(seen.map((o) => o.ownFiles)).toEqual([['a.js', 'a.js.map']]); // B has not started: no race over the tree
+    h.release();
+    await a;
+    await tick();
+    h.release();
+    await b;
+    expect(seen.map((o) => o.ownFiles)).toEqual([
+      ['a.js', 'a.js.map'],
+      ['b.js', 'b.js.map'],
+    ]);
+  });
+
+  it('a failed in-flight run does not stop the waiting second output from running', async () => {
+    const calls: string[] = [];
+    let first = true;
+    const upload = async (opts: { outDir: string; ownFiles?: readonly string[] }) => {
+      calls.push(String(opts.ownFiles));
+      if (first) {
+        first = false;
+        throw new Error('first run failed');
+      }
+      return { injected: true, uploaded: true, deletedMaps: [] };
+    };
+    const a = runPluginUpload(resolved, 'dist', {
+      uploadSourcemaps: upload as never,
+      ownFiles: ['a.js'],
+      ...noVcs,
+    });
+    const b = runPluginUpload(resolved, 'dist', {
+      uploadSourcemaps: upload as never,
+      ownFiles: ['b.js'],
+      ...noVcs,
+    });
+    await expect(a).rejects.toThrow('first run failed');
+    await b;
+    expect(calls).toEqual(['a.js', 'b.js']);
+  });
+
   it("a run over the build's own files neither joins nor is joined, and registers from those bundles only", async () => {
     const h = held();
     const files = { scripts: ['dist/a.mjs'], maps: ['dist/a.mjs.map'] };

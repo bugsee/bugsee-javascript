@@ -304,9 +304,18 @@ export async function runPluginUpload(
   // gets its result; the entry is released on settle, so `vite build --watch` still uploads every rebuild.
   // A run over a build's OWN files (`deps.files`) neither joins nor is joined: it touches nothing another run
   // of the directory touches, so there is nothing to coordinate.
-  const inFlight = deps.files === undefined ? runsByDir.get(outDir) : undefined;
-  if (inFlight !== undefined) {
-    return inFlight;
+  // A caller that knows which files ITS output emitted (`ownFiles`) does not join: the in-flight run was
+  // started with another output's names, and would treat this one's maps as "not produced by this build".
+  // It WAITS for that run (no concurrent pipelines over one tree) and then runs itself.
+  for (;;) {
+    const inFlight = deps.files === undefined ? runsByDir.get(outDir) : undefined;
+    if (inFlight === undefined) {
+      break;
+    }
+    if (deps.ownFiles === undefined) {
+      return inFlight;
+    }
+    await inFlight.catch(() => undefined);
   }
   const uploadSourcemaps = deps.uploadSourcemaps ?? defaultUploadSourcemaps;
   const registerJsBuild = deps.registerJsBuild ?? defaultRegisterJsBuild;

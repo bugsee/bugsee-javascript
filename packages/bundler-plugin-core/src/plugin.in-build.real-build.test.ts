@@ -41,8 +41,12 @@ let root: string;
 
 const cli = resolveBugseeCli();
 const cliProbe = cli.endsWith('.js')
-  ? spawnSync(process.execPath, [cli, '--version'], { encoding: 'utf8' })
-  : spawnSync(cli, ['--version'], { encoding: 'utf8' });
+  ? spawnSync(process.execPath, [cli, '--version'], {
+      encoding: 'utf8',
+      timeout: 15_000,
+      killSignal: 'SIGKILL',
+    })
+  : spawnSync(cli, ['--version'], { encoding: 'utf8', timeout: 15_000, killSignal: 'SIGKILL' });
 const cliAvailable = cliProbe.status === 0;
 const cliRequired = process.env.CI !== undefined || process.env.BUGSEE_REQUIRE_CLI !== undefined;
 if (!cliAvailable && !cliRequired) {
@@ -113,9 +117,9 @@ interface Pin {
 function pinsOf(out: string): Pin[] {
   const html = readFileSync(join(out, 'index.html'), 'utf8');
   const pins: Pin[] = [];
-  for (const tag of html.match(/<(?:script|link)\b[^>]*>/g) ?? []) {
-    const integrity = /\bintegrity="([^"]+)"/.exec(tag)?.[1];
-    const url = /\b(?:src|href)="([^"]+)"/.exec(tag)?.[1];
+  for (const tag of html.match(/<(?:script|link)\b[^>]*>/gi) ?? []) {
+    const integrity = /\bintegrity="([^"]+)"/i.exec(tag)?.[1];
+    const url = /\b(?:src|href)="([^"]+)"/i.exec(tag)?.[1];
     if (integrity !== undefined && url !== undefined) {
       pins.push({ tag, file: join(out, url.replace(/^\.?\//, '')), integrity });
     }
@@ -149,7 +153,7 @@ function expectStampedAndUploaded(out: string, before: number, atLeast = 2): voi
 /** Add `integrity` to every script / modulepreload tag whose file is a chunk of the bundle. */
 function pinChunks(html: string, bundle: Record<string, { type: string; code?: string }>): string {
   return html.replace(
-    /<(?:script|link)\b[^>]*?(?:src|href)="\.?\/?([^"]+\.js)"[^>]*>/g,
+    /<(?:script|link)\b[^>]*?(?:src|href)="\.?\/?([^"]+\.js)"[^>]*>/gi,
     (tag, file: string) => {
       const entry = bundle[file];
       return entry?.type === 'chunk' && entry.code !== undefined
