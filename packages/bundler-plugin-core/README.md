@@ -20,7 +20,21 @@ npm install --save-dev @bugsee/vite-plugin
 - Settings lookup order: plugin option, then the process environment, then the nearest `.env.bugsee-build-plugin` (only `BUGSEE_APP_TOKEN` / `BUGSEE_APP_VERSION` / `BUGSEE_APP_BUILD` are read from it; searched from the bundler's project directory up to the repo/workspace root, never in or above the home directory; fills gaps only, a blank variable counts as unset; a missing or malformed file never fails the build). Details: `docs/source-maps-usage.md`.
 - Option resolution (`appToken`, `appVersion`, `appBuild`, `endpoint`, `deleteMaps`, `dryRun`, `disabled`, with environment fallbacks such as `BUGSEE_APP_TOKEN`; the version also falls back to the nearest `package.json` above the bundler's project directory (blank values count as unset; Rollup, which reports no project directory, walks up from the output directory and skips a name-less, version-less marker such as a `dist/cjs/package.json` holding only `{"type":"commonjs"}`), the build to a CI commit id, and a real value is baked into the app bundle as `__BUGSEE_APP_VERSION__` / `__BUGSEE_APP_BUILD__` for the runtime SDK: through `define` on Vite, esbuild, webpack 5 and Rspack, and by rewriting each rendered chunk (with a source map) on Rollup; webpack 4 cannot bake, so there only an explicit value is recorded; a constant you define yourself is what gets recorded when it is a plain string), build-commit detection and the CLI runner.
 
-The programmatic API beyond the plugins is internal and may change between releases.
+## `bugsee-sourcemaps-doctor`
+
+An offline check of a build output directory: why would a crash from this build not symbolicate? No network, no token needed.
+
+```bash
+npx bugsee-sourcemaps-doctor dist            # human report
+npx bugsee-sourcemaps-doctor dist --json     # machine-readable report (schemaVersion 1)
+npx bugsee-sourcemaps-doctor dist --strict   # exit 1 on warnings too
+```
+
+Exit codes: 0 ok, 1 warnings only (with `--strict`), 2 errors. Options: `--project-root <dir>` (where `.env.bugsee-build-plugin` and `package.json` are looked up; default the working directory), `--max-map-mb <n>`, `--no-env` (skip the token / version / build / `NODE_ENV` checks).
+
+It checks, each with a stable ID, a severity and a fix hint: the output directory and its JavaScript; the debug-ID comment and `_bugseeDebugIds` registration on every bundle; a matching map with the same ID; `sourceMappingURL` pointers (dangling, hidden, inline); map validity (v3, `sources`, `sourcesContent` embedded or resolvable on disk, size); mixed stamped/unstamped bundles; duplicate IDs across different contents; Subresource Integrity hazards and mismatches (including manifests or pages outside the directory); leftover `.map` files that a deploy would serve; development-mode bundles; and the build environment (token present, version and build resolvable, `NODE_ENV`). The token is never printed. Programmatic use: `diagnoseBuildOutput(dir, options)` returns the same report. The backend-assisted checks (is this ID's map uploaded?) are not part of this command; see `docs/source-maps-usage.md` §4.
+
+The rest of the programmatic API beyond the plugins and the doctor is internal and may change between releases.
 
 ## Links
 

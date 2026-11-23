@@ -220,3 +220,30 @@ stub the SDK reads. This is exactly what the plugins automate; the CLI is the sa
 - **Not covered: bytecode targets.** React-Native/Hermes compiles JS → bytecode, which drops the injected comment
   and stub, so the running code reports no debug-ID. That needs a Hermes-specific compose flow and is handled by the
   separate React-Native SDK, not this (web/node/bun) SDK.
+
+## 4. Check a build: `bugsee-sourcemaps-doctor`
+
+When a production crash does not de-minify, run the doctor against the build output you actually deployed (or are about to). It is offline: it reads the files, makes no network call and needs no token for the file checks.
+
+```bash
+npx bugsee-sourcemaps-doctor dist              # readable report, fix hint per finding
+npx bugsee-sourcemaps-doctor dist --json       # for CI (schemaVersion 1)
+npx bugsee-sourcemaps-doctor dist --strict     # warnings fail the step too (exit 1)
+```
+
+Exit codes: `0` ok, `1` warnings only (with `--strict`), `2` errors. The package is `@bugsee/bundler-plugin-core`; the same report is available in code as `diagnoseBuildOutput(dir, options)`.
+
+Typical findings and what to do:
+
+| ID | Meaning |
+|---|---|
+| `stamp.missing-debug-id` / `stamp.missing-registration` | A bundle is not stamped (or only has the comment, not the runtime registration). Add the plugin, or run `bugsee-cli sourcemaps inject <dir>` after the build. |
+| `stamp.map-id-mismatch` / `stamp.map-no-debug-id` | The map's `debugId` is not the bundle's. A step ran after stamping; stamp last. |
+| `map.pointer-dangling` | The bundle's `sourceMappingURL` points at a map that is not on disk (typical after maps are deleted from a `sourcemap: true` build). Use hidden maps. |
+| `map.inline` | The map is a `data:` URL inside the bundle: nothing to upload, and it ships to every visitor. |
+| `map.sources-unresolvable` | No `sourcesContent` and the sources are not on disk: frames will have no source lines. |
+| `map.public-leftover` | `.map` files are in the directory you deploy. Keep `deleteMaps` on or exclude `*.map`. |
+| `sri.unstamped-hazard` / `sri.mismatch` / `sri.outside-dir` | Subresource Integrity hashes pin these scripts; stamping after hashing makes the browser block them. |
+| `env.token-missing` | No app token is visible to the build; the plugin is disabled and uploads nothing. |
+
+The doctor prints which source supplied the token (never the token). Checks that need the backend (is the map for this ID uploaded? does the deployed URL serve a stamped bundle?) are not part of this command yet.
