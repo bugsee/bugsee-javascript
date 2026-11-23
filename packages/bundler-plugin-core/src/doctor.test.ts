@@ -14,6 +14,7 @@ import {
 
 const ID_A = '11111111-1111-4111-8111-111111111111';
 const ID_B = '22222222-2222-4222-8222-222222222222';
+const ID_L = 'abcdef12-3456-4abc-8def-abcdefabcdef';
 
 let root: string;
 let dist: string;
@@ -197,9 +198,10 @@ describe('diagnoseBuildOutput', () => {
   });
 
   it('accepts the snake_case debug_id spelling in the map and compares case-insensitively', async () => {
-    put('a.js', `a${stamp(ID_A)}`);
-    put('a.js.map', mapJson({ debug_id: ID_A.toUpperCase() }));
+    put('a.js', `a${stamp(ID_L)}`);
+    put('a.js.map', mapJson({ debug_id: ID_L.toUpperCase() }));
     const report = await run();
+    expect(ID_L.toUpperCase()).not.toBe(ID_L);
     expect(ids(report)).not.toContain('stamp.map-id-mismatch');
     expect(ids(report)).not.toContain('stamp.map-no-debug-id');
   });
@@ -450,25 +452,32 @@ describe('diagnoseBuildOutput', () => {
       expect(report.findings.find((f) => f.id === 'sri.mismatch')?.message).toContain('refuses');
     });
 
-    it('sri.outside-dir: a manifest in the dir or an HTML page in the parent pins hashes', async () => {
+    it('sri.manifest-hashes: a manifest in the directory pins hashes; the parent directory is never read', async () => {
       put('app.js', `c${stamp(ID_A)}`);
       put('asset-manifest.json', JSON.stringify({ 'app.js': { integrity: sri('x') } }));
       put('plain-manifest.json', '{}');
       put('readme.txt', 'integrity');
+      // a page and a manifest in the PARENT (e.g. a CDN script with integrity) are not this build's business
       writeFileSync(
         join(root, 'index.html'),
-        `<script src="dist/app.js" integrity="${sri('x')}"></script>`,
+        `<script src="https://cdn/x.js" integrity="${sri('x')}"></script>`,
       );
-      writeFileSync(join(root, 'about.html'), '<p>no pins</p>');
       writeFileSync(join(root, 'pins-manifest.json'), `{"h":"${sri('y')}"}`);
       const report = await run();
-      const found = report.findings.find((f) => f.id === 'sri.outside-dir');
+      const found = report.findings.find((f) => f.id === 'sri.manifest-hashes');
       expect(found?.severity).toBe('warning');
-      expect((found?.details?.files as string[]).sort()).toEqual([
-        '../index.html',
-        '../pins-manifest.json',
-        'asset-manifest.json',
-      ]);
+      expect(found?.details?.files).toEqual(['asset-manifest.json']);
+    });
+
+    it('a FIFO or oversized file named like a manifest is skipped, never opened', async () => {
+      put('app.js', `c${stamp(ID_A)}`);
+      const { spawnSync } = await import('node:child_process');
+      if (spawnSync('mkfifo', [join(dist, 'x-manifest.json')]).status !== 0) {
+        return;
+      }
+      put('big-manifest.json', `{"integrity":"${'x'.repeat(100)}"}`);
+      const report = await run({ maxMapBytes: 50 });
+      expect(ids(report)).not.toContain('sri.manifest-hashes');
     });
   });
 
@@ -566,7 +575,7 @@ describe('diagnoseBuildOutput', () => {
 
   const describePerm = process.getuid?.() === 0 ? describe.skip : describe;
   describePerm('unreadable paths', () => {
-    it('an unreadable sub-directory contributes nothing; an unreadable parent adds no outside-dir hints', async () => {
+    it('an unreadable sub-directory contributes nothing; an unreadable parent is harmless', async () => {
       put('a.js', `a${stamp(ID_A)}`);
       mkdirSync(join(dist, 'locked'));
       writeFileSync(join(dist, 'locked', 'x.js'), 'x');
@@ -575,7 +584,7 @@ describe('diagnoseBuildOutput', () => {
       try {
         const report = await run({ skipEnv: true });
         expect(report.summary.bundles).toBe(1);
-        expect(ids(report)).not.toContain('sri.outside-dir');
+        expect(ids(report)).not.toContain('sri.manifest-hashes');
       } finally {
         chmodSync(root, 0o700);
         chmodSync(join(dist, 'locked'), 0o700);
@@ -587,7 +596,7 @@ describe('diagnoseBuildOutput', () => {
       const manifest = put('asset-manifest.json', '{"integrity":1}');
       chmodSync(manifest, 0o000);
       try {
-        expect(ids(await run({ skipEnv: true }))).not.toContain('sri.outside-dir');
+        expect(ids(await run({ skipEnv: true }))).not.toContain('sri.manifest-hashes');
       } finally {
         chmodSync(manifest, 0o600);
       }

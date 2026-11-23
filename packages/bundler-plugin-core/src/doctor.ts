@@ -16,7 +16,7 @@ import { loadBuildPluginEnv, mergeBuildPluginEnv } from './env-file';
 import type { EnvRecord } from './run-cli';
 import { findIntegrityMismatches, findSriProtectedScripts } from './sri';
 import { isProjectRootOrAbove, MAX_WALK_DEPTH, NEVER_WALK } from './stamp-files';
-import { localPointerTarget } from './verify-stamp';
+import { lastSourceMappingUrl, localPointerTarget } from './verify-stamp';
 
 /** Bumped on any incompatible change to `DoctorReport`; the Rust command emits the same number. */
 export const DOCTOR_SCHEMA_VERSION = 1;
@@ -77,8 +77,8 @@ const DEFAULT_MAX_MAP_BYTES = 50 * 1024 * 1024;
 const DEFAULT_MAX_BUNDLE_BYTES = 512 * 1024 * 1024;
 /** Files read at once: bounds open handles and the bytes held in memory. */
 const READ_CONCURRENCY = 16;
-const BUNDLE = /\.[cm]?js$/;
-const MAP = /\.map$/;
+const BUNDLE = /\.[cm]?js$/i;
+const MAP = /\.map$/i;
 /** The global the runtime stub writes the id into (`@bugsee/browser` reads it at crash time). */
 const REGISTRATION = '_bugseeDebugIds';
 const MAX_LISTED = 5;
@@ -107,7 +107,7 @@ export const DOCTOR_CHECK_IDS = [
   'map.public-leftover',
   'sri.unstamped-hazard',
   'sri.mismatch',
-  'sri.outside-dir',
+  'sri.manifest-hashes',
   'build.dev-bundle',
   'env.token-source',
   'env.token-missing',
@@ -160,15 +160,6 @@ export async function walk(root: string): Promise<string[]> {
     }
   }
   return found.sort();
-}
-
-/** The LAST `//# sourceMappingURL=` value a debugger honours. */
-function lastPointer(code: string): string | undefined {
-  let last: string | undefined;
-  for (const match of code.matchAll(/^[ \t]*\/\/[#@][ \t]*sourceMappingURL=(\S*)[ \t]*$/gm)) {
-    last = match[1];
-  }
-  return last;
 }
 
 interface ParsedMap {
@@ -277,33 +268,29 @@ function isInside(root: string, target: string): boolean {
 
 const sha = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex');
 
-/** Files in `dir` and its parent that look like a manifest / page and mention integrity hashes. */
-async function integrityOutsideDir(dir: string): Promise<string[]> {
+/**
+ * `*manifest*.json` files directly in `dir` that mention integrity hashes. Only the checked directory is ever read
+ * (a page in the parent is not this build's to judge, and may be anything), through the bounded regular-file
+ * reader, so a FIFO or a `/dev/zero` symlink named like a manifest is skipped, not opened.
+ */
+async function manifestsWithIntegrity(dir: string, limit: number): Promise<string[]> {
+  let names: string[];
+  try {
+    names = await readdir(dir);
+  } catch {
+    return [];
+  }
   const hits: string[] = [];
-  for (const base of [dir, dirname(dir)]) {
-    let names: string[];
-    try {
-      names = await readdir(base);
-    } catch {
+  for (const name of names.sort()) {
+    if (!/manifest.*\.json$/i.test(name)) {
       continue;
     }
-    for (const name of names.sort()) {
-      const inDir = base === dir;
-      // HTML inside the dir is the SRI check's own business; a manifest anywhere is not.
-      const candidate = inDir
-        ? /manifest.*\.json$/i.test(name)
-        : /\.html?$|manifest.*\.json$/i.test(name);
-      if (!candidate) {
-        continue;
-      }
-      try {
-        const text = await readFile(join(base, name), 'utf8');
-        if (/\bintegrity\b|["'](sha(256|384|512))-[A-Za-z0-9+/=]{20,}/i.test(text)) {
-          hits.push(join(base, name));
-        }
-      } catch {
-        // unreadable: nothing to say about it
-      }
+    const read = await readRegular(join(dir, name), limit);
+    if (
+      read.ok &&
+      /\bintegrity\b|["'](sha(256|384|512))-[A-Za-z0-9+/=]{20,}/i.test(read.bytes.toString('utf8'))
+    ) {
+      hits.push(join(dir, name));
     }
   }
   return hits;
@@ -381,6 +368,7 @@ async function diagnose(dirInput: string, options: DoctorOptions): Promise<Docto
   }
 
   const mapSet = new Set(maps);
+  const validated = new Set<string>();
   const claimedMaps = new Set<string>();
   const stampedIds = new Map<string, Array<{ file: string; path: string }>>();
   let stamped = 0;
@@ -423,7 +411,7 @@ async function diagnose(dirInput: string, options: DoctorOptions): Promise<Docto
     }
 
     // Which map belongs to this bundle: the one its pointer names, else the sibling `<bundle>.map`.
-    const pointer = lastPointer(code);
+    const pointer = lastSourceMappingUrl(code);
     let mapPath: string | undefined;
     if (pointer !== undefined && pointer !== '') {
       if (/^data:/i.test(pointer)) {
@@ -571,6 +559,10 @@ async function diagnose(dirInput: string, options: DoctorOptions): Promise<Docto
   }
 
   function validateMap(mapPath: string, mapName: string, json: Record<string, unknown>): void {
+    if (validated.has(mapPath)) {
+      return; // a map shared by several bundles is validated once
+    }
+    validated.add(mapPath);
     if (json.version !== 3) {
       add({
         id: 'map.invalid',
@@ -790,14 +782,15 @@ async function diagnose(dirInput: string, options: DoctorOptions): Promise<Docto
       });
     }
   }
-  const outside = await integrityOutsideDir(dir);
-  if (outside.length > 0) {
+  const manifests = await manifestsWithIntegrity(dir, maxMapBytes);
+  if (manifests.length > 0) {
+    const names = manifests.map((p) => rel(dir, p));
     add({
-      id: 'sri.outside-dir',
+      id: 'sri.manifest-hashes',
       severity: 'warning',
-      message: `${outside.map((p) => posix(relative(dir, p))).join(', ')} mention integrity hashes but are outside what the doctor can tie to a script; if they pin these bundles, stamping them afterwards breaks the page.`,
-      fix: 'Check whether the page / manifest pins hashes of these files; if so make stamping happen before they are computed, or regenerate them.',
-      details: { files: outside.map((p) => posix(relative(dir, p))) },
+      message: `${names.join(', ')} mention integrity hashes the doctor cannot tie to a script; if they pin these bundles, stamping them afterwards breaks the page.`,
+      fix: 'Check whether the manifest pins hashes of these files; if so make stamping happen before they are computed, or regenerate them. (A page outside this directory is not read: run the doctor on the directory that holds it.)',
+      details: { files: names },
     });
   }
 

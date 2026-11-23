@@ -246,7 +246,7 @@ Typical findings and what to do:
 | `map.inline` | The map is a `data:` URL inside the bundle: nothing to upload, and it ships to every visitor. |
 | `map.sources-unresolvable` | No `sourcesContent` and the sources are not on disk: frames will have no source lines. |
 | `map.public-leftover` | `.map` files are in the directory. A note by default; a warning with `--deployed` (you serve this directory). Keep `deleteMaps` on or exclude `*.map`. |
-| `sri.unstamped-hazard` / `sri.mismatch` / `sri.outside-dir` | Subresource Integrity hashes pin these scripts; stamping after hashing makes the browser block them. |
+| `sri.unstamped-hazard` / `sri.mismatch` / `sri.manifest-hashes` | Subresource Integrity hashes pin these scripts; stamping after hashing makes the browser block them. |
 | `env.token-missing` | No app token is visible to the build (a warning): the plugin is disabled and uploads nothing, which is fine if you upload with `bugsee-cli` by hand. `env.token-source` says where a found token comes from, never its value. |
 
 The doctor reports which source supplied the token (`env.token-source`: option, environment variable or `.env.bugsee-build-plugin`), never the token. It reads only regular files inside the directory you give it and checks a map's size before reading it. Checks that need the backend (is the map for this ID uploaded? does the deployed URL serve a stamped bundle?) are not part of this command yet.

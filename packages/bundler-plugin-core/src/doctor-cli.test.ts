@@ -137,6 +137,46 @@ describe('runDoctorCli', () => {
     );
   });
 
+  it('--key=value forms work for every option that takes a value', async () => {
+    writeFileSync(join(dist, 'a.js'), stamped);
+    writeFileSync(
+      join(dist, 'a.js.map'),
+      JSON.stringify({
+        version: 3,
+        debugId: ID,
+        sources: ['a'],
+        sourcesContent: ['x'.repeat(2000)],
+      }),
+    );
+    const small = await cli([dist, '--no-env', '--max-map-mb=0.001', '--json']);
+    expect(JSON.parse(small.out).findings.map((f: { id: string }) => f.id)).toContain(
+      'map.too-large',
+    );
+    const ignored = await cli([
+      dist,
+      '--no-env',
+      '--ignore=map.public-leftover',
+      `--project-root=${root}`,
+      '--json',
+    ]);
+    expect(JSON.parse(ignored.out).ignored).toEqual(['map.public-leftover']);
+    expect((await cli([dist, '--max-map-mb='])).code).toBe(2);
+  });
+
+  it('`--=x` is an unknown option, not the end-of-options marker', async () => {
+    const { code, err } = await cli(['--=x', dist]);
+    expect(code).toBe(2);
+    expect(err).toContain('Unknown option --');
+  });
+
+  it('an unknown --ignore ID is warned about on stderr but not fatal', async () => {
+    writeFileSync(join(dist, 'a.js'), stamped);
+    const { code, err } = await cli([dist, '--no-env', '--ignore', 'map.public-leftvoer']);
+    expect(code).toBe(0);
+    expect(err).toContain('map.public-leftvoer is not a known check ID');
+    expect((await cli([dist, '--no-env', '--ignore', 'map.public-leftover'])).err).toBe('');
+  });
+
   it('--help prints usage and exits 0', async () => {
     for (const flag of ['--help', '-h']) {
       const { code, out } = await cli([flag]);

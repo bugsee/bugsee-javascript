@@ -63,7 +63,7 @@ export function parseScript(code: string): boolean {
 }
 
 /** The value of the LAST sourceMappingURL comment in `code` — the one a debugger honours. */
-function lastSourceMappingUrl(code: string): string | undefined {
+export function lastSourceMappingUrl(code: string): string | undefined {
   let last: string | undefined;
   for (const match of code.matchAll(SOURCE_MAPPING_URL)) {
     last = match[1];

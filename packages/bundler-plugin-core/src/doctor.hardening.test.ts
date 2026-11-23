@@ -27,7 +27,7 @@ beforeEach(() => {
   mkdirSync(dist);
   writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'app', version: '1.0.0' }));
 });
-afterEach(() => rmSync(root, { recursive: true, force: true }));
+afterEach(() => rmSync(root, { recursive: true, force: true }), 120_000); // removing 130k files is slow
 
 const put = (rel: string, content: string | Buffer): string => {
   const path = join(dist, rel);
@@ -290,5 +290,80 @@ describe('source resolution', () => {
     );
     expect(sourcePath('C:\\m', '..\\s', 'a.ts', 'C:\\p', win32)).toBe('C:\\s\\a.ts');
     expect(sourcePath('C:\\m', '', 'D:\\abs\\a.ts', 'C:\\p', win32)).toBe('D:\\abs\\a.ts');
+  });
+});
+
+describe('pointer reading and pairing (round 2)', () => {
+  it('a pointer with an unencoded space is read whole (the stamper reads to the end of the line)', async () => {
+    put('a.js', `a\n//# sourceMappingURL=maps/my map.map${stamp(ID_A)}`);
+    put('maps/my map.map', mapJson({ debugId: ID_B }));
+    const report = await run();
+    expect(find(report, 'stamp.map-id-mismatch')?.file).toBe('maps/my map.map');
+  });
+
+  it('the LAST sourceMappingURL comment wins', async () => {
+    put('a.js', `a\n//# sourceMappingURL=gone.map\n//# sourceMappingURL=real.map${stamp(ID_A)}`);
+    put('real.map', mapJson({ debugId: ID_B }));
+    const report = await run();
+    expect(find(report, 'stamp.map-id-mismatch')?.file).toBe('real.map');
+    expect(ids(report)).not.toContain('map.pointer-dangling');
+  });
+
+  it('uppercase extensions are scripts and maps too, like the stamper', async () => {
+    put('A.JS', `a${stamp(ID_A)}`);
+    put('A.JS.map', mapJson({ debugId: ID_B }));
+    put('C.MAP', mapJson());
+    const report = await run();
+    expect(report.summary).toMatchObject({ bundles: 1, maps: 2 });
+    expect(find(report, 'stamp.map-id-mismatch')?.file).toBe('A.JS.map');
+  });
+
+  it('a map shared by two bundles is validated once', async () => {
+    put('a.js', `a\n//# sourceMappingURL=shared.map${stamp(ID_A)}`);
+    put('b.js', `b\n//# sourceMappingURL=shared.map${stamp(ID_A)}`);
+    put('shared.map', mapJson({ debugId: ID_A, sources: [] }));
+    const report = await run();
+    expect(report.findings.filter((f) => f.id === 'map.no-sources')).toHaveLength(1);
+  });
+
+  it('isInside: the parent itself is outside, a `..`-prefixed NAME inside the directory is not', async () => {
+    put('a.js', `a\n//# sourceMappingURL=..${stamp(ID_A)}`);
+    put('..b/x.map', mapJson({ debugId: ID_B }));
+    put('b.js', `b\n//# sourceMappingURL=..b/x.map${stamp(ID_B)}`);
+    const report = await run();
+    expect(find(report, 'map.pointer-outside-dir')?.details).toEqual({ pointers: ['a.js -> ..'] });
+    expect(ids(report)).not.toContain('map.unreadable');
+    expect(ids(report)).not.toContain('map.pointer-dangling');
+  });
+
+  it('virtual sources never name a file; look-alikes do', () => {
+    for (const virtual of [
+      'webpack/runtime/x',
+      '(webpack)/buildin/x.js',
+      '\0virtual',
+      'a\0b.ts',
+      '<anonymous>',
+      'rollup:plugin/x',
+      'vite/preload-helper.js',
+    ]) {
+      expect(sourcePath('/m', '', virtual), virtual).toBeUndefined();
+    }
+    for (const real of ['webpackx/a.ts', 'viteish/a.ts', 'rollupx.ts', 'webpack.config.js']) {
+      expect(sourcePath('/m', '', real), real).toBe(`/m/${real}`);
+    }
+  });
+});
+
+describe.skipIf(process.getuid?.() === 0)('an unreadable output directory', () => {
+  it('reports output.no-js and does not throw', async () => {
+    put('a.js', 'x');
+    chmodSync(dist, 0o000);
+    try {
+      const report = await run();
+      expect(ids(report)).toContain('output.no-js');
+      expect(ids(report)).not.toContain('doctor.internal-error');
+    } finally {
+      chmodSync(dist, 0o700);
+    }
   });
 });

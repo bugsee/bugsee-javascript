@@ -6,7 +6,12 @@
 // Exit codes: 0 ok, 1 warnings only with --strict, 2 errors (or a usage error).
 import { realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { diagnoseBuildOutput, doctorExitCode, formatDoctorReport } from './doctor';
+import {
+  DOCTOR_CHECK_IDS,
+  diagnoseBuildOutput,
+  doctorExitCode,
+  formatDoctorReport,
+} from './doctor';
 import type { EnvRecord } from './run-cli';
 
 export const DOCTOR_USAGE = `Usage: bugsee-sourcemaps-doctor <build-output-dir> [options]
@@ -48,7 +53,14 @@ export async function runDoctorCli(argv: readonly string[], io: DoctorCliIo): Pr
     return 2;
   };
   for (let i = 0; i < argv.length; i++) {
-    const arg = argv[i] as string;
+    let arg = argv[i] as string;
+    // `--key=value` is the same as `--key value`
+    let inline: string | undefined;
+    const eq = arg.startsWith('--') ? arg.indexOf('=') : -1;
+    if (eq > 2) {
+      inline = arg.slice(eq + 1);
+      arg = arg.slice(0, eq);
+    }
     if (onlyPositionals) {
       if (dir !== undefined) {
         return usage(`Unexpected argument ${arg}`);
@@ -68,13 +80,18 @@ export async function runDoctorCli(argv: readonly string[], io: DoctorCliIo): Pr
     } else if (arg === '--deployed') {
       deployed = true;
     } else if (arg === '--project-root' || arg === '--max-map-mb' || arg === '--ignore') {
-      const value = argv[++i];
-      if (value === undefined || value.startsWith('--')) {
+      const value = inline ?? argv[++i];
+      if (value === undefined || (inline === undefined && value.startsWith('--'))) {
         return usage(`${arg} needs a value`);
       }
       if (arg === '--project-root') {
         projectRoot = value;
       } else if (arg === '--ignore') {
+        if (!(DOCTOR_CHECK_IDS as readonly string[]).includes(value)) {
+          io.stderr(
+            `Warning: --ignore ${value} is not a known check ID (see DOCTOR_CHECK_IDS); ignored.\n`,
+          );
+        }
         ignore.push(value);
       } else {
         const mb = Number(value);
