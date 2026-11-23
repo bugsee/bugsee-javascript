@@ -464,3 +464,101 @@ describeReal('an unstamped vendor script + map beside a stamped build', () => {
     expect(notices.join('\n')).toContain('vendor.js.map');
   });
 });
+
+// The stamp keys a map whatever it is called (`sourcemapFileName(s)`, `[name].map`), so the upload set must be
+// everything the CLI scans a directory for, not just `*.js.map`, and a map is deleted only if it was uploaded.
+// Real bugsee-cli, no dry run.
+describeReal('maps with custom names (sourcemapFileNames: "[name].map")', () => {
+  for (const failOnError of [true, false]) {
+    const tag = `failOnError ${failOnError}`;
+    const expectUploadedAndGone = (out: string, before: number): void => {
+      const files = readdirSync(out, { recursive: true }) as string[];
+      expect(requests.length, 'uploaded').toBeGreaterThan(before);
+      expect(
+        files.filter((f) => f.endsWith('.map')),
+        'deleted after the confirmed upload',
+      ).toEqual([]);
+      for (const bundle of files.filter((f) => /\.[cm]?js$/.test(f))) {
+        const code = readFileSync(join(out, bundle), 'utf8');
+        expect(code, bundle).toMatch(/\/\/# debugId=[0-9a-f-]{36}/);
+        expect(code, bundle).toMatch(/sourceMappingURL=[^\s]*\.map(?!\.)/);
+        expect(code, bundle).not.toMatch(/sourceMappingURL=[^\s]*\.js\.map/);
+      }
+    };
+
+    it(`Rollup (${tag})`, async () => {
+      const app = makeApp(`rollup-custom-${failOnError}`, { lazy: false });
+      const before = requests.length;
+      const errors: unknown[] = [];
+      const bundle = await rollup({
+        input: join(app.dir, 'index.js'),
+        plugins: [
+          bugseeRollupPlugin({
+            ...pluginOptions(),
+            failOnError,
+            onError: (e: unknown) => errors.push(e),
+          }),
+        ],
+      });
+      await bundle.write({ dir: app.out, sourcemap: true, sourcemapFileNames: '[name].map' });
+      await bundle.close();
+      expect(errors.map(String)).toEqual([]);
+      expectUploadedAndGone(app.out, before);
+    });
+
+    for (const [label, build] of [
+      ['Vite 8 (Rolldown)', viteBuild],
+      ['Vite 7 (Rollup)', vite7Build],
+    ] as const) {
+      it(`${label} (${tag})`, async () => {
+        const app = makeApp(`vite-custom-${label.replace(/\W+/g, '')}-${failOnError}`, {
+          lazy: false,
+        });
+        const before = requests.length;
+        const errors: unknown[] = [];
+        await build(
+          viteConfig(app, [bugseeVite({ failOnError, onError: (e: unknown) => errors.push(e) })], {
+            rollupOptions: { output: { sourcemapFileNames: 'assets/[name].map' } },
+          }),
+        );
+        expect(errors.map(String)).toEqual([]);
+        expectUploadedAndGone(app.out, before);
+      });
+    }
+
+    it(`Rspack (${tag})`, async () => {
+      const app = makeApp(`rspack-custom-${failOnError}`, { lazy: false });
+      const before = requests.length;
+      const errors: unknown[] = [];
+      const compile = await new Promise<{ errors: unknown[] }>((resolve, reject) => {
+        const compiler = rspack({
+          context: app.dir,
+          mode: 'production',
+          entry: join(app.dir, 'index.js'),
+          devtool: false,
+          output: { path: app.out },
+          plugins: [
+            new rspack.SourceMapDevToolPlugin({ filename: '[name].map' }),
+            bugseeRspackPlugin({
+              ...pluginOptions(),
+              failOnError,
+              onError: (e: unknown) => errors.push(e),
+            }),
+          ],
+        });
+        compiler.run((err, stats) => {
+          compiler.close(() =>
+            err
+              ? reject(err)
+              : resolve({
+                  errors: [...(stats as { compilation: { errors: unknown[] } }).compilation.errors],
+                }),
+          );
+        });
+      });
+      expect(compile.errors.map(String)).toEqual([]);
+      expect(errors.map(String)).toEqual([]);
+      expectUploadedAndGone(app.out, before);
+    });
+  }
+});

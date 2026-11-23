@@ -15,7 +15,9 @@ import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   isProjectRootOrAbove,
-  listScriptMaps,
+  isUploadableMap,
+  listUploadableMaps,
+  partitionByKeyed,
   restoreAtomically,
   snapshotStampFiles,
   verifyAndRestore,
@@ -375,30 +377,60 @@ describe('verifyStampedOnDisk', () => {
   });
 });
 
-describe('listScriptMaps', () => {
-  it('lists script maps of the whole output directory (src/ and dot-dirs included), sorted, never stylesheet maps', async () => {
+describe('isUploadableMap — what the CLI scans a directory for', () => {
+  it('is every .map except stylesheet and declaration maps', () => {
+    for (const yes of ['a.js.map', 'a.mjs.map', 'index.map', 'dir/b.cjs.map', 'x.bundle.jsx.map']) {
+      expect(isUploadableMap(yes), yes).toBe(true);
+    }
+    for (const no of ['a.css.map', 'a.d.ts.map', 'a.d.mts.map', 'a.d.cts.map', 'a.js', 'map']) {
+      expect(isUploadableMap(no), no).toBe(false);
+    }
+  });
+});
+
+describe('partitionByKeyed — any uploadable map needs a key, whatever it is called', () => {
+  it('keeps an unkeyed index.map, deletes a keyed one, and deletes a stylesheet/declaration map', async () => {
+    await writeFile(join(dir, 'keyed.map'), stampedMap);
+    await writeFile(join(dir, 'unkeyed.map'), plainMap);
+    await writeFile(join(dir, 'a.css.map'), plainMap);
+    await writeFile(join(dir, 'a.d.ts.map'), plainMap);
+    const names = ['keyed.map', 'unkeyed.map', 'a.css.map', 'a.d.ts.map'].map((n) => join(dir, n));
+    const { deletable, kept } = await partitionByKeyed(names);
+    expect(kept).toEqual([join(dir, 'unkeyed.map')]);
+    expect(deletable.sort()).toEqual(
+      [join(dir, 'a.css.map'), join(dir, 'a.d.ts.map'), join(dir, 'keyed.map')].sort(),
+    );
+  });
+});
+
+describe('listUploadableMaps', () => {
+  it('lists every uploadable map of the whole output directory (any name, src/ and dot-dirs included), sorted', async () => {
     await mkdir(join(dir, 'src'));
     await mkdir(join(dir, '.hidden'));
+    await mkdir(join(dir, 'test'));
     await writeFile(join(dir, 'src', 'a.js.map'), '{}');
     await writeFile(join(dir, '.hidden', 'b.mjs.map'), '{}');
-    await writeFile(join(dir, 'z.cjs.map'), '{}');
+    await writeFile(join(dir, 'test', 't.map'), '{}');
+    await writeFile(join(dir, 'index.map'), '{}');
     await writeFile(join(dir, 'c.css.map'), '{}');
-    await writeFile(join(dir, 'd.js'), 'x');
-    expect((await listScriptMaps(dir)).map((f) => f.slice(dir.length + 1))).toEqual([
+    await writeFile(join(dir, 'd.d.ts.map'), '{}');
+    await writeFile(join(dir, 'e.js'), 'x');
+    expect((await listUploadableMaps(dir)).map((f) => f.slice(dir.length + 1))).toEqual([
       '.hidden/b.mjs.map',
+      'index.map',
       'src/a.js.map',
-      'z.cjs.map',
+      'test/t.map',
     ]);
   });
   it('is fenced at the project root', async () => {
     const start = process.cwd();
     await mkdir(join(dir, 'src'));
     await writeFile(join(dir, 'src', 'a.js.map'), '{}');
-    await writeFile(join(dir, 'ok.js.map'), '{}');
+    await writeFile(join(dir, 'ok.map'), '{}');
     process.chdir(dir);
     try {
-      expect((await listScriptMaps(dir)).map((f) => f.slice(dir.length + 1))).toEqual([
-        'ok.js.map',
+      expect((await listUploadableMaps(dir)).map((f) => f.slice(dir.length + 1))).toEqual([
+        'ok.map',
       ]);
     } finally {
       process.chdir(start);
