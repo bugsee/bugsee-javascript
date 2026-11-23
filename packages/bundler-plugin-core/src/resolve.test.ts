@@ -162,6 +162,7 @@ describe('runPluginUpload', () => {
       dryRun: false,
       stripSourcesContent: false,
       failOnError: false,
+      onNotice: expect.any(Function), // the plugin's notice sink (resolved.onNotice, else console.warn)
     });
   });
 
@@ -447,6 +448,7 @@ describe('runPluginUpload — VCS metadata collection', () => {
       dryRun: false,
       stripSourcesContent: false,
       failOnError: false,
+      onNotice: expect.any(Function),
       vcs: { commit_sha: sha, branch: 'main' },
     });
   });

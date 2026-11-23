@@ -2,7 +2,7 @@
 // delete the client `.map` files (privacy). Each side-effecting step is behind an injectable seam so the
 // orchestration is unit-tested without a real binary or filesystem.
 import { readdir, unlink } from 'node:fs/promises';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { type RunBugseeCliOptions, runBugseeCli, type SpawnResult } from './run-cli';
 import {
   findIntegrityMismatches,
@@ -12,15 +12,19 @@ import {
   snapshotScriptDigests,
 } from './sri';
 import {
+  isProjectRootOrAbove,
+  listUploadableMaps,
   MAX_WALK_DEPTH,
   NEVER_WALK,
   partitionByKeyed,
   type SnapshotTarget,
+  type StampSnapshot,
   snapshotStampFiles,
   verifyAndRestore,
+  verifyStampedOnDisk,
 } from './stamp-files';
 import type { VcsMetadata } from './vcs';
-import { formatIssues, verifyStampedPairs } from './verify-stamp';
+import { formatIssues } from './verify-stamp';
 
 /** The `runBugseeCli` shape, injectable for tests. */
 export type RunFn = (args: string[], options: RunBugseeCliOptions) => Promise<SpawnResult>;
@@ -83,6 +87,19 @@ export interface UploadSourcemapsOptions {
    * refusal, which exists only to protect a page from that rewrite. Runs {@link verifySri} instead.
    */
   preStamped?: boolean;
+  /**
+   * The bundles (paths relative to `outDir`) the in-build stamp wrote. With `preStamped`, the on-disk
+   * re-check judges exactly these and their maps — never the directory, so a file that was not part of the
+   * bundle (a `public/` script, a stale file with `emptyOutDir: false`) is not taken for one the stamp
+   * missed. Without it the re-check has nothing to name and does not run.
+   */
+  stampedBundles?: readonly string[];
+  /** Where a non-failing observation goes (default: nowhere — callers that want it pass the notice sink). */
+  onNotice?: (message: string) => void;
+  /** Injectable lister of the script maps to consider for a pre-stamped directory upload (default {@link listUploadableMaps}). */
+  listUploadMaps?: (dir: string) => Promise<string[]>;
+  /** Where the pre-inject originals are spilled (default: the OS temp directory). A test seam. */
+  spillRoot?: string;
   /** Injectable integrity check for the pre-stamped and re-seal paths (default {@link findIntegrityMismatches}). */
   verifySri?: (dir: string) => Promise<SriProtectedScript[]>;
   /**
@@ -213,6 +230,7 @@ export async function uploadSourcemaps(
   const cliOptions: RunBugseeCliOptions = { token: appToken, endpoint };
   const onError = options.onError ?? defaultUploadErrorHandler;
 
+  let original: StampSnapshot | undefined;
   try {
     if (options.preStamped === true) {
       // 0'. Stamped in the build, so this run rewrites nothing and cannot break SRI. What it CAN do is
@@ -244,11 +262,10 @@ export async function uploadSourcemaps(
       //      markers), and a bundle that looks stamped with a map that no longer carries its id cannot be
       //      symbolicated. Nothing to restore here (no originals), so it is reported; the keyed check at
       //      deletion keeps any map that lost its id. Not on a dry run: nothing was stamped.
-      if (!dryRun) {
-        const written = await snapshotStampFiles(
-          files === undefined ? { dir: outDir } : { files: [...files.scripts, ...files.maps] },
+      if (!dryRun && options.stampedBundles !== undefined) {
+        const lost = await verifyStampedOnDisk(
+          options.stampedBundles.map((bundle) => resolve(outDir, bundle)),
         );
-        const lost = verifyStampedPairs(written);
         if (lost.length > 0) {
           const failure = new Error(
             `the debug-IDs stamped inside the build did not survive intact to disk: they changed after the build wrote it, ` +
@@ -296,7 +313,19 @@ export async function uploadSourcemaps(
       //     inject writes nothing, so there is nothing to undo.
       const target: SnapshotTarget =
         files === undefined ? { dir: outDir } : { files: [...files.scripts, ...files.maps] };
-      const original = dryRun ? undefined : await snapshotStampFiles(target);
+      //     A directory that is the project root (or above) is NOT snapshotted: a bare `output.file`
+      //     resolves to `.`, and snapshot-and-restore there would reach across the project tree.
+      if (!dryRun) {
+        if (files === undefined && (await isProjectRootOrAbove(outDir))) {
+          onError(
+            new Error(
+              `the debug-ID stamp of ${outDir} cannot be verified or undone: the output directory is the project root (or contains it), so originals are not snapshotted. Set an output directory (output.dir) to get stamp verification.`,
+            ),
+          );
+        } else {
+          original = await snapshotStampFiles(target, options.spillRoot);
+        }
+      }
 
       // 1. Inject debug-IDs (rewrites the built .js + .map in place).
       if (files === undefined) {
@@ -316,10 +345,13 @@ export async function uploadSourcemaps(
       //     outcome this must rule out. What did verify stays stamped and is uploaded below; the restored
       //     maps carry no debugId, so the keyed check at deletion keeps them.
       if (original !== undefined) {
-        const { issues, restored } = await verifyAndRestore(original);
+        const { issues, restored, failed } = await verifyAndRestore(original);
         if (issues.length > 0) {
           const failure = new Error(
-            `the debug-ID stamp did not verify, so ${restored.length} file(s) were restored to the bundler's original bytes (${formatIssues(issues)})`,
+            `the debug-ID stamp did not verify, so ${restored.length} file(s) were restored to the bundler's original bytes (${formatIssues(issues)})` +
+              (failed.length > 0
+                ? `; COULD NOT restore ${failed.map((f) => `${f.path} (${f.error})`).join(', ')}, which still carry the unverified stamp`
+                : ''),
           );
           if (options.failOnError === true) {
             throw failure;
@@ -369,9 +401,13 @@ export async function uploadSourcemaps(
     // A DIRECTORY run snapshots the maps that exist now: they are the ones this upload covers, and only they
     // may be deleted (a map written meanwhile was never sent). If the snapshot cannot be taken, nothing is
     // deleted afterwards and that is reported. A FILE run (`files`) names its maps up front.
+    // A PRE-STAMPED directory is uploaded as an explicit file set (below), and what is deleted is exactly
+    // that set: no second walk to disagree with the first about which maps exist.
+    const explicitUpload = files === undefined && options.preStamped === true && !dryRun;
+    let uploadedMaps: string[] = [];
     let snapshot: string[] | undefined;
     let snapshotError: unknown;
-    if (files === undefined && deleteMaps && !dryRun) {
+    if (files === undefined && deleteMaps && !dryRun && !explicitUpload) {
       try {
         snapshot = await (options.listMapFiles ?? listMapFiles)(outDir);
       } catch (error) {
@@ -393,7 +429,32 @@ export async function uploadSourcemaps(
       ...(options.stripSourcesContent === true ? ['--strip-sources-content'] : []),
       ...dryFlag,
     ];
-    if (files === undefined) {
+    // A PRE-STAMPED directory is uploaded as an explicit file set, never as the directory. Only what the
+    // in-build stamp wrote has a debug-id; anything else in the directory (a `public/` vendor script and
+    // its map, a stale map with `emptyOutDir: false`) has none, and the CLI exits non-zero for a directory
+    // holding such a map ("nothing was uploaded"), which would lose EVERY map of the build. Unkeyed maps
+    // are left alone and said, not failed.
+    if (explicitUpload) {
+      const candidates = await (options.listUploadMaps ?? listUploadableMaps)(outDir);
+      const { deletable, kept } = await (options.partitionMaps ?? partitionByKeyed)(candidates);
+      if (kept.length > 0) {
+        (options.onNotice ?? ((m: string) => console.warn(`[bugsee] ${m}`)))(
+          `${kept.length} source map(s) in ${outDir} carry no debug-ID, so they are not part of this build's stamp and were not uploaded (left on disk untouched): ${kept.join(', ')}`,
+        );
+      }
+      if (deletable.length === 0) {
+        if (options.failOnError === true) {
+          throw new Error(
+            `no source maps with a debug-ID were found in ${outDir}, so nothing was uploaded`,
+          );
+        }
+      } else {
+        for (const batch of inBatches(deletable)) {
+          await run(uploadArgs(batch), cliOptions);
+        }
+        uploadedMaps = deletable;
+      }
+    } else if (files === undefined) {
       await run(uploadArgs([outDir]), cliOptions);
     } else {
       for (const batch of inBatches(files.maps)) {
@@ -425,12 +486,15 @@ export async function uploadSourcemaps(
     let deletedMaps: string[] = [];
     if (deleteMaps) {
       const { deletable, kept } = await (options.partitionMaps ?? partitionByKeyed)(
-        files === undefined
-          ? (snapshot as string[])
-          : [...files.maps, ...(files.stylesheetMaps ?? [])],
+        explicitUpload
+          ? uploadedMaps
+          : files === undefined
+            ? (snapshot as string[])
+            : [...files.maps, ...(files.stylesheetMaps ?? [])],
       );
       deletedMaps = await (options.deleteMapFiles ?? defaultDeleteMapFiles)(outDir, deletable);
-      if (kept.length > 0) {
+      // Unkeyed maps of a pre-stamped build were already said (a notice, above): they were never part of it.
+      if (kept.length > 0 && !explicitUpload) {
         const failure = new Error(
           `${kept.length} source map(s) carry no debug-ID, so they were not uploaded and were left on disk: ${kept.join(', ')}`,
         );
@@ -449,5 +513,17 @@ export async function uploadSourcemaps(
     }
     onError(error);
     return { injected: false, uploaded: false, deletedMaps: [], ...vcsEcho };
+  } finally {
+    // Cleanup must never fail a build whose upload already succeeded, nor mask the error being reported:
+    // removing the spill directory can fail (EPERM/EBUSY under antivirus on Windows). Said, not thrown.
+    try {
+      await original?.dispose();
+    } catch (error) {
+      onError(
+        new Error(
+          `could not remove the temporary spill directory of the originals: ${String(error)}`,
+        ),
+      );
+    }
   }
 }

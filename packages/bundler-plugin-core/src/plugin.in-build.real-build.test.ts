@@ -392,3 +392,173 @@ describeReal('real Rspack build with the built-in SubresourceIntegrityPlugin', (
     expect(existsSync(join(app.out, 'index.html'))).toBe(true);
   });
 });
+
+// A script that is NOT part of the bundle (a `publicDir` copy, a stale file with `emptyOutDir: false`) has no
+// debug-id, and the real bugsee-cli exits non-zero for a directory that holds a map without one ("nothing was
+// uploaded"). Uploading the DIRECTORY would therefore lose every map of the build; the pre-stamped path names
+// its files instead. Real CLI, no --dry-run, failOnError on.
+describeReal('an unstamped vendor script + map beside a stamped build', () => {
+  const VENDOR_MAP = '{"version":3,"sources":["vendor.src.js"],"names":[],"mappings":"AAAA"}';
+  const addVendor = (dir: string): void => {
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      join(dir, 'vendor.js'),
+      'window.__vendor = 1;\n//# sourceMappingURL=vendor.js.map\n',
+    );
+    writeFileSync(join(dir, 'vendor.js.map'), VENDOR_MAP);
+  };
+  const expectVendorUntouched = (out: string): void => {
+    expect(readFileSync(join(out, 'vendor.js.map'), 'utf8')).toBe(VENDOR_MAP);
+    expect(readFileSync(join(out, 'vendor.js'), 'utf8')).not.toContain('debugId');
+  };
+
+  for (const [label, build] of [
+    ['Vite 8 (Rolldown)', viteBuild],
+    ['Vite 7 (Rollup)', vite7Build],
+  ] as const) {
+    it(`${label}: publicDir/vendor.js is left alone and said; the stamped maps still upload; failOnError does not fail`, async () => {
+      const app = makeApp(`vite-vendor-${label.replace(/\W+/g, '')}`, { lazy: false });
+      addVendor(join(app.dir, 'public'));
+      const before = requests.length;
+      const notices: string[] = [];
+      const errors: unknown[] = [];
+      await build(
+        viteConfig(app, [
+          bugseeVite({
+            onNotice: (m: string) => notices.push(m),
+            onError: (e: unknown) => errors.push(e),
+          }),
+        ]),
+      );
+      expect(errors.map(String)).toEqual([]);
+      expect(requests.length).toBeGreaterThan(before);
+      expect(readdirSync(join(app.out, 'assets')).filter((f) => f.endsWith('.map'))).toEqual([]);
+      expectVendorUntouched(app.out);
+      expect(notices.join('\n')).toContain('vendor.js.map');
+    });
+  }
+
+  it('Rollup: a stale vendor script in the output directory is left alone and said', async () => {
+    const app = makeApp('rollup-vendor');
+    addVendor(app.out);
+    const before = requests.length;
+    const notices: string[] = [];
+    const errors: unknown[] = [];
+    const bundle = await rollup({
+      input: join(app.dir, 'index.js'),
+      plugins: [
+        bugseeRollupPlugin({
+          ...pluginOptions(),
+          onNotice: (m: string) => notices.push(m),
+          onError: (e: unknown) => errors.push(e),
+        }),
+      ],
+    });
+    await bundle.write({ dir: app.out, sourcemap: true });
+    await bundle.close();
+    expect(errors.map(String)).toEqual([]);
+    expect(requests.length).toBeGreaterThan(before);
+    const maps = readdirSync(app.out).filter((f) => f.endsWith('.map'));
+    expect(maps).toEqual(['vendor.js.map']);
+    expectVendorUntouched(app.out);
+    expect(notices.join('\n')).toContain('vendor.js.map');
+  });
+});
+
+// The stamp keys a map whatever it is called (`sourcemapFileName(s)`, `[name].map`), so the upload set must be
+// everything the CLI scans a directory for, not just `*.js.map`, and a map is deleted only if it was uploaded.
+// Real bugsee-cli, no dry run.
+describeReal('maps with custom names (sourcemapFileNames: "[name].map")', () => {
+  for (const failOnError of [true, false]) {
+    const tag = `failOnError ${failOnError}`;
+    const expectUploadedAndGone = (out: string, before: number): void => {
+      const files = readdirSync(out, { recursive: true }) as string[];
+      expect(requests.length, 'uploaded').toBeGreaterThan(before);
+      expect(
+        files.filter((f) => f.endsWith('.map')),
+        'deleted after the confirmed upload',
+      ).toEqual([]);
+      for (const bundle of files.filter((f) => /\.[cm]?js$/.test(f))) {
+        const code = readFileSync(join(out, bundle), 'utf8');
+        expect(code, bundle).toMatch(/\/\/# debugId=[0-9a-f-]{36}/);
+        expect(code, bundle).toMatch(/sourceMappingURL=[^\s]*\.map(?!\.)/);
+        expect(code, bundle).not.toMatch(/sourceMappingURL=[^\s]*\.js\.map/);
+      }
+    };
+
+    it(`Rollup (${tag})`, async () => {
+      const app = makeApp(`rollup-custom-${failOnError}`, { lazy: false });
+      const before = requests.length;
+      const errors: unknown[] = [];
+      const bundle = await rollup({
+        input: join(app.dir, 'index.js'),
+        plugins: [
+          bugseeRollupPlugin({
+            ...pluginOptions(),
+            failOnError,
+            onError: (e: unknown) => errors.push(e),
+          }),
+        ],
+      });
+      await bundle.write({ dir: app.out, sourcemap: true, sourcemapFileNames: '[name].map' });
+      await bundle.close();
+      expect(errors.map(String)).toEqual([]);
+      expectUploadedAndGone(app.out, before);
+    });
+
+    for (const [label, build] of [
+      ['Vite 8 (Rolldown)', viteBuild],
+      ['Vite 7 (Rollup)', vite7Build],
+    ] as const) {
+      it(`${label} (${tag})`, async () => {
+        const app = makeApp(`vite-custom-${label.replace(/\W+/g, '')}-${failOnError}`, {
+          lazy: false,
+        });
+        const before = requests.length;
+        const errors: unknown[] = [];
+        await build(
+          viteConfig(app, [bugseeVite({ failOnError, onError: (e: unknown) => errors.push(e) })], {
+            rollupOptions: { output: { sourcemapFileNames: 'assets/[name].map' } },
+          }),
+        );
+        expect(errors.map(String)).toEqual([]);
+        expectUploadedAndGone(app.out, before);
+      });
+    }
+
+    it(`Rspack (${tag})`, async () => {
+      const app = makeApp(`rspack-custom-${failOnError}`, { lazy: false });
+      const before = requests.length;
+      const errors: unknown[] = [];
+      const compile = await new Promise<{ errors: unknown[] }>((resolve, reject) => {
+        const compiler = rspack({
+          context: app.dir,
+          mode: 'production',
+          entry: join(app.dir, 'index.js'),
+          devtool: false,
+          output: { path: app.out },
+          plugins: [
+            new rspack.SourceMapDevToolPlugin({ filename: '[name].map' }),
+            bugseeRspackPlugin({
+              ...pluginOptions(),
+              failOnError,
+              onError: (e: unknown) => errors.push(e),
+            }),
+          ],
+        });
+        compiler.run((err, stats) => {
+          compiler.close(() =>
+            err
+              ? reject(err)
+              : resolve({
+                  errors: [...(stats as { compilation: { errors: unknown[] } }).compilation.errors],
+                }),
+          );
+        });
+      });
+      expect(compile.errors.map(String)).toEqual([]);
+      expect(errors.map(String)).toEqual([]);
+      expectUploadedAndGone(app.out, before);
+    });
+  }
+});

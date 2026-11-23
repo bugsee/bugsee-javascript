@@ -281,6 +281,8 @@ export async function runPluginUpload(
     resealSri?: boolean;
     /** Directories whose HTML / `.mjs` carry a copy of the hashes. */
     resealDirs?: readonly string[];
+    /** The bundles the in-build stamp wrote (relative to the output directory), for the on-disk re-check. */
+    stampedBundles?: readonly string[];
     /**
      * The build's own outputs (esbuild's metafile). The run then touches exactly these files, never joins another
      * run of the same directory, and registers from these bundles only.
@@ -319,12 +321,14 @@ export async function runPluginUpload(
       dryRun: resolved.dryRun,
       stripSourcesContent: resolved.stripSourcesContent,
       failOnError: resolved.failOnError,
+      onNotice: notify(resolved),
       ...(resolved.onError !== undefined ? { onError: resolved.onError } : {}),
       // Omitted, not sent empty: absence is how the backend tells "no VCS context" from "known empty".
       ...(vcs !== undefined ? { vcs } : {}),
       // Omitted unless true, so the orchestrator's argument stays exactly what it was for every
       // build that did not take the in-build path.
       ...(deps.preStamped === true ? { preStamped: true } : {}),
+      ...(deps.stampedBundles !== undefined ? { stampedBundles: deps.stampedBundles } : {}),
       ...(deps.files !== undefined ? { files: deps.files } : {}),
       ...(deps.resealSri === true ? { resealSri: true } : {}),
       ...(deps.resealDirs !== undefined ? { resealDirs: deps.resealDirs } : {}),

@@ -236,6 +236,28 @@ describe('stampAssets — the round trip', () => {
   });
 });
 
+describe('stampAssets — names that collide when staged', () => {
+  it('refuses assets whose names differ only by case (they would overwrite each other on a case-insensitive disk), before running inject', async () => {
+    const run = vi.fn(async () => ({ code: 0, stdout: '', stderr: '' }));
+    const store = memoryStore({ 'A.js': 'one();\n', 'a.js': 'two();\n' });
+    await expect(stampAssets(store, { run })).rejects.toThrow(
+      /A\.js and a\.js differ only by case/,
+    );
+    // Whichever comes second, upper or lower case.
+    await expect(
+      stampAssets(memoryStore({ 'a.js': 'one();\n', 'A.js': 'two();\n' }), { run }),
+    ).rejects.toThrow(/a\.js and A\.js differ only by case/);
+    expect(run).not.toHaveBeenCalled();
+    expect(store.updates).toEqual([]);
+  });
+
+  it('distinct names, and the same name in different directories, are fine', async () => {
+    const run = vi.fn(async () => ({ code: 0, stdout: '', stderr: '' }));
+    await stampAssets(memoryStore({ 'a.js': 'x\n', 'b/a.js': 'y\n', 'a.js.map': '{}' }), { run });
+    expect(run).toHaveBeenCalledOnce();
+  });
+});
+
 describe('stampAssets — verifying the stamp before it is written back', () => {
   const inject =
     (edit: (path: string, content: string) => string | undefined) => async (args: string[]) => {

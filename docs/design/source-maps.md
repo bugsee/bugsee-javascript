@@ -188,9 +188,12 @@ every later hash is taken over the stamped bytes:
 | webpack 5, **Rspack** | `compilation.hooks.processAssets` at `PROCESS_ASSETS_STAGE_DEV_TOOLING + 1` (501) | maps are emitted AT 500; `webpack-subresource-integrity` / Rspack's `SubresourceIntegrityPlugin` hash later (measured: after 700), so they hash the stamped bytes — for the HTML and for the lazy-chunk `sriHashes` table in the runtime. Rspack uses the same `compiler.rspack` API (`Compilation`, `sources.RawSource`) as webpack; verified against a real Rspack 2.2.9 build with the built-in SRI plugin. |
 | **Vite**, **Rollup** | `generateBundle` with `order: 'pre'` | the bundle's chunks (`code`) and their `.map` files (bundle ASSETS: measured on Rollup 4.65, Vite 7.3 and Vite 8.3/Rolldown) are in memory and are what gets written. `order: 'pre'` runs before Vite builds `index.html` (where a `transformIndexHtml` SRI plugin hashes) and before default-order and `post` hooks. |
 
-The in-build stamp is **per build**: webpack/Rspack reset it per compilation; Vite/Rollup record it per output
-directory in `generateBundle` and consume it in the matching `writeBundle` (so a stamp can never carry over to a
-later build of the same directory, nor from one Vite environment to another). A failed or impossible in-build
+The in-build stamp is **per build**: webpack/Rspack reset it per compilation; Vite/Rollup record it per OUTPUT
+(keyed by the output-options object both hooks receive, not the directory, so two outputs written concurrently
+into one folder cannot consume each other's answer) in `generateBundle` and consume it in the matching
+`writeBundle` (so a stamp can never carry over to a later build, nor from one Vite environment to another; a
+write that cannot be matched is simply not stamped). Assets whose names differ only by case cannot be staged on
+a case-insensitive disk and fall back to post-emit. A failed or impossible in-build
 stamp degrades to the POST-EMIT path below — never to an unchecked page: a chunk whose map is not a bundle asset
 (an older Rollup, `sourcemap: 'inline'`) is not stamped in memory and says so once; a failed stamp is reported
 (thrown under `failOnError`).
@@ -224,12 +227,54 @@ After ANY stamp (in-build or post-emit), `verify-stamp.ts` checks it, because st
 
 In-build, a failure writes NOTHING back (all or nothing: the asset table is exactly what the bundler produced),
 reports through `onError` (throws under `failOnError`) and falls back to the post-emit path. Post-emit, the
-originals are snapshotted before `inject` (the build's own scripts and maps, same walk fence as map deletion); a
-failing file is restored to its original bytes **together with its pair**, and reported. After the bundler wrote
-an in-build stamp, `verifyStampedPairs` re-checks the files on disk (every bundle with a map carries a debugId its
-map shares), which is what catches a later step regenerating a map. A stamped build is also re-checked against
+originals are SPILLED to a temp directory before `inject` with a content hash (not held in memory; one bundle
+and its map are in memory at a time), covering everything inject can change: the whole output directory. The
+walk skips `src`, `test`, `node_modules` and dot-directories ONLY when the directory is the project root or
+above, where it keeps the walk out of the source tree (Rollup `preserveModules` writes `dist/src/*.js`, which
+inject stamps and the snapshot must therefore cover). A directory that IS the working directory or contains it
+(a bare `output.file` resolves to `.`) is never snapshotted or restored, and says so; an ordinary output
+directory is verified even when it holds a `package.json` (`dist/cjs` `{"type":"commonjs"}`, ng-packagr). If
+the spill itself fails (a full disk) the spill directory is removed, inject does NOT run, and it is reported
+(an unverifiable, unrestorable stamp is not applied). A failing file is restored to its original bytes **together with its pair**
+(bundle first, via write-temp-then-rename, keeping the file mode and writing through a symlink); a restore that fails is reported by name as still carrying the
+unverified stamp. The pair is resolved from the bundle's `sourceMappingURL` (custom `sourcemapFileName(s)`
+names), falling back to `<bundle>.map`. After the bundler wrote an in-build stamp, the files are re-checked on
+disk (every bundle with a map carries a debugId its map shares), which is what catches a later step regenerating
+a map; only the bundles the stamp wrote are judged, never the directory, so a `public/` script or a stale file
+beside them is not mistaken for a miss. A stamped build is also re-checked against
 its HTML (`findIntegrityMismatches`, `sri.ts`): any `<script integrity>` / `<link rel=modulepreload integrity>` whose
 hash no longer matches the emitted bytes is reported (a warning; thrown only under `failOnError`).
+
+**Known limits of the on-disk verification** (accepted, no code change): the post-emit snapshot walk stops at
+a depth of 6 while inject stamps deeper files (those are stamped but neither verified nor restorable); the walk
+is unfenced when the output directory is a project directory reached from a different working directory (the
+project-root refusal compares against the cwd); and `realpath` does not normalise case on case-insensitive file
+systems, so the cwd-equals-output check can miss a differently-cased spelling of the same directory. A spill
+directory that cannot be removed (EPERM/EBUSY) is reported, never thrown. Windows paths resolve a custom map
+name through the native path API (the in-memory asset names use posix).
+
+### Uploading a pre-stamped directory
+
+A pre-stamped build is uploaded as an **explicit file set**, never as the directory. Only what the in-build
+stamp wrote has a debug-id; anything else in the output directory (a `public/` vendor script and its map, a
+stale map with `emptyOutDir: false`) has none, and the real bugsee-cli (0.9.0, measured, without `--dry-run`)
+exits non-zero for a directory that holds a map without a debug-id ("source map has no debug_id … nothing was
+uploaded"), which would lose EVERY map of the build. So every uploadable map under the directory (the whole output directory, fenced only at a project
+root) is partitioned by whether it carries a debug-id BEFORE the CLI call. "Uploadable" is what the CLI scans a
+directory for: **every `*.map` except stylesheet and declaration maps** (`.css.map`, `.d.ts.map`, `.d.mts.map`,
+`.d.cts.map`), NOT only `*.js.map`: the stamp keys a map whatever it is called (`sourcemapFileName(s)`,
+`[name].map`), and a narrower filter silently dropped such a build's maps (measured on Rollup, Vite and Rspack
+with `[name].map`). The keyed ones are uploaded by path (in batches), the rest are left on disk untouched and
+reported as a **notice** (`onNotice`), not an error: they were never part of the build, so they do not fail
+`failOnError`. If nothing is keyed there is no CLI call (a notice; under `failOnError` the "no maps" failure the
+strict CLI used to give). The uploaded set is also the **deletion set**: one walker, and a map is deleted only if
+it was in the uploaded set after the upload succeeded (a keyed map under `test/` or a dot-directory is uploaded
+AND deleted; nothing the walk merely saw is ever deleted). Consequently stylesheet and declaration maps are not
+deleted on this path (they were not uploaded). A dry run still passes the directory (nothing was stamped; `--dry-run` only warns). Rspack development
+builds that are not uploaded (`uploadInDevelopment` unset) are no longer stamped either. Covered by real builds
+(`plugin.in-build.real-build.test.ts`: Vite 7/8 with a `publicDir` vendor script, Rollup with a stale one, and `[name].map` custom map
+names on Rollup, Vite 7/8 and Rspack; real CLI, no dry run, `failOnError` on and off). Not run for real: webpack
+itself (Rspack shares its SourceMapDevToolPlugin filename path).
 
 ### Map deletion
 

@@ -642,6 +642,8 @@ describe('uploadSourcemaps — already stamped in the build', () => {
       findSri,
       verifySri: async () => [],
       deleteMapFiles: async () => [],
+      listUploadMaps: async () => ['/build/dist/main.js.map'],
+      partitionMaps: allKeyed,
     });
 
     // A pinned build is exactly what this path exists to support — refusing it would undo the fix.
@@ -674,6 +676,8 @@ describe('uploadSourcemaps — already stamped in the build', () => {
         { html: '/build/dist/index.html', script: '/build/dist/main.js', integrity: 'sha384-X' },
       ],
       deleteMapFiles: async () => [],
+      listUploadMaps: async () => ['/build/dist/main.js.map'],
+      partitionMaps: allKeyed,
     });
 
     expect(onError).toHaveBeenCalledOnce();
