@@ -8,13 +8,14 @@ import { createHash } from 'node:crypto';
 import type { Dirent } from 'node:fs';
 import { existsSync } from 'node:fs';
 import { readdir, readFile, stat } from 'node:fs/promises';
-import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
+import nodePath, { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { findAppIdentity } from './app-identity';
 import { readDebugId } from './debug-ids';
 import { loadBuildPluginEnv, mergeBuildPluginEnv } from './env-file';
 import type { EnvRecord } from './run-cli';
 import { findIntegrityMismatches, findSriProtectedScripts } from './sri';
 import { MAX_WALK_DEPTH, NEVER_WALK } from './stamp-files';
+import { localPointerTarget } from './verify-stamp';
 
 /** Bumped on any incompatible change to `DoctorReport`; the Rust command emits the same number. */
 export const DOCTOR_SCHEMA_VERSION = 1;
@@ -284,12 +285,16 @@ export async function diagnoseBuildOutput(
     if (pointer !== undefined && pointer !== '') {
       if (/^data:/i.test(pointer)) {
         inline.push(name);
-      } else if (!/^[a-z][a-z0-9+.-]*:/i.test(pointer) && !pointer.startsWith('//')) {
-        const target = resolve(dirname(bundle), decodeURIComponent(pointer.split(/[?#]/)[0] ?? ''));
-        if (mapSet.has(target) || existsSync(target)) {
-          mapPath = target;
-        } else {
-          dangling.push(`${name} -> ${pointer}`);
+      } else {
+        // The pairing rule the stamp itself uses (verify-stamp.ts): a LOCAL pointer, resolved from the
+        // bundle's directory; remote / root-absolute / malformed pointers pair nothing.
+        const target = localPointerTarget(bundle, code, nodePath);
+        if (target !== undefined) {
+          if (mapSet.has(target) || existsSync(target)) {
+            mapPath = target;
+          } else {
+            dangling.push(`${name} -> ${pointer}`);
+          }
         }
       }
     }

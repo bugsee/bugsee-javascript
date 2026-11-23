@@ -215,6 +215,21 @@ describe('diagnoseBuildOutput', () => {
     expect(ids(report)).not.toContain('map.pointer-dangling');
   });
 
+  it('a root-absolute or malformed pointer pairs nothing and is not reported dangling (the stamp rule)', async () => {
+    put('a.js', `a\n//# sourceMappingURL=/a.js.map${stamp(ID_A)}`);
+    put('b.js', `b\n//# sourceMappingURL=%E0%A4%A.map${stamp(ID_B)}`);
+    const report = await run();
+    expect(ids(report)).not.toContain('map.pointer-dangling');
+    expect(report.summary.bundles).toBe(2);
+  });
+
+  it('a pointer with an unencoded space or percent-escape resolves like the stamp does', async () => {
+    put('a b.js', `a\n//# sourceMappingURL=a b.js.map${stamp(ID_A)}`);
+    put('a b.js.map', mapJson({ debugId: ID_B }));
+    const report = await run();
+    expect(report.findings.find((f) => f.id === 'stamp.map-id-mismatch')?.file).toBe('a b.js.map');
+  });
+
   it('map.inline: a data: map has nothing to upload', async () => {
     put('a.js', `a\n//# sourceMappingURL=data:application/json;base64,e30=${stamp(ID_A)}`);
     put('b.js', 'b\n//# sourceMappingURL=data:application/json;base64,e30=');

@@ -169,6 +169,30 @@ describeReal('doctor on real, stamped build output', () => {
     expectHealthyStamped(await doctor(app.out));
   });
 
+  it('Rollup with maps moved by sourcemapFileNames has no errors (and reports the wrong pointer Rollup writes)', async () => {
+    const app = makeApp('rollup-moved');
+    const bundle = await rollup({
+      input: join(app.dir, 'index.js'),
+      plugins: [bugseeRollupPlugin(pluginOptions())],
+    });
+    await bundle.write({
+      dir: app.out,
+      sourcemap: true,
+      sourcemapFileNames: 'maps/[name].map',
+    });
+    await bundle.close();
+    const report = await doctor(app.out);
+    expect(idsOf(report, 'error')).toEqual([]);
+    expect(report.summary.maps).toBe(report.summary.bundles);
+    expect(report.findings.some((f) => f.file?.startsWith('maps/'))).toBe(true);
+    // Rollup writes the pointer as `index.map` (relative to the file NAME, ignoring the `maps/` directory), so the
+    // browser's request 404s: the doctor says so, truthfully. The moved maps are still read and validated.
+    expect(idsOf(report, 'warning').sort()).toEqual([
+      'map.pointer-dangling',
+      'map.public-leftover',
+    ]);
+  });
+
   it('Rspack (webpack in-build stamping path) with hidden maps is healthy', async () => {
     const app = makeApp('rspack');
     await new Promise<void>((resolve, reject) => {
