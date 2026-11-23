@@ -260,6 +260,22 @@ produced by this build" notice, so it fails safe (nothing is wrongly deleted). T
 matters, deliberately NOT implemented: identify files by `stat` (dev + ino) instead of by name, or do not stage
 `?`-named webpack assets and send them to the post-emit path.
 
+### Ordering constraint: RealContentHashPlugin, and string sources
+
+The in-build stamp runs at `PROCESS_ASSETS_STAGE_DEV_TOOLING + 1`, BEFORE webpack's `RealContentHashPlugin`
+(`PROCESS_ASSETS_STAGE_OPTIMIZE_HASH`) renames `[contenthash]` chunks from their final bytes. That plugin
+rewrites the hash references (the runtime's chunk-name table, each bundle's `//# sourceMappingURL`, the map's
+`file`) **only inside string sources**. Stamped bytes handed back as a Buffer kept the stale pre-rename names:
+the runtime asked for `x.<oldhash>.js` while `x.<newhash>.js` was on disk (`ChunkLoadError`, a broken page).
+Measured on real webpack 5 and Rspack builds in Chromium with a lazy `import()`. So the compilation store writes
+the stamped result back as a **string source** (`new RawSource(text)`), decoded as strict, BOM-preserving UTF-8;
+an asset whose bytes are not valid UTF-8 refuses the whole stamp BEFORE anything is written (`store.check`, a
+two-phase write-back), and the build falls back to stamping after emit. Vite and Rollup name chunks before
+`generateBundle` (the names are final there) and esbuild / the CLI stamp after the hash step, so none of them is
+affected; a hashed-lazy-chunk real build of each runs in Chromium (`instrumentation-tests/test/lazy-chunk.e2e.ts`,
+which also covers Rspack with `SubresourceIntegrityPlugin` and checks that every bundle's `sourceMappingURL` and
+map `file` name a file that exists).
+
 ### Maps that are not the bundle sibling
 
 `sourcemapFileNames` can put a map anywhere in the output (`maps/[name].js.map`, bundles in `js/`). `inject`
