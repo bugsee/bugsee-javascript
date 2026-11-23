@@ -742,7 +742,7 @@ describe('createNextWebpackPlugin: no public maps Bugsee asked for when nothing 
     const ctx = context({}, { sri: true, forcedMaps: true });
     const warned = await run('client', ctx, deps({ stamp: failing() }));
     expect(warned).toHaveLength(1);
-    expect(warned[0]).toMatch(/in-build debug-ID stamping failed: Error: inject broke/);
+    expect(warned[0]).toMatch(/in-build debug-ID stamping did not apply: Error: inject broke/);
     // The notice does not carry the cause (so a silenced notice cannot be the only place it lives).
     expect(vi.mocked(ctx.say).mock.calls[0]?.[0]).not.toContain('inject broke');
   });
@@ -800,6 +800,83 @@ describe('createNextWebpackPlugin: no public maps Bugsee asked for when nothing 
     });
     await run('client', context({ dryRun: true }, { forcedMaps: true }), d);
     expect(d.remove).not.toHaveBeenCalled();
+  });
+
+  it('an SRI build where nothing could be staged (no thrown cause) still reports through onError / console.warn', async () => {
+    const nothing = () => vi.fn(async () => ({ stamped: [], maps: {}, bundles: 0 }));
+    const onError = vi.fn();
+    await run(
+      'client',
+      context({ onError }, { sri: true, forcedMaps: true }),
+      deps({ stamp: nothing() }),
+    );
+    expect(onError).toHaveBeenCalledWith(
+      expect.objectContaining({ message: expect.stringContaining('could be staged') }),
+    );
+    const warned = await run(
+      'client',
+      context({}, { sri: true, forcedMaps: true }),
+      deps({ stamp: nothing() }),
+    );
+    expect(warned.some((w) => w.includes('could be staged'))).toBe(true);
+  });
+
+  it('tries every removal, then reports each failure (partial removal is reported, not hidden)', async () => {
+    const onError = vi.fn();
+    const remove = vi.fn(async (path: string) => {
+      if (path.endsWith('a.js.map')) throw new Error(`EPERM ${path}`);
+    });
+    const ctx = context({ onError }, { sri: true, forcedMaps: true });
+    await run('client', ctx, deps({ stamp: failing(), remove }));
+    expect(remove).toHaveBeenCalledTimes(2);
+    expect(onError).toHaveBeenCalledWith(
+      expect.objectContaining({ message: expect.stringContaining('a.js.map') }),
+    );
+    expect(ctx.say).toHaveBeenCalledWith(expect.stringContaining('could not all be removed'));
+  });
+
+  it('a throwing onError aborts the hook, as the core\u2019s own does', async () => {
+    const onError = vi.fn(() => {
+      throw new Error('host logger down');
+    });
+    const ctx = context({ onError }, { sri: true, forcedMaps: true });
+    await expect(
+      run(
+        'client',
+        ctx,
+        deps({
+          stamp: failing(),
+          remove: vi.fn(async () => {
+            throw new Error('EPERM');
+          }),
+        }),
+      ),
+    ).rejects.toThrow('host logger down');
+  });
+
+  it('only claims a dry run deleted nothing when something would have been deleted', async () => {
+    const forced = context({ dryRun: true }, { sri: true, forcedMaps: true });
+    await run('client', forced, deps({ stamp: failing() }));
+    expect(forced.say).toHaveBeenCalledWith(
+      expect.stringContaining('Dry run: nothing was deleted'),
+    );
+    const own = context({ dryRun: true }, { sri: true });
+    await run('client', own, deps({ stamp: failing() }));
+    expect(own.say).toHaveBeenCalledWith(expect.not.stringContaining('Dry run'));
+    expect(own.say).toHaveBeenCalledWith(expect.stringContaining('publicly served'));
+  });
+
+  it('an abandoned stamp on a dry run says the forced maps remain public', async () => {
+    const abandon = () =>
+      vi.fn(async () => {
+        throw Object.assign(new Error('outside'), { unreachableMap: true });
+      });
+    const forced = context({ dryRun: true }, { forcedMaps: true });
+    await run('client', forced, deps({ stamp: abandon() }));
+    expect(forced.say).toHaveBeenCalledWith(expect.stringContaining('publicly served'));
+    const own = context({ dryRun: true });
+    await run('client', own, deps({ stamp: abandon() }));
+    expect(own.say).not.toHaveBeenCalled();
   });
 
   it('on a build without SRI the fallback message is printed, once', async () => {

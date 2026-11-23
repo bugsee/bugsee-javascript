@@ -58,7 +58,7 @@ export const FALLBACK_SRI_NOTICE = (
   mapsRemoved: boolean,
   options: { dryRun?: boolean; removalFailed?: boolean } = {},
 ): string =>
-  `the ${kind} build uses Subresource Integrity (\`experimental.sri\`) and its in-build debug-ID stamp failed (the cause is reported separately), so nothing was stamped or uploaded: stamping after emit would invalidate the pinned hashes and make the browser refuse the scripts.` +
+  `the ${kind} build uses Subresource Integrity (\`experimental.sri\`) and its in-build debug-ID stamp did not apply (the reason is reported separately), so nothing was stamped or uploaded: stamping after emit would invalidate the pinned hashes and make the browser refuse the scripts.` +
   (kind !== 'client'
     ? ''
     : mapsRemoved

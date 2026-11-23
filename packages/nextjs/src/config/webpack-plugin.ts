@@ -287,21 +287,26 @@ export function createNextWebpackPlugin(
         // No upload will follow: the browser maps Bugsee itself turned on (the app did not ask for them) must not
         // be left in `.next/static`, which is served publicly. Only this compilation's own files, only the ones
         // Bugsee forced; maps the app enabled stay.
-        // Never throws (a failed upload must not fail the build): reported, and only `failOnError` rethrows. Not on
-        // a dry run, which deletes nothing (as the core's own upload never does).
+        // Every removal is attempted, the failures are collected and reported afterwards (through `onError`, or a
+        // console warning); only `failOnError` rethrows the first. A throwing `onError` aborts like the core's own
+        // does. Not on a dry run, which deletes nothing (as the core's own upload never does).
+        const wouldDiscard = kind === 'client' && context.forcedMaps === true;
         const discardForcedMaps = async (): Promise<{ removed: boolean; failed: boolean }> => {
-          if (kind !== 'client' || context.forcedMaps !== true || resolved.dryRun) {
+          if (!wouldDiscard || resolved.dryRun) {
             return { removed: false, failed: false };
           }
-          try {
-            for (const map of [...files.maps, ...files.stylesheetMaps]) {
+          const failures: unknown[] = [];
+          for (const map of [...files.maps, ...files.stylesheetMaps]) {
+            try {
               await remove(map);
+            } catch (error) {
+              failures.push(error);
             }
-            return { removed: true, failed: false };
-          } catch (error) {
-            if (resolved.failOnError) {
-              throw error;
-            }
+          }
+          if (failures.length > 0 && resolved.failOnError) {
+            throw failures[0];
+          }
+          for (const error of failures) {
             (
               resolved.onError ??
               ((e: unknown) =>
@@ -309,11 +314,16 @@ export function createNextWebpackPlugin(
                   `[bugsee] could not remove the browser source maps Bugsee turned on: ${String(e)}`,
                 ))
             )(error);
-            return { removed: false, failed: true };
           }
+          return { removed: failures.length === 0, failed: failures.length > 0 };
         };
         if (state.abandoned === true) {
           await discardForcedMaps();
+          if (wouldDiscard && resolved.dryRun) {
+            context.say(
+              'dry run: nothing was deleted, so the browser source maps Bugsee turned on stay in `.next/static`, publicly served.',
+            );
+          }
           return;
         }
         // The in-build stamp is SRI-safe (it runs before anything hashes). Its fallback, stamping the written
@@ -322,17 +332,22 @@ export function createNextWebpackPlugin(
         if (!state.preStamped && (context.sri === true || (await hasSriManifest(outDir)))) {
           const { removed, failed } = await discardForcedMaps();
           context.say(
-            FALLBACK_SRI_NOTICE(kind, removed, { dryRun: resolved.dryRun, removalFailed: failed }),
+            FALLBACK_SRI_NOTICE(kind, removed, {
+              dryRun: resolved.dryRun && wouldDiscard,
+              removalFailed: failed,
+            }),
           );
-          // The CAUSE goes through onError / console.warn, never through the notice sink: `silent` mutes notices,
-          // and a failure must not vanish with them.
-          if (state.failure !== undefined) {
-            (
-              resolved.onError ??
-              ((e: unknown) =>
-                console.warn(`[bugsee] in-build debug-ID stamping failed: ${String(e)}`))
-            )(state.failure);
-          }
+          // The REASON goes through onError / console.warn, never through the notice sink: `silent` mutes notices,
+          // and a failure must not vanish with them. Nothing failed when nothing could be staged (no cause was
+          // thrown), so that case is given one.
+          (
+            resolved.onError ??
+            ((e: unknown) =>
+              console.warn(`[bugsee] in-build debug-ID stamping did not apply: ${String(e)}`))
+          )(
+            state.failure ??
+              new Error(`none of the ${kind} build's script assets could be staged for stamping`),
+          );
           return;
         }
         if (state.failure !== undefined) {

@@ -561,6 +561,39 @@ describe('withBugsee — Subresource Integrity', () => {
     expect(built.log).toMatch(/browser source maps Bugsee had turned on were removed/);
   });
 
+  const sriFailing = (name: string, options: string) =>
+    build({
+      name,
+      next: 'next16',
+      args: ['--webpack'],
+      options,
+      nextConfig: "experimental: { sri: { algorithm: 'sha256' } },",
+      failInBuildStamp: true,
+    });
+
+  it('webpack + SRI + failOnError: a failed stamp fails the build, and no maps are left behind', async () => {
+    const built = await sriFailing('sri-webpack-strict', 'failOnError: true,');
+    expect(built.status).not.toBe(0);
+    expect(built.log).toMatch(/inject/);
+    expect(maps(join(built.dir, '.next', 'static'))).toEqual([]);
+  });
+
+  it('webpack + SRI + silent: the notices are muted, the cause is still audible', async () => {
+    const built = await sriFailing('sri-webpack-silent', 'failOnError: false, silent: true,');
+    expect(built.status, built.log.split('\n').slice(-30).join('\n')).toBe(0);
+    expect(built.log).not.toMatch(/Subresource Integrity/);
+    expect(built.log).toMatch(/in-build debug-ID stamping did not apply/);
+    expect(maps(join(built.dir, '.next', 'static'))).toEqual([]);
+  });
+
+  it('webpack + SRI + dryRun: a failed stamp deletes nothing, and says so', async () => {
+    const built = await sriFailing('sri-webpack-dry', 'failOnError: false, dryRun: true,');
+    expect(built.status, built.log.split('\n').slice(-30).join('\n')).toBe(0);
+    expect(built.uploads).toEqual([]);
+    expect(maps(join(built.dir, '.next', 'static')).length).toBeGreaterThan(0);
+    expect(built.log).toMatch(/Dry run: nothing was deleted/);
+  });
+
   it('turbopack + SRI + maps the APP asked for: they stay, the notice says they are public, said once', async () => {
     const built = await build({
       name: 'sri-turbopack-own-maps',
