@@ -4,7 +4,7 @@ Express adapter for the Bugsee SDK: per-request context, `http.server` tracing a
 
 Part of the Bugsee JavaScript SDK (public beta, 0.1.0-beta.x).
 
-Install this package directly in Express apps, on its own: it depends on `@bugsee/bugsee` and re-exports it, so `launch()` and the adapter API come from this one package. On Bun, install `@bugsee/bun` next to it and import `launch` from `@bugsee/bun` to keep Bun-specific instrumentation.
+Install this package directly in Express apps, on its own: it depends on `@bugsee/bugsee` and re-exports it, so `launch()` and the adapter API come from this one package. On Bun, also install `@bugsee/bugsee` and import `launch` from `@bugsee/bugsee/bun` (the Bun build, with performance monitoring), while `setup*` still comes from this package.
 
 ## Install
 
@@ -23,7 +23,7 @@ Requires Node.js 18 or newer. No peer dependency is declared: the adapter only u
 Call `launch()` as early as possible, at the top of your server entry. On a server it returns the client directly. Then pass your app to `setupExpress`.
 
 ```ts
-// server.ts
+// server.ts (Node.js)
 import { launch, setupExpress } from "@bugsee/express";
 import express from "express";
 
@@ -33,6 +33,14 @@ const app = express();
 setupExpress(app);
 // ... your routes ...
 app.listen(3000);
+```
+
+On Bun, import `launch` from the umbrella Bun entry instead (the rest of the file is unchanged):
+
+```ts
+// server.ts (Bun)
+import { launch } from "@bugsee/bugsee/bun";
+import { setupExpress } from "@bugsee/express";
 ```
 
 `setupExpress` installs the request middleware immediately. It appends the error handler on the first request, by which point your routes are registered, so it lands last.

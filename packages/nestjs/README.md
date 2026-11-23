@@ -4,7 +4,7 @@ NestJS adapter for the Bugsee SDK: per-request context, `http.server` tracing an
 
 Part of the Bugsee JavaScript SDK (public beta, 0.1.0-beta.x).
 
-Install this package directly in NestJS apps, on its own: it depends on `@bugsee/bugsee` and re-exports it, so `launch()` and the adapter API come from this one package. On Bun, install `@bugsee/bun` next to it and import `launch` from `@bugsee/bun` to keep Bun-specific instrumentation.
+Install this package directly in NestJS apps, on its own: it depends on `@bugsee/bugsee` and re-exports it, so `launch()` and the adapter API come from this one package. On Bun, also install `@bugsee/bugsee` and import `launch` from `@bugsee/bugsee/bun` (the Bun build, with performance monitoring), while `setup*` still comes from this package.
 
 ## Install
 
@@ -23,7 +23,7 @@ Requires Node.js 18 or newer (Nest 12 itself requires Node.js 20 or newer). Peer
 Call `launch()` as early as possible, at the top of your server entry. On a server it returns the client directly. Then pass your app to `setupNest`.
 
 ```ts
-// server.ts
+// server.ts (Node.js)
 import { launch, setupNest } from "@bugsee/nestjs";
 import { NestFactory } from "@nestjs/core";
 import { AppModule } from "./app.module";
@@ -33,6 +33,14 @@ launch("YOUR_APP_TOKEN");
 const app = await NestFactory.create(AppModule);
 setupNest(app);
 await app.listen(3000);
+```
+
+On Bun, import `launch` from the umbrella Bun entry instead (the rest of the file is unchanged):
+
+```ts
+// server.ts (Bun)
+import { launch } from "@bugsee/bugsee/bun";
+import { setupNest } from "@bugsee/nestjs";
 ```
 
 ## What it does
