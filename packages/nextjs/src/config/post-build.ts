@@ -48,6 +48,27 @@ export async function runPostBuild(
   if (!resolved.enabled) {
     return;
   }
+  // Next rethrows whatever this hook throws and fails the build, so a telemetry step must not throw (an unreadable
+  // bundle, a full disk): it is reported, and only `failOnError` lets it stop the build.
+  try {
+    await postBuild(context, metadata, deps);
+  } catch (error) {
+    if (resolved.failOnError) {
+      throw error;
+    }
+    (
+      resolved.onError ??
+      ((e: unknown) => console.warn(`[bugsee] source-map upload skipped: ${String(e)}`))
+    )(error);
+  }
+}
+
+async function postBuild(
+  context: BugseeNextContext,
+  metadata: PostBuildMetadata,
+  deps: PostBuildDeps,
+): Promise<void> {
+  const { resolved } = context;
   const upload = deps.upload ?? runPluginUpload;
   const collect = deps.collect ?? collectBuildFiles;
   const exists = deps.exists ?? fileExists;

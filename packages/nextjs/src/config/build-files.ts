@@ -18,8 +18,8 @@ export interface BuildFiles {
 
 const SCRIPT = /\.[cm]?js$/;
 const MAX_DEPTH = 12;
-/** Directories that are never build output, wherever they appear. */
-const SKIP = new Set(['node_modules', 'cache']);
+/** Directories that are never build output, wherever they appear (a route may well be called `cache`). */
+const SKIP = new Set(['node_modules']);
 
 async function listFiles(dir: string, depth: number): Promise<string[]> {
   if (depth > MAX_DEPTH) {

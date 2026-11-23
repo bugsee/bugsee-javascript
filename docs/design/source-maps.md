@@ -390,7 +390,7 @@ alike); otherwise webpack. `NEXT_RSPACK` (the experimental Rspack adapter) is no
 | upload | each compilation's `afterEmit`, its own files | the hook: `.next/static` (browser) then `.next/server` (node + edge), explicit file lists |
 | maps | client: `productionBrowserSourceMaps` (forced on only if unset); server/edge: `devtool: 'source-map'` unless the app set one | always emitted (browser: `productionBrowserSourceMaps`; server maps are emitted regardless of `serverSourceMaps`, measured on 16.4) |
 | SRI (`experimental.sri`) | works: the hashes are of the stamped bytes (verified against the written HTML) | **not stampable**: Turbopack writes `server/subresource-integrity-manifest.json` and the HTML hashes BEFORE the hook (appending one byte in the hook made every `integrity` wrong), so the build is left unmodified, a notice says why, and nothing is uploaded |
-| min Next | any with `webpack()` | 15.4.1 (the first release with `compiler.runAfterProductionCompile`; verified in the 15.4.0 and 15.4.1 types); older Turbopack builds get a notice |
+| min Next | any with `webpack()` | 15.4.0 (the first release with `compiler.runAfterProductionCompile`: present in the 15.4.0 types, schema and build, absent in 15.3.x, checked against the published tarballs); older Turbopack builds get a notice. `compiler.define` (the baked version/build) needs 15.1.0; below that it is not added |
 
 **Policy.** Browser maps live in `.next/static`, which `next start` and CDNs serve to every visitor: `deleteMaps`
 (default true) removes them after a *confirmed* upload, exactly as the plugins do (and, as there, a failed upload
@@ -407,8 +407,14 @@ their shared map stays on disk, unuploaded; they are Turbopack's runtime, not th
 `compiler.runAfterProductionCompile` runs before ours; its `compiler.define` keys win; `productionBrowserSourceMaps`
 is respected when set. Without a token the integration changes nothing Next emits.
 
-**Open.** Both runs resolve the app identity and the token file from `process.cwd()` at config load, so run
-`next build` from the project directory (Next passes no project dir to a config function). A Turbopack SRI build
+**Open.** Both runs resolve the app identity, the token file and the installed Next from `process.cwd()` at config
+load, so run `next build` from the project directory (Next passes no project dir to a config function). The
+Turbopack hook does receive `metadata.projectDir` and says so when it differs from the directory the config was
+resolved for (`next build <dir>` from a monorepo root); it does not re-resolve, so the baked define and the upload
+identity cannot disagree. Applying `withBugsee` twice is a no-op the second time (a WeakSet of extended configs). Any
+failure in the post-build hook is contained (reported, never thrown) unless `failOnError`, because Next fails the
+build on anything the hook throws. A failed upload leaves the browser maps in the public `.next/static` (forced on
+by `withBugsee`), and Next 15's shared Turbopack runtime map stays there too (unuploaded, not the app's code). A Turbopack SRI build
 cannot be symbolicated by upload (see the table); an in-hook alternative would have to re-hash the integrity
 manifests and the HTML Next writes later, which is Next's contract, not ours.
 

@@ -50,14 +50,14 @@ describe('versionAtLeast', () => {
     ['16.4.6', true],
     ['15.4.1', true],
     ['15.4.2', true],
+    ['15.4.0', true],
     ['15.5.0', true],
-    ['15.4.0', false],
     ['15.3.9', false],
     ['14.9.9', false],
-    ['15.4.1-canary.3', true],
+    ['15.4.0-canary.3', true],
     ['not-a-version', true],
   ])('%s -> %s', (version, expected) => {
-    expect(versionAtLeast(version, [15, 4, 1])).toBe(expected);
+    expect(versionAtLeast(version, [15, 4, 0])).toBe(expected);
   });
 });
 
@@ -111,11 +111,23 @@ describe('withBugsee: composition', () => {
     expect(out.compiler.removeConsole).toBe(true);
   });
 
-  it('bakes the identity even without a token, but adds no define when none was found', () => {
-    expect(apply({}, deps(context({ enabled: false }))).compiler.define).toMatchObject({
-      __BUGSEE_APP_VERSION__: '"1.0.0"',
-    });
+  it('adds no define when no identity was found', () => {
     expect(apply({}, deps(context({ identityDefines: {} }))).compiler).toBeUndefined();
+  });
+
+  it('adds nothing at all without a token, the define included', () => {
+    const config = { reactStrictMode: true };
+    expect(apply(config, deps(context({ enabled: false })))).toEqual(config);
+  });
+
+  it('bakes the identity from Next 15.1.0 (where compiler.define exists), not before', () => {
+    const defined = (version: string | undefined): boolean =>
+      apply({}, deps(context(), { nextVersion: () => version })).compiler?.define !== undefined;
+    expect(defined('15.0.8')).toBe(false);
+    expect(defined('14.2.35')).toBe(false);
+    expect(defined('15.1.0')).toBe(true);
+    expect(defined('16.4.6')).toBe(true);
+    expect(defined(undefined)).toBe(true);
   });
 });
 
@@ -289,14 +301,15 @@ describe('withBugsee: Turbopack', () => {
     const ctx = context();
     const out = apply({}, turbo({ nextVersion: () => '15.3.0' }, ctx));
     expect(out.compiler?.runAfterProductionCompile).toBeUndefined();
-    expect(ctx.say).toHaveBeenCalledWith(expect.stringContaining('15.4.1'));
+    expect(ctx.say).toHaveBeenCalledWith(expect.stringContaining('15.4.0'));
   });
 
-  it('draws the line at 15.4.1: the hook is installed from there, not before', () => {
+  it('draws the line at 15.4.0: the hook is installed from there, not before', () => {
     const hooked = (version: string): boolean =>
       typeof apply({}, turbo({ nextVersion: () => version })).compiler
         ?.runAfterProductionCompile === 'function';
-    expect(hooked('15.4.0')).toBe(false);
+    expect(hooked('15.3.9')).toBe(false);
+    expect(hooked('15.4.0')).toBe(true);
     expect(hooked('15.4.1')).toBe(true);
     expect(hooked('15.5.28')).toBe(true);
     expect(hooked('16.4.6')).toBe(true);
@@ -346,5 +359,57 @@ describe('withBugsee: Turbopack', () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe('withBugsee: applied twice', () => {
+  const nextArgs = { dev: false, isServer: false };
+
+  it('is a no-op the second time for an object config (one plugin, one hook)', () => {
+    const d = deps(context(), { env: { TURBOPACK: '1' } });
+    const once = apply({}, d);
+    const twice = withBugsee(once, {}, d) as Obj;
+    expect(twice).toBe(once);
+    expect(d.createContext).toHaveBeenCalledTimes(1);
+  });
+
+  it('adds one plugin when a webpack config is wrapped twice', () => {
+    const d = deps();
+    const twice = withBugsee(withBugsee({}, {}, d), {}, d) as Obj;
+    expect(twice.webpack({}, nextArgs).plugins).toHaveLength(1);
+  });
+
+  it('is a no-op the second time for a function and an async config', async () => {
+    const d = deps();
+    const wrapped = withBugsee(async () => ({}), {}, d);
+    const twice = withBugsee(wrapped, {}, d) as unknown as (p: string, c: Obj) => Promise<Obj>;
+    const out = await twice('phase-production-build', { defaultConfig: {} });
+    expect(out.webpack({}, nextArgs).plugins).toHaveLength(1);
+    expect(d.createContext).toHaveBeenCalledTimes(1);
+  });
+
+  it('still wraps a config the first pass skipped (another phase)', async () => {
+    const d = deps();
+    const fn = withBugsee(() => ({}), {}, d) as unknown as (p: string, c: Obj) => Promise<Obj>;
+    expect(await fn('phase-development-server', { defaultConfig: {} })).toEqual({});
+    expect((await fn('phase-production-build', { defaultConfig: {} })).webpack).toBeDefined();
+  });
+});
+
+describe('withBugsee: the project directory', () => {
+  const metadata = { projectDir: '/monorepo/apps/web', distDir: '/monorepo/apps/web/.next' };
+
+  it('says so when the hook runs for a different project than the config was resolved for', async () => {
+    const d = deps(context(), { env: { TURBOPACK: '1' }, cwd: () => '/monorepo' });
+    const out = apply({}, d);
+    await out.compiler.runAfterProductionCompile(metadata);
+    expect(d.ctx.say).toHaveBeenCalledWith(expect.stringContaining('/monorepo/apps/web'));
+    expect(d.ctx.say).toHaveBeenCalledWith(expect.stringContaining('resolved for /monorepo'));
+  });
+
+  it('is quiet when they agree', async () => {
+    const d = deps(context(), { env: { TURBOPACK: '1' }, cwd: () => '/monorepo/apps/web' });
+    await apply({}, d).compiler.runAfterProductionCompile(metadata);
+    expect(d.ctx.say).not.toHaveBeenCalled();
   });
 });

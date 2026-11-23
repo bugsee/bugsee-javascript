@@ -88,7 +88,7 @@ What it does, for a production build:
 
 - Turns on `productionBrowserSourceMaps` (only when you did not set it) so the browser bundles have maps to upload.
 - **webpack**: adds one Bugsee plugin to each of the client, server and edge compilations. Each stamps a debug ID into its bundles inside the build (before Subresource Integrity hashes are taken) and, after emit, uploads the maps of exactly the files that compilation wrote.
-- **Turbopack**: has no plugin API, so the upload runs from Next's `compiler.runAfterProductionCompile` hook (Next 15.4.1 or later): after Turbopack wrote `.next` and before Next generates the static pages, it stamps the written bundles with the real `bugsee-cli sourcemaps inject` (verified, and undone if a stamp does not verify), uploads the maps and removes them.
+- **Turbopack**: has no plugin API, so the upload runs from Next's `compiler.runAfterProductionCompile` hook (Next 15.4.0 or later): after Turbopack wrote `.next` and before Next generates the static pages, it stamps the written bundles with the real `bugsee-cli sourcemaps inject` (verified, and undone if a stamp does not verify), uploads the maps and removes them.
 - Deletes the browser maps (`.next/static/**/*.map`, which `next start` and CDNs serve publicly) after a confirmed upload. Server and edge maps stay on disk (`deleteServerMaps` to remove them).
 - Bakes `appVersion` / `appBuild` into every bundle (`compiler.define`) for the runtime SDK.
 
@@ -102,7 +102,14 @@ Options are those of the Bugsee bundler plugins (`appToken`, `appVersion`, `appB
 | `deleteServerMaps` | `false` | Delete server and edge maps after a confirmed upload. |
 | `silent` | `false` | Suppress configuration notices (failures are still reported). |
 
-Without a token the integration changes nothing about what Next emits and uploads nothing. Run `next build` from the project directory: the token file, version and build lookup start there.
+Without a token the integration changes nothing about what Next emits (it adds no source maps, no define, no hook) and uploads nothing.
+
+Things to know:
+
+- The config is resolved once, at load, from the working directory: the token file, the app version and the installed Next version are looked up there. Run `next build` from the project directory. For a Turbopack build the hook is told which project Next is building, and prints a notice if that differs (for example `next build apps/web` from a monorepo root).
+- `withBugsee` turns `productionBrowserSourceMaps` on, so the browser maps are written to `.next/static`, which is served publicly. They are deleted after a confirmed upload. If the upload fails (and `failOnError` is off) they stay there, publicly served, so you can retry. If that is not acceptable, set `failOnError: true` so a failed upload stops the build, or delete `.next/static/**/*.map` in your deploy step.
+- Next 15's Turbopack builds point two runtime chunks at one shared map. Those chunks are left unstamped and that map is neither uploaded nor deleted: it stays in `.next/static`, public. It contains Turbopack's runtime source, not your code.
+- `compiler.define` (the baked version and build) needs Next 15.1.0 or later; the Turbopack upload needs 15.4.0 or later.
 
 Turbopack and Subresource Integrity: Turbopack hashes its output (`experimental.sri`) before the post-build hook runs, so stamping afterwards would make the browser refuse your scripts. An SRI build under Turbopack is therefore left exactly as Next wrote it, with a notice, and no maps are uploaded; build with `--webpack` to upload maps for an SRI build (webpack stamps before the hashes are taken).
 

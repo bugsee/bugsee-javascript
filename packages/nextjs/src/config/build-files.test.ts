@@ -168,11 +168,17 @@ describe('collectBuildFiles', () => {
     expect(parts.maps).toEqual([join(root, 'chunks/1wkfrb.js.map')]);
   });
 
-  it('never descends into node_modules or cache', async () => {
+  it('never descends into node_modules', async () => {
     bundle('node_modules/x/a.js');
-    bundle('cache/webpack/b.js');
     bundle('ok.js');
     expect((await collectBuildFiles(root)).scripts).toEqual([join(root, 'ok.js')]);
+  });
+
+  it('does descend into a route directory that happens to be called cache', async () => {
+    bundle('chunks/app/cache/page.js');
+    expect((await collectBuildFiles(root)).scripts).toEqual([
+      join(root, 'chunks/app/cache/page.js'),
+    ]);
   });
 
   it('returns nothing for a directory that does not exist', async () => {

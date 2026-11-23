@@ -1,3 +1,6 @@
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import type { BuildFiles } from './build-files';
 import type { BugseeNextContext } from './context';
@@ -137,5 +140,58 @@ describe('runPostBuild', () => {
       runPostBuild(ctx, { projectDir: '/definitely/not/here', distDir: '.next' }),
     ).resolves.toBeUndefined();
     expect(ctx.say).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('runPostBuild: containment', () => {
+  const boom = (): never => {
+    throw new Error('disk on fire');
+  };
+
+  it('a failure in collecting files never fails the build by default, and goes to onError', async () => {
+    const onError = vi.fn();
+    const d = { ...deps({}), collect: vi.fn(async () => boom()) };
+    await expect(runPostBuild(context({ onError }), metadata, d)).resolves.toBeUndefined();
+    expect(onError).toHaveBeenCalledWith(expect.objectContaining({ message: 'disk on fire' }));
+  });
+
+  it('warns on the console when there is no onError', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const d = { ...deps({}), collect: vi.fn(async () => boom()) };
+    await runPostBuild(context(), metadata, d);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('disk on fire'));
+    warn.mockRestore();
+  });
+
+  it('a failure in the upload is contained the same way', async () => {
+    const onError = vi.fn();
+    const d = { ...deps({ '/app/.next/static': files('c') }), upload: vi.fn(async () => boom()) };
+    await expect(runPostBuild(context({ onError }), metadata, d)).resolves.toBeUndefined();
+    expect(onError).toHaveBeenCalledTimes(1);
+  });
+
+  it('rethrows under failOnError', async () => {
+    const d = { ...deps({}), collect: vi.fn(async () => boom()) };
+    await expect(runPostBuild(context({ failOnError: true }), metadata, d)).rejects.toThrow(
+      'disk on fire',
+    );
+  });
+
+  it('an unreadable bundle on disk does not fail the build', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'bugsee-pb-'));
+    try {
+      mkdirSync(join(dir, '.next', 'static'), { recursive: true });
+      const bundle = join(dir, '.next', 'static', 'a.js');
+      writeFileSync(bundle, 'x');
+      chmodSync(bundle, 0o000);
+      const onError = vi.fn();
+      await expect(
+        runPostBuild(context({ onError }), { projectDir: dir, distDir: '.next' }),
+      ).resolves.toBeUndefined();
+      // Root can read it anyway; everyone else must see the failure reported, not thrown.
+      expect(onError).toHaveBeenCalledTimes(process.getuid?.() === 0 ? 0 : 1);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

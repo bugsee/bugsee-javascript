@@ -9,7 +9,7 @@
 // app's own `webpack` function, `compiler.runAfterProductionCompile`, `compiler.define` and
 // `productionBrowserSourceMaps` are called, kept or extended, never replaced. Nothing runs for `next dev`.
 import { createRequire } from 'node:module';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { type BugseeNextContext, createBugseeContext, type WithBugseeOptions } from './context';
 import { type PostBuildMetadata, runPostBuild } from './post-build';
 import { createNextWebpackPlugin, type NextCompilationKind } from './webpack-plugin';
@@ -25,8 +25,12 @@ export type NextConfigInput<C extends NextConfigObject> = C | Promise<C> | NextC
 
 /** Next's `PHASE_PRODUCTION_BUILD`. The only phase that builds anything we touch. */
 const PHASE_PRODUCTION_BUILD = 'phase-production-build';
-/** The first Next with `compiler.runAfterProductionCompile` that Turbopack runs (measured, see post-build.ts). */
-const MIN_TURBOPACK_HOOK = [15, 4, 1] as const;
+/** The first Next with `compiler.runAfterProductionCompile` (in the 15.4.0 types, schema and build; absent in 15.3.x). */
+const MIN_TURBOPACK_HOOK = [15, 4, 0] as const;
+/** The first Next whose config schema has `compiler.define` (15.1.0; 15.0.x rejects it as an unknown key). */
+const MIN_COMPILER_DEFINE = [15, 1, 0] as const;
+/** Configs this has already extended, so applying `withBugsee` twice (a shared base config) adds nothing twice. */
+const WRAPPED = new WeakSet<object>();
 
 /** Seams for tests. */
 export interface WithBugseeDeps {
@@ -83,6 +87,7 @@ function extendConfig<C extends NextConfigObject>(
   context: BugseeNextContext,
   turbopack: boolean,
   nextVersion: string | undefined,
+  projectDir: string,
 ): C {
   const { resolved } = context;
   const next: NextConfigObject = { ...config };
@@ -90,14 +95,18 @@ function extendConfig<C extends NextConfigObject>(
   // The app's version and build, baked into every bundle (browser, node, edge) for the runtime SDK to read.
   // `compiler.define` applies to all three; `defineServer` must NOT repeat the keys (measured, Next 15.5: it
   // throws "already configured"). A constant the app defined itself wins.
+  // Only with a token: without one the integration changes nothing Next emits.
+  if (!resolved.enabled) {
+    return next as C;
+  }
   const identity = resolved.identityDefines;
-  if (Object.keys(identity).length > 0) {
+  if (
+    Object.keys(identity).length > 0 &&
+    (nextVersion === undefined || versionAtLeast(nextVersion, MIN_COMPILER_DEFINE))
+  ) {
     const compiler: NextConfigObject = { ...(config.compiler ?? {}) };
     compiler.define = { ...identity, ...(config.compiler?.define ?? {}) };
     next.compiler = compiler;
-  }
-  if (!resolved.enabled) {
-    return next as C;
   }
 
   // Browser maps are what Bugsee symbolicates browser crashes with. Forced on only when nothing says otherwise,
@@ -134,7 +143,7 @@ function extendConfig<C extends NextConfigObject>(
   if (turbopack) {
     if (nextVersion !== undefined && !versionAtLeast(nextVersion, MIN_TURBOPACK_HOOK)) {
       context.say(
-        `Next ${nextVersion} builds with Turbopack but has no post-build hook to upload from; source maps were NOT uploaded. Upgrade to Next 15.4.1 or later, or build with webpack.`,
+        `Next ${nextVersion} builds with Turbopack but has no post-build hook to upload from; source maps were NOT uploaded. Upgrade to Next 15.4.0 or later, or build with webpack.`,
       );
     } else {
       const userHook = config.compiler?.runAfterProductionCompile as
@@ -144,6 +153,13 @@ function extendConfig<C extends NextConfigObject>(
         ...(next.compiler ?? config.compiler ?? {}),
         runAfterProductionCompile: async (metadata: PostBuildMetadata) => {
           await userHook?.(metadata);
+          // The config (token file, version, installed Next) was resolved for the working directory at load time;
+          // Next says which project it is building. They differ for `next build <dir>` from a monorepo root.
+          if (resolve(metadata.projectDir) !== resolve(projectDir)) {
+            context.say(
+              `the config was resolved for ${projectDir} but Next is building ${metadata.projectDir}: the token file, app version and Next version were looked up in the former. Run \`next build\` from the project directory.`,
+            );
+          }
           await runPostBuild(context, metadata);
         },
       };
@@ -177,14 +193,20 @@ export function withBugsee<C extends NextConfigObject>(
     if (phase !== undefined && phase !== PHASE_PRODUCTION_BUILD) {
       return config;
     }
+    if (WRAPPED.has(config)) {
+      return config;
+    }
     const projectDir = (deps.cwd ?? process.cwd)();
     const context = (deps.createContext ?? createBugseeContext)(options, projectDir, { env });
-    return extendConfig(
+    const extended = extendConfig(
       config,
       context,
       turbopack,
       (deps.nextVersion ?? installedNextVersion)(projectDir),
+      projectDir,
     );
+    WRAPPED.add(extended);
+    return extended;
   };
   if (typeof nextConfig === 'function') {
     return async (phase, context) => apply(await nextConfig(phase, context), phase);
