@@ -229,6 +229,39 @@ describeReal('doctor on real, stamped build output', () => {
   });
 });
 
+describeReal('doctor on Vite worker builds (stamped by the upload catch-up)', () => {
+  const workerApp = (name: string, form: 'url' | 'query'): { dir: string; out: string } => {
+    const app = makeApp(name);
+    writeFileSync(join(app.dir, 'w.js'), "postMessage('worker-ok');\n");
+    writeFileSync(
+      join(app.dir, 'index.js'),
+      form === 'url'
+        ? "const w = new Worker(new URL('./w.js', import.meta.url), { type: 'module' });\nw.onmessage = (e) => console.log(e.data);\n"
+        : "import W from './w.js?worker';\nconst w = new W();\nw.onmessage = (e) => console.log(e.data);\n",
+    );
+    return app;
+  };
+  for (const [label, build] of [
+    ['Vite 8 (Rolldown)', viteBuild],
+    ['Vite 7 (Rollup)', vite7Build],
+  ] as const) {
+    for (const form of ['url', 'query'] as const) {
+      it(`${label}, ${form} worker: main and worker bundles are stamped and their maps carry the same id`, async () => {
+        const app = workerApp(`doc-worker-${label.replace(/\W+/g, '')}-${form}`, form);
+        await build(viteConfig(app, [bugseeUnplugin.vite(pluginOptions()) as VitePlugin]));
+        const report = await doctor(app.out);
+        expect(report.summary.bundles).toBeGreaterThanOrEqual(2); // main + worker
+        expect(report.summary.maps).toBe(report.summary.bundles);
+        expect(idsOf(report, 'error')).toEqual([]);
+        expect(idsOf(report, 'warning')).toEqual([]);
+        expect(report.passed).toEqual(
+          expect.arrayContaining(['stamp.map-id-mismatch', 'stamp.map-no-debug-id', 'stamp.mixed']),
+        );
+      });
+    }
+  }
+});
+
 describeReal('doctor on real, problematic build output', () => {
   it('an unstamped Vite build (plugin disabled) is an error per bundle', async () => {
     const app = makeApp('vite8-unstamped');
