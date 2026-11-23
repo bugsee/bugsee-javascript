@@ -20,11 +20,12 @@ import {
   readFileSync,
   realpathSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
 import { rspack } from '@rspack/core';
 import { rollup } from 'rollup';
 import { type Plugin as VitePlugin, build as viteBuild } from 'vite';
@@ -41,8 +42,12 @@ let root: string;
 
 const cli = resolveBugseeCli();
 const cliProbe = cli.endsWith('.js')
-  ? spawnSync(process.execPath, [cli, '--version'], { encoding: 'utf8' })
-  : spawnSync(cli, ['--version'], { encoding: 'utf8' });
+  ? spawnSync(process.execPath, [cli, '--version'], {
+      encoding: 'utf8',
+      timeout: 15_000,
+      killSignal: 'SIGKILL',
+    })
+  : spawnSync(cli, ['--version'], { encoding: 'utf8', timeout: 15_000, killSignal: 'SIGKILL' });
 const cliAvailable = cliProbe.status === 0;
 const cliRequired = process.env.CI !== undefined || process.env.BUGSEE_REQUIRE_CLI !== undefined;
 if (!cliAvailable && !cliRequired) {
@@ -113,9 +118,9 @@ interface Pin {
 function pinsOf(out: string): Pin[] {
   const html = readFileSync(join(out, 'index.html'), 'utf8');
   const pins: Pin[] = [];
-  for (const tag of html.match(/<(?:script|link)\b[^>]*>/g) ?? []) {
-    const integrity = /\bintegrity="([^"]+)"/.exec(tag)?.[1];
-    const url = /\b(?:src|href)="([^"]+)"/.exec(tag)?.[1];
+  for (const tag of html.match(/<(?:script|link)\b[^>]*>/gi) ?? []) {
+    const integrity = /\bintegrity="([^"]+)"/i.exec(tag)?.[1];
+    const url = /\b(?:src|href)="([^"]+)"/i.exec(tag)?.[1];
     if (integrity !== undefined && url !== undefined) {
       pins.push({ tag, file: join(out, url.replace(/^\.?\//, '')), integrity });
     }
@@ -149,7 +154,7 @@ function expectStampedAndUploaded(out: string, before: number, atLeast = 2): voi
 /** Add `integrity` to every script / modulepreload tag whose file is a chunk of the bundle. */
 function pinChunks(html: string, bundle: Record<string, { type: string; code?: string }>): string {
   return html.replace(
-    /<(?:script|link)\b[^>]*?(?:src|href)="\.?\/?([^"]+\.js)"[^>]*>/g,
+    /<(?:script|link)\b[^>]*?(?:src|href)="\.?\/?([^"]+\.js)"[^>]*>/gi,
     (tag, file: string) => {
       const entry = bundle[file];
       return entry?.type === 'chunk' && entry.code !== undefined
@@ -1180,4 +1185,235 @@ describeReal('Vite: an own script with a broken map does not cost the other maps
       }
     }
   }
+});
+
+// N Rollup outputs written CONCURRENTLY into one directory: each uploads and deletes ITS OWN maps, once, and none
+// reports another's maps as foreign.
+describeReal('several Rollup outputs written concurrently into one directory', () => {
+  it("uploads once per output (not N times everything) and never says another output's maps are foreign", async () => {
+    const app = makeApp('rollup-many-outputs', { lazy: false });
+    const names = ['a', 'b', 'c', 'd', 'e', 'f'];
+    const before = requests.length;
+    const notices: string[] = [];
+    const errors: unknown[] = [];
+    const bundle = await rollup({
+      input: join(app.dir, 'index.js'),
+      plugins: [
+        bugseeRollupPlugin({
+          ...pluginOptions(),
+          onNotice: (m: string) => notices.push(m),
+          onError: (e: unknown) => errors.push(e),
+        }),
+      ],
+    });
+    await Promise.all(
+      names.map((n) =>
+        bundle.write({
+          file: join(app.out, `${n}.js`),
+          format: 'iife',
+          name: `app_${n}`,
+          sourcemap: true,
+        }),
+      ),
+    );
+    await bundle.close();
+    expect(errors.map(String)).toEqual([]);
+    expect(notices.filter((m) => m.includes('not produced by this build'))).toEqual([]);
+    const files = readdirSync(app.out);
+    expect(files.filter((f) => f.endsWith('.map'))).toEqual([]);
+    expect(files.filter((f) => f.endsWith('.js')).sort()).toEqual(names.map((n) => `${n}.js`));
+    // one CLI upload call per output: a request per map, so at most the number of outputs
+    expect(requests.length - before).toBeLessThanOrEqual(names.length);
+    expect(requests.length - before).toBeGreaterThanOrEqual(1);
+  });
+});
+
+describeReal('Rollup generate() before write() into the same directory', () => {
+  it('the written output still uploads and deletes its own maps (a generated-only output is not a sibling)', async () => {
+    const app = makeApp('rollup-generate-then-write', { lazy: false });
+    const before = requests.length;
+    const errors: unknown[] = [];
+    const bundle = await rollup({
+      input: join(app.dir, 'index.js'),
+      plugins: [
+        bugseeRollupPlugin({ ...pluginOptions(), onError: (e: unknown) => errors.push(e) }),
+      ],
+    });
+    await bundle.generate({ dir: app.out, sourcemap: true }); // e.g. to measure size: never written
+    await bundle.write({ dir: app.out, sourcemap: true });
+    await bundle.close();
+    expect(errors.map(String)).toEqual([]);
+    expect(requests.length).toBeGreaterThan(before);
+    expect((readdirSync(app.out) as string[]).filter((f) => f.endsWith('.map'))).toEqual([]);
+  });
+});
+
+describeReal('one directory spelled several ways', () => {
+  it('outputs into `dist`, `dist/`, a symlink to it and a relative spelling coordinate as ONE directory', async () => {
+    const app = makeApp('rollup-spellings', { lazy: false });
+    const link = `${app.out}-link`;
+    mkdirSync(app.out); // first: Rollup creating a directory through a still-dangling link races the others
+    symlinkSync(app.out, link);
+    const spellings = [app.out, `${app.out}/`, link, relative(process.cwd(), app.out)];
+    const before = requests.length;
+    const notices: string[] = [];
+    const errors: unknown[] = [];
+    const bundle = await rollup({
+      input: join(app.dir, 'index.js'),
+      plugins: [
+        bugseeRollupPlugin({
+          ...pluginOptions(),
+          onNotice: (m: string) => notices.push(m),
+          onError: (e: unknown) => errors.push(e),
+        }),
+      ],
+    });
+    await Promise.all(
+      spellings.map((dir, i) =>
+        bundle.write({
+          dir,
+          entryFileNames: `s${i}.js`,
+          format: 'iife',
+          name: `s${i}`,
+          sourcemap: true,
+        }),
+      ),
+    );
+    await bundle.close();
+    expect(errors.map(String)).toEqual([]);
+    expect(notices.filter((m) => m.includes('not produced by this build'))).toEqual([]);
+    expect((readdirSync(app.out) as string[]).filter((f) => f.endsWith('.map'))).toEqual([]);
+    expect(requests.length - before).toBeLessThanOrEqual(spellings.length);
+    expect(requests.length - before).toBeGreaterThanOrEqual(1);
+  });
+});
+
+describeReal('a mapped and an unmapped output into one directory under failOnError', () => {
+  it('the unmapped output has nothing to do and does not fail the build', async () => {
+    const app = makeApp('rollup-mapped-unmapped', { lazy: false });
+    const errors: unknown[] = [];
+    const bundle = await rollup({
+      input: join(app.dir, 'index.js'),
+      plugins: [
+        bugseeRollupPlugin({
+          ...pluginOptions(),
+          failOnError: true,
+          onError: (e: unknown) => errors.push(e),
+        }),
+      ],
+    });
+    await Promise.all([
+      bundle.write({
+        dir: app.out,
+        entryFileNames: 'm.js',
+        format: 'iife',
+        name: 'm',
+        sourcemap: true,
+      }),
+      bundle.write({
+        dir: app.out,
+        entryFileNames: 'u.js',
+        format: 'iife',
+        name: 'u',
+        sourcemap: false,
+      }),
+    ]);
+    await bundle.close();
+    expect(errors.map(String)).toEqual([]);
+    expect((readdirSync(app.out) as string[]).filter((f) => f.endsWith('.map'))).toEqual([]);
+  });
+});
+
+describeReal('a generate()-only output is not a sibling', () => {
+  it('an unmapped write after a never-written mapped generate() still fails under failOnError', async () => {
+    const app = makeApp('rollup-generate-unmapped', { lazy: false });
+    const bundle = await rollup({
+      input: join(app.dir, 'index.js'),
+      plugins: [bugseeRollupPlugin({ ...pluginOptions(), failOnError: true })],
+    });
+    await bundle.generate({
+      dir: app.out,
+      entryFileNames: 'g.js',
+      format: 'iife',
+      name: 'g',
+      sourcemap: true,
+    });
+    await expect(
+      bundle.write({
+        dir: app.out,
+        entryFileNames: 'u.js',
+        format: 'iife',
+        name: 'u',
+        sourcemap: false,
+      }),
+    ).rejects.toThrow(/no source maps with a debug-ID were found/);
+    await bundle.close();
+  });
+});
+
+describeReal('an output into a nested directory of another output', () => {
+  it('the parent output neither uploads nor reports the nested output maps as foreign', async () => {
+    const app = makeApp('rollup-nested-dirs', { lazy: false });
+    const before = requests.length;
+    const notices: string[] = [];
+    const errors: unknown[] = [];
+    const bundle = await rollup({
+      input: join(app.dir, 'index.js'),
+      plugins: [
+        bugseeRollupPlugin({
+          ...pluginOptions(),
+          onNotice: (m: string) => notices.push(m),
+          onError: (e: unknown) => errors.push(e),
+        }),
+      ],
+    });
+    await Promise.all([
+      bundle.write({
+        dir: app.out,
+        entryFileNames: 'p.js',
+        format: 'iife',
+        name: 'p',
+        sourcemap: true,
+      }),
+      bundle.write({
+        dir: join(app.out, 'b'),
+        entryFileNames: 'c.js',
+        format: 'iife',
+        name: 'c',
+        sourcemap: true,
+      }),
+    ]);
+    await bundle.close();
+    expect(errors.map(String)).toEqual([]);
+    expect(notices.filter((m) => m.includes('not produced by this build'))).toEqual([]);
+    expect(
+      readdirSync(app.out, { recursive: true }).filter((f) => String(f).endsWith('.map')),
+    ).toEqual([]);
+    expect(requests.length - before).toBeLessThanOrEqual(2);
+  });
+});
+
+describeReal('a mapped output that FINISHED before an unmapped one, under failOnError', () => {
+  it('the later unmapped output has nothing to do and does not fail', async () => {
+    const app = makeApp('rollup-mapped-then-unmapped', { lazy: false });
+    const bundle = await rollup({
+      input: join(app.dir, 'index.js'),
+      plugins: [bugseeRollupPlugin({ ...pluginOptions(), failOnError: true })],
+    });
+    await bundle.write({
+      dir: app.out,
+      entryFileNames: 'm.js',
+      format: 'iife',
+      name: 'm',
+      sourcemap: true,
+    });
+    await bundle.write({
+      dir: app.out,
+      entryFileNames: 'u.js',
+      format: 'iife',
+      name: 'u',
+      sourcemap: false,
+    });
+    await bundle.close();
+  });
 });

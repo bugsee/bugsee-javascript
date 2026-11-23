@@ -12,7 +12,7 @@ import { createHash } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import { tmpdir } from 'node:os';
-import { extname, join, normalize } from 'node:path';
+import { extname, isAbsolute, join, relative, resolve } from 'node:path';
 import { runBugseeCli } from '@bugsee/bundler-plugin-core';
 import { bugseeVitePlugin } from '@bugsee/vite-plugin';
 import { type Browser, chromium } from 'playwright';
@@ -45,10 +45,11 @@ const TYPES: Record<string, string> = {
 
 async function serve(dir: string): Promise<{ url: string; server: Server }> {
   const server = createServer((req, res) => {
-    const path = normalize(
-      join(dir, (req.url ?? '/').split('?')[0] === '/' ? 'index.html' : (req.url as string)),
-    );
-    if (!path.startsWith(dir)) {
+    // Contain the request inside `dir`: a path-aware check (a raw prefix also accepts a sibling directory).
+    const requested = (req.url ?? '/').split('?')[0] as string;
+    const path = resolve(dir, `.${requested === '/' ? '/index.html' : requested}`);
+    const inside = relative(dir, path);
+    if (inside.startsWith('..') || isAbsolute(inside)) {
       res.statusCode = 403;
       res.end();
       return;

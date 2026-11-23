@@ -29,7 +29,7 @@ Other bundlers are exported from `@bugsee/bundler-plugin-core` (same core, `unpl
 `bugseeRollupPlugin`, `bugseeEsbuildPlugin`, `bugseeRspackPlugin`. Each injects debug-IDs, uploads the maps and
 deletes them at the end of the build, exactly as the Vite/webpack plugins do (Rollup: stamps in `generateBundle`, uploads in `writeBundle`; esbuild:
 `onEnd`, so it works with the esbuild JS API and any tool that accepts esbuild plugins AND lets esbuild write the files; Rspack:
-stamps in `processAssets`, uploads in `afterEmit`). Vite, Rollup, Rspack and webpack 5 stamp INSIDE the build, so a page whose Subresource Integrity hashes are taken in the build keeps working (list the Bugsee plugin before the SRI plugin; see `docs/design/source-maps.md` §7.1); esbuild stamps after emit and keeps the SRI guard that refuses an SRI build. With esbuild the plugin sets `sourcemap: 'external'` when you did not set `sourcemap` at all (external, so the
+stamps in `processAssets`, uploads in `afterEmit`). Vite, Rollup, Rspack and webpack 5 stamp INSIDE the build, so a page whose Subresource Integrity hashes are taken in the build keeps working (list the Bugsee plugin before the SRI plugin, and have the SRI step hash the FINAL bytes: in a lazy-loading Vite app Vite rewrites a chunk after a `transformIndexHtml` SRI step has hashed it, so hash in `generateBundle` with `order: 'post'` instead; see `docs/design/source-maps.md` §7.1); esbuild stamps after emit and keeps the SRI guard that refuses an SRI build. With esbuild the plugin sets `sourcemap: 'external'` when you did not set `sourcemap` at all (external, so the
 shipped bundle carries no `//# sourceMappingURL` comment pointing at a map that is deleted after upload; the CLI
 pairs a bundle with its sibling `.map` anyway). An explicit value, including `false`, is left alone: with
 `false` there are no maps to upload, and the plugin says so through `onNotice`.
@@ -48,7 +48,7 @@ directory (the one read-only exception is the Subresource-Integrity check, which
 `outfile` and `outdir` behave alike, wherever they point.
 Development builds do not upload and leave the local maps alone unless you set `uploadInDevelopment: true`:
 Rspack states its mode (only `development` is skipped; `none` and `production` upload), esbuild states none, so only `NODE_ENV=development` marks a
-dev build (a bare `esbuild --watch` without it uploads on every rebuild, so set it or disable the plugin there). Every stamp is verified (each bundle still parses, its map pointer is intact, its map carries the same debug-ID), and the `.map` files are deleted only after a confirmed upload and only if they carry a debug-ID.
+dev build (a bare `esbuild --watch` without it uploads on every rebuild, so set it or disable the plugin there). Every stamp is verified (each bundle still parses, its map pointer is intact, its map carries the same debug-ID), and `.map` files are deleted only after a confirmed upload. A script map is deleted only if it carries a debug-ID and this build emitted it; this build's own stylesheet and declaration maps (`.css.map`, `.d.ts.map`), which are never uploaded and embed the source, are deleted with them.
 
 **tsup is not covered by the esbuild plugin.** tsup always runs esbuild with `write: false` and writes the files
 itself afterwards, so nothing is on disk when the plugin's end-of-build hook runs. The plugin then uploads nothing

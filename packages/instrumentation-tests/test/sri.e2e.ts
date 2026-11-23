@@ -18,7 +18,7 @@
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import { tmpdir } from 'node:os';
-import { extname, isAbsolute, join, normalize } from 'node:path';
+import { extname, isAbsolute, join, relative, resolve } from 'node:path';
 import { resolveBugseeCli, runBugseeCli } from '@bugsee/bundler-plugin-core';
 import { bugseeWebpackPlugin } from '@bugsee/webpack-plugin';
 import HtmlWebpackPlugin from 'html-webpack-plugin';
@@ -55,10 +55,11 @@ const TYPES: Record<string, string> = {
 /** Serve a build directory over HTTP — SRI with `crossorigin` is not exercised over file://. */
 async function serve(dir: string): Promise<{ url: string; server: Server }> {
   const server = createServer((req, res) => {
-    const path = normalize(
-      join(dir, (req.url ?? '/').split('?')[0] === '/' ? 'index.html' : (req.url as string)),
-    );
-    if (!path.startsWith(dir)) {
+    // Contain the request inside `dir`: a path-aware check (a raw prefix also accepts a sibling directory).
+    const requested = (req.url ?? '/').split('?')[0] as string;
+    const path = resolve(dir, `.${requested === '/' ? '/index.html' : requested}`);
+    const inside = relative(dir, path);
+    if (inside.startsWith('..') || isAbsolute(inside)) {
       res.statusCode = 403;
       res.end();
       return;

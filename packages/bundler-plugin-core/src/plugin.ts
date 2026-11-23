@@ -16,8 +16,10 @@ import { loadBuildPluginEnv, mergeBuildPluginEnv } from './env-file';
 import type { BundlerBuildContext } from './register-build';
 import {
   type BugseePluginOptions,
+  dirKey,
   notify,
   type ResolvedIdentity,
+  relativeUnder,
   resolveIdentity,
   resolvePluginOptions,
   runPluginUpload,
@@ -29,6 +31,7 @@ import {
   rollupUnstampableMaps,
   stampAssets,
 } from './stamp-assets';
+import { cutAtQuery } from './stamp-files';
 
 /** The subset of a rollup/vite output-options object we read. */
 export interface OutputLike {
@@ -65,7 +68,7 @@ interface WebpackCompilationLike {
         info?: { related?: { sourceMap?: string | string[] | null } };
       }
     | undefined;
-  updateAsset(name: string, source: unknown): void;
+  updateAsset(name: string, source: unknown, info?: object): void;
 }
 
 /** Minimal shape of the webpack compiler we tap (avoids a webpack type dependency in the core). */
@@ -208,7 +211,7 @@ function asText(name: string, content: Buffer): string {
  * An asset name without its `?query`. Measured on real Rspack builds: webpack/Rspack drop `?...` when they write
  * a file (`x.js?h` is written as `x.js`) and KEEP `#` (`a#1.js` is written as `a#1.js`), so only `?` is cut.
  */
-const withoutQuery = (name: string): string => name.replace(/\?.*$/, '');
+const withoutQuery = cutAtQuery;
 
 /**
  * A compilation's asset table as the core's `AssetStore`.
@@ -247,7 +250,11 @@ function webpackAssetStore(
     // (the runtime asked for a chunk that did not exist: ChunkLoadError). JS and its map are UTF-8 text.
     check: (name, content) => void asText(name, content),
     update: (name, content) =>
-      compilation.updateAsset(realName(name), new RawSource(asText(name, content))),
+      // The info marks what was stamped; it is carried across RealContentHashPlugin's rename (measured on real
+      // webpack and Rspack), which is how the final names are recovered at `afterEmit`.
+      compilation.updateAsset(realName(name), new RawSource(asText(name, content)), {
+        bugseeStamped: true,
+      }),
     // The compilation records which asset is a bundle's source map (SourceMapDevToolPlugin: info.related).
     mapOf: (name) => {
       const related = compilation.getAsset(realName(name))?.info?.related?.sourceMap;
@@ -332,8 +339,49 @@ function esbuildOutputDir(options: EsbuildBuildLike['initialOptions']): string |
 
 /** The compilation handed to `afterEmit`: enough to list every asset this build emitted. */
 interface AssetNamesLike {
-  getAssets?(): ReadonlyArray<{ name: string }>;
+  getAssets?(): ReadonlyArray<{ name: string; info?: object }>;
 }
+
+/**
+ * The stamp's bundle / map names as the DISK has them. webpack's RealContentHashPlugin renames `[contenthash]`
+ * assets AFTER the in-build stamp, so the names the stamp reported are stale; when the compilation is known,
+ * the on-disk re-check is given the final names of the assets the stamp wrote (marked in their asset info) and
+ * finds each map by its pointer.
+ */
+const finalStampNames = (
+  compilation: AssetNamesLike | undefined,
+): { stampedBundles?: string[]; stampedMaps?: undefined } => {
+  const assets = compilation?.getAssets?.();
+  return assets === undefined
+    ? {}
+    : {
+        // Only assets the stamp itself wrote (marked in their info): a script a plugin emitted after the stamp
+        // stage was never stamped and must not be judged as if it had been.
+        stampedBundles: assets
+          .filter(
+            (asset) =>
+              (asset.info as { bugseeStamped?: boolean } | undefined)?.bugseeStamped === true,
+          )
+          .map((asset) => cutAtQuery(asset.name))
+          .filter((name) => /\.[cm]?js$/i.test(name)),
+        stampedMaps: undefined,
+      };
+};
+
+/** The stamped bundle names that are still in the final bundle (all of them when the bundle is unknown). */
+const stampedStillPresent = (
+  names: string[] | undefined,
+  bundle: object | undefined,
+): string[] | undefined => (bundle === undefined ? names : names?.filter((name) => name in bundle));
+
+/** The stamped bundle -> map names whose bundle is still in the final bundle. */
+const stampedMapsStillPresent = (
+  maps: Record<string, string> | undefined,
+  bundle: object | undefined,
+): Record<string, string> | undefined =>
+  bundle === undefined || maps === undefined
+    ? maps
+    : Object.fromEntries(Object.entries(maps).filter(([name]) => name in bundle));
 
 /** The names this build emitted, as the `ownFiles` the upload deletes by (absent when not known). */
 const ownFilesOf = (compilation: AssetNamesLike | undefined): { ownFiles?: string[] } => {
@@ -526,10 +574,29 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
   // a stamp can never carry over to a later build. An output whose write cannot be matched is simply
   // not stamped: the safe answer.
   const stampedOutputs = new WeakMap<object, InBuildStamp>();
-  const stampBundle = async (output: OutputLike, bundle: RollupBundleLike): Promise<void> => {
+  // Outputs written into one directory announce their names at generateBundle (before ANY of them writes), so
+  // the first to write already knows its siblings and leaves their maps to them. Per plugin instance; a new
+  // build forgets outputs that never wrote.
+  const announced = new Map<string, Map<object, string[]>>();
+  // Directories an output WITH maps has already written in this build: an unmapped output that comes after it
+  // (its sibling already finished and left the registry) still has nothing to do. Cleared with a new build.
+  const mappedDirs = new Set<string>();
+  const stampBundle = async (
+    output: OutputLike,
+    bundle: RollupBundleLike,
+    isWrite?: boolean,
+  ): Promise<void> => {
     const outDir = resolveOutputDir(output);
     if (outDir === undefined || !resolved.enabled) {
       return;
+    }
+    const key = dirKey(outDir);
+    // Only an output that WILL write is a sibling: `bundle.generate()` (isWrite === false) never writes, so
+    // its announcement would hide, as a stale sibling, maps that belong to nobody.
+    if (isWrite !== false) {
+      const group = announced.get(key) ?? new Map<object, string[]>();
+      group.set(output, Object.keys(bundle));
+      announced.set(key, group);
     }
     stampedOutputs.set(output, { preStamped: false });
     const unstampable = rollupUnstampableMaps(bundle);
@@ -548,7 +615,8 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
   // `pre` order run in the order they appear in `plugins`: list this plugin BEFORE any SRI plugin.
   const generateBundleHook = {
     order: 'pre' as const,
-    handler: (output: OutputLike, bundle: RollupBundleLike) => stampBundle(output, bundle),
+    handler: (output: OutputLike, bundle: RollupBundleLike, isWrite?: boolean) =>
+      stampBundle(output, bundle, isWrite),
   };
 
   const uploadForOutput = async (
@@ -561,17 +629,45 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
     if (outDir !== undefined) {
       const stamp = stampedOutputs.get(output);
       stampedOutputs.delete(output);
+      const key = dirKey(outDir);
+      const group = announced.get(key);
+      const nested = [...announced].filter(
+        ([dir]) => dir !== key && relativeUnder(key, dir) !== undefined,
+      );
+      // A name THIS output emitted is never a sibling's: a leftover announcement from `bundle.generate()` (which
+      // never writes) has the same names and must not hide this output's own maps.
+      const mine = new Set(Object.keys(bundle ?? {}));
+      const siblingsHaveMaps = [...mappedDirs].some((dir) => relativeUnder(key, dir) !== undefined);
+      if ([...mine].some((name) => name.endsWith('.map'))) {
+        mappedDirs.add(key);
+      }
+      const siblings = [...(group ?? [])]
+        .filter(([other]) => other !== output)
+        .flatMap(([, names]) => names)
+        .filter((name) => !mine.has(name))
+        .concat(
+          nested.flatMap(([dir, g]) =>
+            [...g.values()].flat().map((name) => `${relativeUnder(key, dir)}/${name}`),
+          ),
+        );
+      group?.delete(output);
+      if (group?.size === 0) {
+        announced.delete(key);
+      }
       if (stamp?.abandoned === true) {
         return;
       }
       await runPluginUpload(forOutput(outDir), outDir, {
         bundler,
+        ...(bundle !== undefined ? { siblingOwnFiles: siblings } : {}),
+        ...(bundle !== undefined && siblingsHaveMaps ? { siblingsHaveMaps: true } : {}),
         ...(bundle !== undefined ? { ownFiles: Object.keys(bundle) } : {}),
         ...(stamp?.preStamped === true
           ? {
               preStamped: true,
-              stampedBundles: stamp.stampedBundles,
-              stampedMaps: stamp.stampedMaps,
+              // Only chunks still in the FINAL bundle: a later plugin may have removed (or inlined) one.
+              stampedBundles: stampedStillPresent(stamp.stampedBundles, bundle),
+              stampedMaps: stampedMapsStillPresent(stamp.stampedMaps, bundle),
             }
           : {}),
       });
@@ -634,6 +730,10 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
       configResolved(config: { isProduction: boolean; mode: string }) {
         viteBuild = { isProduction: config.isProduction, configuration: config.mode };
       },
+      buildStart() {
+        announced.clear();
+        mappedDirs.clear();
+      },
       generateBundle: generateBundleHook,
       writeBundle: (output: OutputLike, bundle?: object) =>
         uploadForOutput(output, viteBuild, bundle),
@@ -673,6 +773,8 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
       // A watch rebuild is a new build: warn again if it is again not baked.
       buildStart() {
         unbakedOutDirs.clear();
+        announced.clear();
+        mappedDirs.clear();
       },
       generateBundle: generateBundleHook,
       writeBundle: (output: OutputLike, bundle?: object) => uploadForOutput(output, {}, bundle),
@@ -823,6 +925,7 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
               bundler,
               ...ownFilesOf(compilation),
               ...stamp,
+              ...(stamp.preStamped ? finalStampNames(compilation) : {}),
             });
           }
         }
@@ -849,6 +952,7 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
               bundler: webpackBuild(compiler.options.mode),
               ...ownFilesOf(compilation),
               ...stamp,
+              ...(stamp.preStamped ? finalStampNames(compilation) : {}),
             });
           }
         }

@@ -210,7 +210,7 @@ stamp degrades to the POST-EMIT path below — never to an unchecked page: a chu
   id on `chunk.map` (`debugId`/`debug_id`), which is the one thing Vite keeps. Both are covered by real builds
   (`plugin.in-build.real-build.test.ts`, and a Chromium run in `instrumentation-tests/test/sri-vite-rollup.e2e.ts`).
 - A plugin that rewrites chunks AFTER the Bugsee stamp changes bytes that were already hashed or stamped. The
-  post-build checks below detect (not prevent) it.
+  post-build checks below detect (not prevent) it, and only what they check: a debug-ID inconsistency between a bundle and its map, and an HTML integrity pin that no longer matches the bytes. A later plugin that changes executable JS, keeps both debug-IDs, and then emits a pin that matches the changed bytes passes both checks; they report those two inconsistencies, not every rewrite.
 
 ### Verify the stamp
 
@@ -301,6 +301,52 @@ Only a stamp that did not verify AND could not be restored (an unverified stamp 
 stamp. Covered by real Vite 7 and 8 builds with `new Worker(new URL(...))` and `?worker`, and in Chromium
 (`instrumentation-tests/test/lazy-chunk.e2e.ts`): the worker runs, registers its id, and its map has the same
 id. (The hand-rolled SRI step pins only the entry chunks in `index.html`, never worker files.)
+
+### Hardening details (review follow-ups)
+
+- **Post-emit inject failures and restores.** A rejected `inject` (any batch) is followed by a verify-and-restore of
+  everything it may already have rewritten, before the failure propagates. If verification restored any pair, the
+  upload is an EXPLICIT keyed set (a restored map is unkeyed again, and the CLI rejects a directory that holds one).
+  A snapshot that cannot read a file (anything but ENOENT) aborts before inject runs. The rollback partner of a bundle
+  is the map its ORIGINAL pointer named; a map is not restored when its bundle could not be (reported as incomplete).
+- **On-disk re-check.** A bundle the stamp named that cannot be read is reported. After webpack's RealContentHashPlugin
+  renames `[contenthash]` assets, the re-check is given the FINAL script names from the compilation (the names the
+  stamp reported are stale). A changed map is also held to an unchanged, already-stamped bundle's id.
+- **Catch-up.** Pairs are found by the sibling name AND by the own bundles' `sourceMappingURL` (a moved
+  `maps/w.js.map`). The claim that inject leaves an already-stamped, SRI-pinned bundle alone is ENFORCED: if its bytes
+  changed they are restored (with its map) and reported. Two bundles claiming one map refuse the in-build stamp.
+- **Concurrent outputs.** A second output with its own `ownFiles` for the same directory waits for the in-flight
+  upload and then runs itself, so its maps are not mistaken for foreign ones. Outputs announce their names at
+  `generateBundle` (before any of them writes; a new build forgets outputs that never wrote), and each run leaves
+  the maps of the outputs still pending to those outputs: neither uploaded by this run nor reported as "not produced
+  by this build". N outputs into one directory make N uploads, not N times everything.
+- **A rejected inject whose rewrite could not be restored** says so (the rethrown error carries which files still
+  hold the unverified rewrite), with or without `failOnError`. Two bundles claiming one map, counting a bundle's
+  own sibling as a claim, refuse the in-build stamp.
+
+### Several outputs into one directory
+
+Outputs written concurrently into one directory (several `bundle.write()` calls, or Vite environments) coordinate by
+the PHYSICAL directory: `dist`, `dist/`, `./dist`, an absolute path and a symlink to it are one key (the real path
+of the deepest existing ancestor plus the not-yet-created rest). Each output announces its names at
+`generateBundle`; a run leaves the maps of every still-pending sibling to that sibling, on every path: the explicit
+pre-stamped upload, and the post-emit path (which, when siblings exist, also uploads an explicit file set instead of
+the directory, so a sibling's maps are neither uploaded, nor reported as "not produced by this build", nor deleted).
+**`failOnError` and an output with no maps:** an output whose own map set is empty while a sibling output of the
+same directory has maps has nothing to do and does NOT fail ("no source maps with a debug-ID were found" is for a lone
+output, or when no sibling has maps either). The sibling counts when it is announced and about to write, or has
+already written and finished in this build (an unmapped output that comes LAST must not fail because its mapped
+sibling got there first). An output whose own map exists but is unkeyed still fails. **Only an output that will
+write is a sibling:** `bundle.generate()` (`isWrite === false`) is never announced, so a generate-only mapped output
+cannot make a later unmapped write pass silently. **Nested directories:** an output written into `dist/b` while
+another writes `dist` is a sibling of the parent run under its relative path (`b/x.js.map`), because the parent's
+directory walk covers it; the nested run never sees the parent's files. **Directory identity** uses the canonical
+on-disk spelling (`realpath.native`), so `dist` and `DIST` are one directory on a case-insensitive filesystem.
+**Known limit:** an output that announced itself and then never reaches `writeBundle` (a failed write) keeps its
+announcement until the next `buildStart`; maps another output finds that carry its names are left on disk, not
+reported. A name this output itself emitted is never treated as a sibling's. A rejected inject keeps its ORIGINAL
+error object (a `BugseeCliError` stays one; a frozen one is reported as a new error caused by it); a failed restore
+is appended to the message.
 
 ### Maps that are not the bundle sibling
 

@@ -35,8 +35,12 @@ let delayMs = 0;
 // with a reason; CI (or BUGSEE_REQUIRE_CLI=1) requires it, so a CI run can never go green testing less.
 const cli = resolveBugseeCli();
 const cliProbe = cli.endsWith('.js')
-  ? spawnSync(process.execPath, [cli, '--version'], { encoding: 'utf8' })
-  : spawnSync(cli, ['--version'], { encoding: 'utf8' });
+  ? spawnSync(process.execPath, [cli, '--version'], {
+      encoding: 'utf8',
+      timeout: 15_000,
+      killSignal: 'SIGKILL',
+    })
+  : spawnSync(cli, ['--version'], { encoding: 'utf8', timeout: 15_000, killSignal: 'SIGKILL' });
 const cliAvailable = cliProbe.status === 0;
 const cliRequired = process.env.CI !== undefined || process.env.BUGSEE_REQUIRE_CLI !== undefined;
 if (!cliAvailable && !cliRequired) {

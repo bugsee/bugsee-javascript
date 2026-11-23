@@ -723,3 +723,29 @@ describe('stampAssets — a store can refuse the write-back (store.check), befor
     expect(checked).toEqual([]);
   });
 });
+
+describe('stampAssets — two bundles that claim the same map', () => {
+  it('refuses (before inject) rather than stage the map for only one of them', async () => {
+    const run = vi.fn(async () => ({ code: 0, stdout: '', stderr: '' }));
+    const store = {
+      ...memoryStore({ 'a.js': 'a\n', 'b.js': 'b\n', 'shared.map': '{}' }),
+      mapOf: () => 'shared.map',
+    };
+    await expect(stampAssets(store, { run })).rejects.toThrow(
+      /shared\.map.*a\.js.*b\.js|shared\.map/,
+    );
+    expect(run).not.toHaveBeenCalled();
+  });
+});
+
+describe("stampAssets — a map that is another bundle's own sibling is claimed too", () => {
+  it("refuses when b.js names a.js.map (a.js's own sibling map) as its map", async () => {
+    const run = vi.fn(async () => ({ code: 0, stdout: '', stderr: '' }));
+    const store = {
+      ...memoryStore({ 'a.js': 'a\n', 'a.js.map': '{}', 'b.js': 'b\n' }),
+      mapOf: (name: string) => (name === 'a.js' ? 'a.js.map' : 'a.js.map'),
+    };
+    await expect(stampAssets(store, { run })).rejects.toThrow(/a\.js\.map.*claimed/);
+    expect(run).not.toHaveBeenCalled();
+  });
+});

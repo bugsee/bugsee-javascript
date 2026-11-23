@@ -241,10 +241,35 @@ export function verifyStamp(
 
   // A changed map whose bundle was not stamped in this run: only held to being a JSON object.
   const pairedMaps = new Set(mapOf.values());
+  // The id of an UNCHANGED bundle that already carries one, by the map it points at: a map that changed
+  // must agree with it (the bundle pass skipped it because its bytes did not change).
+  const unchangedIds = new Map<string, string>();
+  for (const [bundle, bytes] of after) {
+    if (BUNDLE.test(bundle) && before.has(bundle) && !changed(bundle)) {
+      const text = bytes.toString('utf8');
+      const id = readDebugId(text);
+      if (id !== undefined) {
+        unchangedIds.set(
+          resolveMapName(bundle, text, (n) => after.has(n), api),
+          id,
+        );
+      }
+    }
+  }
   for (const name of before.keys()) {
     if (name.endsWith('.map') && changed(name) && !pairedMaps.has(name)) {
-      if (mapDebugId(after.get(name) as Buffer) === null) {
+      const mapId = mapDebugId(after.get(name) as Buffer);
+      if (mapId === null) {
         issues.push({ name, reason: 'the stamped map is not valid JSON (an object)' });
+      } else if (
+        mapId !== undefined &&
+        unchangedIds.has(name) &&
+        unchangedIds.get(name) !== mapId
+      ) {
+        issues.push({
+          name,
+          reason: `the map's debugId ${mapId} does not match its bundle's debugId comment ${unchangedIds.get(name)}`,
+        });
       }
     }
   }
