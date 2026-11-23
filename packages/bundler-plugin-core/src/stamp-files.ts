@@ -344,12 +344,13 @@ export function isUploadableMap(path: string): boolean {
 }
 
 /**
- * Every uploadable map under `dir`, walked like the snapshot: the whole output directory, fenced only at a
- * project root. The SINGLE source of both what a pre-stamped build uploads and what it deletes afterwards.
+ * Every map under `dir` (`*.map`, whatever its name), walked like the snapshot: the whole output directory,
+ * fenced only at a project root. The SINGLE walk behind what a pre-stamped build uploads and deletes; the
+ * caller splits it with {@link isUploadableMap}.
  */
-export async function listUploadableMaps(dir: string): Promise<string[]> {
+export async function listOutputMaps(dir: string): Promise<string[]> {
   const all = await walkStampable(dir, await isProjectRootOrAbove(dir));
-  return all.filter(isUploadableMap).sort();
+  return all.filter((file) => file.endsWith('.map')).sort();
 }
 
 /**
@@ -375,8 +376,14 @@ export async function partitionByKeyed(
     let text: string;
     try {
       text = await readFile(path, 'utf8');
-    } catch {
-      // Already gone: nothing to delete and nothing to keep.
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+        // Already gone: nothing to delete and nothing to keep.
+        continue;
+      }
+      // Anything else (EACCES, a map too large to read as a string) is NOT "gone": it cannot be confirmed
+      // keyed, so it is neither uploaded nor deleted, and the caller says so.
+      kept.push(path);
       continue;
     }
     let keyed = false;

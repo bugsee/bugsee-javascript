@@ -597,8 +597,9 @@ describe('a pre-stamped directory upload names its files (never the directory)',
     expect(upload).not.toContain(dir);
     expect(upload).not.toContain(join(dir, 'vendor.js.map'));
     expect(upload).not.toContain(join(dir, 'style.css.map'));
-    // Only what was uploaded is deleted: the vendor map AND the stylesheet map (never sent) stay.
-    expect((await readdir(dir)).sort()).toEqual(['style.css.map', 'sub', 'vendor.js.map']);
+    // The uploaded maps AND the stylesheet map (never sent, embeds the source) are deleted; the unkeyed vendor
+    // script map is untouched.
+    expect((await readdir(dir)).sort()).toEqual(['sub', 'vendor.js.map']);
     expect(result.uploaded).toBe(true);
     expect(onError).not.toHaveBeenCalled();
     expect(notices).toHaveLength(1);
@@ -637,9 +638,11 @@ describe('a pre-stamped directory upload names its files (never the directory)',
       expect(upload).toContain(map);
     }
     expect(upload).not.toContain(join(dir, 'unkeyed.map'));
-    // ONE set: what was uploaded is exactly what is deleted (test/ and dot-directories included).
-    expect(deleted).toEqual([uploaded]);
-    expect(result.deletedMaps).toEqual(uploaded);
+    // What was uploaded is deleted (test/ and dot-directories included), plus the declaration map that
+    // was never uploadable; the UNKEYED script map is in neither.
+    expect(deleted).toEqual([[...uploaded, join(dir, 'a.d.ts.map')]]);
+    expect(result.deletedMaps).toEqual([...uploaded, join(dir, 'a.d.ts.map')]);
+    expect(await readdir(dir)).toContain('unkeyed.map');
   });
 
   it('never deletes a map that was not in the uploaded set, whatever the directory walk saw', async () => {
@@ -660,6 +663,50 @@ describe('a pre-stamped directory upload names its files (never the directory)',
     );
     expect(deleted).toEqual([[join(dir, 'a.js.map')]]);
     expect(walk).not.toHaveBeenCalled();
+  });
+
+  it('deletes stylesheet and declaration maps only when an upload happened, and never an unkeyed script map', async () => {
+    for (const name of ['a.css.map', 'a.d.ts.map', 'a.d.mts.map', 'a.d.cts.map', 'x.js.map']) {
+      await writeFile(join(dir, name), name === 'x.js.map' ? '{"version":3}' : '{}');
+    }
+    const { run, calls } = record();
+    await uploadSourcemaps(opts({ run, onNotice: () => undefined }));
+    // Nothing keyed -> no upload -> nothing confirmed -> nothing deleted.
+    expect(calls).toEqual([]);
+    expect((await readdir(dir)).sort()).toHaveLength(5);
+
+    await writeFile(join(dir, 'k.js.map'), keyed);
+    await uploadSourcemaps(opts({ run, onNotice: () => undefined }));
+    expect((await readdir(dir)).sort()).toEqual(['x.js.map']);
+  });
+
+  it('a map it cannot read is reported as not uploaded and left alone (never silently skipped)', async () => {
+    await writeFile(join(dir, 'k.js.map'), keyed);
+    await writeFile(join(dir, 'locked.js.map'), keyed);
+    await chmod(join(dir, 'locked.js.map'), 0o000);
+    const notices: string[] = [];
+    try {
+      const { run, calls } = record();
+      await uploadSourcemaps(
+        opts({ run, failOnError: true, onNotice: (m: string) => notices.push(m) }),
+      );
+      const upload = calls.find((c) => c[0] === 'debug-files') as string[];
+      expect(upload).toContain(join(dir, 'k.js.map'));
+      expect(upload).not.toContain(join(dir, 'locked.js.map'));
+      expect(notices.join('\n')).toContain('locked.js.map');
+    } finally {
+      await chmod(join(dir, 'locked.js.map'), 0o644);
+    }
+  });
+
+  it('does not re-read the maps it already classified when it decides what to delete', async () => {
+    await writeFile(join(dir, 'k.js.map'), keyed);
+    const partition = vi.fn(async (maps: readonly string[]) => ({
+      deletable: [...maps],
+      kept: [] as string[],
+    }));
+    await uploadSourcemaps(opts({ run: record().run, partitionMaps: partition }));
+    expect(partition).toHaveBeenCalledOnce();
   });
 
   it('with nothing keyed there is nothing to upload: no CLI call, a notice, and a failure only under failOnError', async () => {

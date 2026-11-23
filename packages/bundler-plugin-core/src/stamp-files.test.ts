@@ -16,7 +16,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   isProjectRootOrAbove,
   isUploadableMap,
-  listUploadableMaps,
+  listOutputMaps,
   partitionByKeyed,
   restoreAtomically,
   snapshotStampFiles,
@@ -403,8 +403,25 @@ describe('partitionByKeyed — any uploadable map needs a key, whatever it is ca
   });
 });
 
-describe('listUploadableMaps', () => {
-  it('lists every uploadable map of the whole output directory (any name, src/ and dot-dirs included), sorted', async () => {
+describe('partitionByKeyed — a map that cannot be read is not "gone"', () => {
+  it('keeps (never silently drops) a map that fails to read with anything but ENOENT', async () => {
+    await writeFile(join(dir, 'locked.js.map'), stampedMap);
+    await chmod(join(dir, 'locked.js.map'), 0o000);
+    try {
+      const { deletable, kept } = await partitionByKeyed([
+        join(dir, 'locked.js.map'),
+        join(dir, 'vanished.js.map'),
+      ]);
+      expect(kept).toEqual([join(dir, 'locked.js.map')]);
+      expect(deletable).toEqual([]); // the vanished one is neither kept nor deleted
+    } finally {
+      await chmod(join(dir, 'locked.js.map'), 0o644);
+    }
+  });
+});
+
+describe('listOutputMaps', () => {
+  it('lists EVERY map of the whole output directory (any name, src/ and dot-dirs included), sorted, stylesheet and declaration maps too', async () => {
     await mkdir(join(dir, 'src'));
     await mkdir(join(dir, '.hidden'));
     await mkdir(join(dir, 'test'));
@@ -415,8 +432,10 @@ describe('listUploadableMaps', () => {
     await writeFile(join(dir, 'c.css.map'), '{}');
     await writeFile(join(dir, 'd.d.ts.map'), '{}');
     await writeFile(join(dir, 'e.js'), 'x');
-    expect((await listUploadableMaps(dir)).map((f) => f.slice(dir.length + 1))).toEqual([
+    expect((await listOutputMaps(dir)).map((f) => f.slice(dir.length + 1))).toEqual([
       '.hidden/b.mjs.map',
+      'c.css.map',
+      'd.d.ts.map',
       'index.map',
       'src/a.js.map',
       'test/t.map',
@@ -429,9 +448,7 @@ describe('listUploadableMaps', () => {
     await writeFile(join(dir, 'ok.map'), '{}');
     process.chdir(dir);
     try {
-      expect((await listUploadableMaps(dir)).map((f) => f.slice(dir.length + 1))).toEqual([
-        'ok.map',
-      ]);
+      expect((await listOutputMaps(dir)).map((f) => f.slice(dir.length + 1))).toEqual(['ok.map']);
     } finally {
       process.chdir(start);
     }

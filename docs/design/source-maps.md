@@ -267,10 +267,13 @@ directory for: **every `*.map` except stylesheet and declaration maps** (`.css.m
 with `[name].map`). The keyed ones are uploaded by path (in batches), the rest are left on disk untouched and
 reported as a **notice** (`onNotice`), not an error: they were never part of the build, so they do not fail
 `failOnError`. If nothing is keyed there is no CLI call (a notice; under `failOnError` the "no maps" failure the
-strict CLI used to give). The uploaded set is also the **deletion set**: one walker, and a map is deleted only if
-it was in the uploaded set after the upload succeeded (a keyed map under `test/` or a dot-directory is uploaded
-AND deleted; nothing the walk merely saw is ever deleted). Consequently stylesheet and declaration maps are not
-deleted on this path (they were not uploaded). A dry run still passes the directory (nothing was stamped; `--dry-run` only warns). Rspack development
+strict CLI used to give). The deletion set comes from the SAME walk: exactly the maps that were uploaded (already classified keyed, so
+not re-read), plus the stylesheet and declaration maps of that walk, which are never uploaded but embed the
+source and so are deleted with them (as on the post-emit and `files` paths). A script map is deleted only if it
+was uploaded and the upload was confirmed: an unkeyed or unreadable one is never deleted, and nothing the walk
+merely saw is (a keyed map under `test/` or a dot-directory is uploaded AND deleted). The stylesheet and
+declaration maps are deleted only if something was uploaded. A map that cannot be read (anything but ENOENT) is
+not "gone": it is neither uploaded nor deleted and is reported with the unkeyed ones. A dry run still passes the directory (nothing was stamped; `--dry-run` only warns). Rspack development
 builds that are not uploaded (`uploadInDevelopment` unset) are no longer stamped either. Covered by real builds
 (`plugin.in-build.real-build.test.ts`: Vite 7/8 with a `publicDir` vendor script, Rollup with a stale one, and `[name].map` custom map
 names on Rollup, Vite 7/8 and Rspack; real CLI, no dry run, `failOnError` on and off). Not run for real: webpack

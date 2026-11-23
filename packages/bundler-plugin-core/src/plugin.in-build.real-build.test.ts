@@ -562,3 +562,44 @@ describeReal('maps with custom names (sourcemapFileNames: "[name].map")', () => 
     });
   }
 });
+
+// A stylesheet map is never uploaded, but it embeds the source: it is still deleted with the rest.
+describeReal('a stylesheet map beside the stamped maps (Rspack, [file].map)', () => {
+  it('uploads the keyed js map and deletes the css map too (real CLI, failOnError on)', async () => {
+    const app = makeApp('rspack-css', { lazy: false });
+    writeFileSync(join(app.dir, 'style.css'), 'body { color: red; }\n');
+    writeFileSync(join(app.dir, 'index.js'), "import './style.css';\nconsole.log('css');\n");
+    const before = requests.length;
+    const errors: unknown[] = [];
+    const out = await new Promise<{ errors: unknown[]; files: string[] }>((resolve, reject) => {
+      const compiler = rspack({
+        context: app.dir,
+        mode: 'production',
+        entry: join(app.dir, 'index.js'),
+        devtool: false,
+        output: { path: app.out },
+        module: { rules: [{ test: /\.css$/, type: 'css' }] },
+        experiments: { css: true },
+        plugins: [
+          new rspack.SourceMapDevToolPlugin({ filename: '[file].map' }),
+          bugseeRspackPlugin({ ...pluginOptions(), onError: (e: unknown) => errors.push(e) }),
+        ],
+      });
+      compiler.run((err, stats) => {
+        compiler.close(() =>
+          err
+            ? reject(err)
+            : resolve({
+                errors: [...(stats as { compilation: { errors: unknown[] } }).compilation.errors],
+                files: readdirSync(app.out),
+              }),
+        );
+      });
+    });
+    expect(out.errors.map(String)).toEqual([]);
+    expect(errors.map(String)).toEqual([]);
+    expect(requests.length, 'the keyed js map was uploaded').toBeGreaterThan(before);
+    expect(out.files.some((f) => f.endsWith('.css'))).toBe(true);
+    expect(out.files.filter((f) => f.endsWith('.map'))).toEqual([]);
+  });
+});

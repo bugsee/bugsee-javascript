@@ -7,7 +7,8 @@ import { type RunBugseeCliOptions, runBugseeCli, type SpawnResult } from './run-
 import { findIntegrityMismatches, findSriProtectedScripts, type SriProtectedScript } from './sri';
 import {
   isProjectRootOrAbove,
-  listUploadableMaps,
+  isUploadableMap,
+  listOutputMaps,
   MAX_WALK_DEPTH,
   NEVER_WALK,
   partitionByKeyed,
@@ -90,7 +91,7 @@ export interface UploadSourcemapsOptions {
   stampedBundles?: readonly string[];
   /** Where a non-failing observation goes (default: nowhere — callers that want it pass the notice sink). */
   onNotice?: (message: string) => void;
-  /** Injectable lister of the script maps to consider for a pre-stamped directory upload (default {@link listUploadableMaps}). */
+  /** Injectable lister of the script maps to consider for a pre-stamped directory upload (default {@link listOutputMaps}). */
   listUploadMaps?: (dir: string) => Promise<string[]>;
   /** Where the pre-inject originals are spilled (default: the OS temp directory). A test seam. */
   spillRoot?: string;
@@ -350,6 +351,7 @@ export async function uploadSourcemaps(
     // that set: no second walk to disagree with the first about which maps exist.
     const explicitUpload = files === undefined && options.preStamped === true && !dryRun;
     let uploadedMaps: string[] = [];
+    let unuploadableMaps: string[] = [];
     let snapshot: string[] | undefined;
     let snapshotError: unknown;
     if (files === undefined && deleteMaps && !dryRun && !explicitUpload) {
@@ -380,11 +382,16 @@ export async function uploadSourcemaps(
     // holding such a map ("nothing was uploaded"), which would lose EVERY map of the build. Unkeyed maps
     // are left alone and said, not failed.
     if (explicitUpload) {
-      const candidates = await (options.listUploadMaps ?? listUploadableMaps)(outDir);
-      const { deletable, kept } = await (options.partitionMaps ?? partitionByKeyed)(candidates);
+      // ONE walk: the uploadable maps are classified by key; the stylesheet / declaration maps of the same
+      // walk are never uploaded but embed the source, so they are deleted with the uploaded ones.
+      const everything = await (options.listUploadMaps ?? listOutputMaps)(outDir);
+      const { deletable, kept } = await (options.partitionMaps ?? partitionByKeyed)(
+        everything.filter(isUploadableMap),
+      );
+      unuploadableMaps = everything.filter((map) => !isUploadableMap(map));
       if (kept.length > 0) {
         (options.onNotice ?? ((m: string) => console.warn(`[bugsee] ${m}`)))(
-          `${kept.length} source map(s) in ${outDir} carry no debug-ID, so they are not part of this build's stamp and were not uploaded (left on disk untouched): ${kept.join(', ')}`,
+          `${kept.length} source map(s) in ${outDir} have no readable debug-ID, so they are not part of this build's stamp and were not uploaded (left on disk untouched): ${kept.join(', ')}`,
         );
       }
       if (deletable.length === 0) {
@@ -430,18 +437,24 @@ export async function uploadSourcemaps(
     //    Only a map that carries one was keyed for upload, so only those are deleted (stamp-files.ts).
     let deletedMaps: string[] = [];
     if (deleteMaps) {
-      const { deletable, kept } = await (options.partitionMaps ?? partitionByKeyed)(
-        explicitUpload
-          ? uploadedMaps
-          : files === undefined
+      // A pre-stamped build deletes exactly what it uploaded (already classified keyed, so not re-read) plus
+      // the maps that were never uploadable, and only if something was uploaded. Any other path classifies
+      // its candidates here.
+      let deletable: string[];
+      let kept: string[] = [];
+      if (explicitUpload) {
+        deletable = uploadedMaps.length > 0 ? [...uploadedMaps, ...unuploadableMaps] : [];
+      } else {
+        ({ deletable, kept } = await (options.partitionMaps ?? partitionByKeyed)(
+          files === undefined
             ? (snapshot as string[])
             : [...files.maps, ...(files.stylesheetMaps ?? [])],
-      );
+        ));
+      }
       deletedMaps = await (options.deleteMapFiles ?? defaultDeleteMapFiles)(outDir, deletable);
-      // Unkeyed maps of a pre-stamped build were already said (a notice, above): they were never part of it.
-      if (kept.length > 0 && !explicitUpload) {
+      if (kept.length > 0) {
         const failure = new Error(
-          `${kept.length} source map(s) carry no debug-ID, so they were not uploaded and were left on disk: ${kept.join(', ')}`,
+          `${kept.length} source map(s) have no readable debug-ID, so they were not uploaded and were left on disk: ${kept.join(', ')}`,
         );
         if (options.failOnError === true) {
           throw failure;
