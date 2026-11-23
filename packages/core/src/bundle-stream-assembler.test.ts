@@ -426,9 +426,43 @@ describe('assembleBundleStream — time plan', () => {
     expect(manifestOf(files).time).toEqual({ start: NOW - 5000, end: NOW });
   });
 
-  it('ends the manifest time at the trigger moment (the clock), not the snapshot range end', async () => {
-    const files = await run([], { start: NOW - 5000, end: NOW - 10 });
+  it('ends the manifest time at the snapshot range end, not the (later) assembly clock', async () => {
+    // A report dialog freezes the capture when it OPENS; assembly runs when Send is pressed, seconds later. The data stops at
+    // the freeze, so the range must too (an end at the clock painted an empty tail on every trace).
+    const files = await run([], { start: NOW - 5000, end: NOW - 7000 });
+    expect(manifestOf(files).time.end).toBe(NOW - 7000);
+  });
+
+  it('never ends the manifest time before the newest streamed record', async () => {
+    const files = await run([entry('log', NOW - 6990, 'late')], {
+      start: NOW - 5000,
+      end: NOW - 7000,
+    });
+    expect(manifestOf(files).time.end).toBe(NOW - 6990);
+  });
+
+  it('never ends the manifest after the assembly clock, even for a future-stamped streamed record', async () => {
+    const files = await run([entry('log', NOW + 60_000, 'future')], {
+      start: NOW - 5000,
+      end: NOW - 10,
+    });
     expect(manifestOf(files).time.end).toBe(NOW);
+  });
+
+  it('caps a snapshot range end that lies past the assembly clock', async () => {
+    const files = await run([], { start: NOW - 5000, end: NOW + 500 });
+    expect(manifestOf(files).time.end).toBe(NOW);
+  });
+
+  it('does not let a report-time extra (taken at the clock) stretch the planned end', async () => {
+    const request = createReportingRequest({ source: { type: 'error' }, id: 'r1' });
+    const bundle = await assembleBundleStream(
+      request,
+      withRange([], { start: NOW - 5000, end: NOW - 7000 }),
+      context(),
+      new Map([['log', [entry('log', NOW, 'extra')]]]),
+    );
+    expect(manifestOf(members(await bundle.body.bytes())).time.end).toBe(NOW - 7000);
   });
 
   it('drops non-replay records older than the plan start and keeps those at or after it', async () => {
@@ -496,6 +530,112 @@ describe('assembleBundleStream — time plan', () => {
     const files = members(await bundle.body.bytes());
     expect(JSON.parse(strFromU8(files['events.user.json'] as Uint8Array))).toEqual(['x']);
     expect(manifestOf(files).time.start).toBe(NOW - 5000);
+  });
+
+  describe('report-time extras that predate the planned start are clamped up to it', () => {
+    const planned = async (
+      extras: CaptureDataEntry[],
+      range: { start: number; end: number } | undefined,
+      over: Partial<BundleAssemblyContext> = {},
+    ) => {
+      const request = createReportingRequest({ source: { type: 'error' }, id: 'r1' });
+      const bundle = await assembleBundleStream(
+        request,
+        withRange([], range),
+        context(over),
+        new Map([[extras[0]?.type as FileType, extras]]),
+      );
+      return members(await bundle.body.bytes());
+    };
+    const seed = (timestamp: number) =>
+      entry('traces.system', timestamp, { timestamp, name: 'app_state', value: 'background' });
+
+    it('re-stamps the entry AND the payload timestamp (the viewer filters on the payload) to the plan start', async () => {
+      const files = await planned([seed(NOW - 5001)], { start: NOW - 5000, end: NOW });
+      expect(JSON.parse(strFromU8(files['traces.system.json'] as Uint8Array))).toEqual([
+        { timestamp: NOW - 5000, name: 'app_state', value: 'background' },
+      ]);
+    });
+
+    it('leaves an extra at or after the plan start untouched', async () => {
+      const files = await planned([seed(NOW - 5000), seed(NOW - 10)], {
+        start: NOW - 5000,
+        end: NOW,
+      });
+      const rows = JSON.parse(strFromU8(files['traces.system.json'] as Uint8Array)) as Array<{
+        timestamp: number;
+      }>;
+      expect(rows.map((r) => r.timestamp)).toEqual([NOW - 5000, NOW - 10]);
+    });
+
+    it('keeps a payload whose own timestamp differs from the entry time, and a non-object payload', async () => {
+      const odd = entry('traces.system', NOW - 9000, { timestamp: 5, name: 'x' });
+      const plain = entry('events.user', NOW - 9000, 'plain');
+      const f1 = await planned([odd], { start: NOW - 5000, end: NOW });
+      expect(JSON.parse(strFromU8(f1['traces.system.json'] as Uint8Array))).toEqual([
+        { timestamp: 5, name: 'x' },
+      ]);
+      const f2 = await planned([plain], { start: NOW - 5000, end: NOW });
+      expect(JSON.parse(strFromU8(f2['events.user.json'] as Uint8Array))).toEqual(['plain']);
+    });
+
+    it('leaves an extra of an encoder-owned type as it is (a file encoder and a stream encoder clamp for themselves)', async () => {
+      const old = NOW - 9000;
+      const filePayloads: unknown[] = [];
+      await planned(
+        [entry('replay', old, { timestamp: old })],
+        { start: NOW - 5000, end: NOW },
+        {
+          fileEncoders: {
+            replay: (payloads) => {
+              filePayloads.push(...payloads);
+              return new Uint8Array([1]);
+            },
+          },
+        },
+      );
+      expect(filePayloads).toEqual([{ timestamp: old }]);
+      const streamed: number[] = [];
+      await planned(
+        [entry('replay', old, { timestamp: old })],
+        { start: NOW - 5000, end: NOW },
+        {
+          streamEncoders: {
+            replay: {
+              begin: () => ({
+                write: (e) => {
+                  streamed.push(e.timestamp);
+                  return [];
+                },
+                end: () => [],
+              }),
+            },
+          },
+        },
+      );
+      expect(streamed).toEqual([old]);
+    });
+
+    it('does not clamp without a plan, nor a type an encoder owns', async () => {
+      const f1 = await planned([seed(NOW - 9000)], undefined);
+      expect(JSON.parse(strFromU8(f1['traces.system.json'] as Uint8Array))).toEqual([
+        { timestamp: NOW - 9000, name: 'app_state', value: 'background' },
+      ]);
+      const seen: unknown[][] = [];
+      await planned(
+        [entry('replay', NOW - 9000, 'r')],
+        { start: NOW - 5000, end: NOW },
+        {
+          fileEncoders: {
+            replay: (payloads) => {
+              seen.push(payloads);
+              return new Uint8Array([1]);
+            },
+          },
+        },
+      );
+      expect(seen).toEqual([['r']]);
+    });
   });
 
   it('end to end: a real chunk store, through the exporter, bounds the manifest and trims old logs', async () => {
@@ -584,6 +724,16 @@ describe('assembleBundleStream — time plan', () => {
       expect(log).toEqual(['w:a', 'w:b', 'end']);
       expect(plans).toEqual([{ start: NOW2 - 5000, end: NOW2 }]);
       expect(mf(files).files.map((f) => f.filename)).toContain('replay.bin');
+    });
+
+    it('begins the session at the snapshot range end (matching manifest.time.end), not the later assembly clock', async () => {
+      const { encoder, plans } = recorder();
+      await runEnc(
+        [entry('replay', NOW2 - 9000, 'a')],
+        { start: NOW2 - 15_000, end: NOW2 - 7000 },
+        { streamEncoders: { replay: encoder } },
+      );
+      expect(plans).toEqual([{ start: NOW2 - 15_000, end: NOW2 - 7000 }]);
     });
 
     it('begins the session with an absent start when the source states no range', async () => {
@@ -783,11 +933,11 @@ describe('assembleBundleStream — time plan', () => {
       expect(closed).toBe(true);
     });
 
-    it('passes the clock moment, not the snapshot range end, as plan.end', async () => {
+    it('caps the session end at the assembly clock when the snapshot range end lies past it', async () => {
       const { encoder, plans } = recorder();
       await runEnc(
         [entry('replay', NOW2 - 100, 'a')],
-        { start: NOW2 - 5000, end: NOW2 - 77 },
+        { start: NOW2 - 5000, end: NOW2 + 77 },
         {
           streamEncoders: { replay: encoder },
         },

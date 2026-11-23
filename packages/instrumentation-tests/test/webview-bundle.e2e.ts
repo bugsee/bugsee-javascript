@@ -35,9 +35,11 @@ const KB = 1024;
 // field cost ~340 bytes gzip). Raised again, on purpose (2026-11-01), to 69 KiB gzip / 204 KiB raw: the shared core grew by about
 // 1 KB raw (~0.2 KB gzip) with the per-source visual lanes (lane routing in the chunk store, the per-lane members in the bundle
 // assembler, the lane in the part meta), which the webview bundles but does not use; the bundle measured 201.0 KB raw / 67.8 KB
-// gzip against the old 200 / 68 limits. The artifact size stays logged by the test below.
-const GZIP_BUDGET = 69 * KB;
-const RAW_BUDGET = 204 * KB;
+// gzip against the old 200 / 68 limits. Raised on purpose again (2026-11-23), to 206 KiB raw / 70 KiB gzip: the traces-gap fix (the
+// prepareSnapshot hook, held-trace carry-forward in the traces provider, the manifest-end/extras clamp in the assembler)
+// grew the shared core+capture by ~0.9 KB raw (209,751 bytes against 208,896) and ~0.2 KB gzip (70,868 against 70,656). The artifact size stays logged by the test below.
+const GZIP_BUDGET = 70 * KB;
+const RAW_BUDGET = 206 * KB;
 
 const IIFE_ENTRY = fileURLToPath(new URL('../../webview/src/iife.ts', import.meta.url));
 

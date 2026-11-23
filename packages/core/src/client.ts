@@ -1104,9 +1104,28 @@ export function createClient(options: CreateClientOptions = {}): CreatedClient {
       return extras;
     };
     openCapture = async (owner?: string): Promise<ExportedCapture> => {
+      // Let providers make their window honest BEFORE it is frozen (a throttled/frozen tab ran none of their timers); the
+      // window is the span the snapshot will cover. Isolated: a failing provider never blocks the report. What they RETURN
+      // rides along as report-time extras (never trimmed by the store's own range, which is read from a separate clock).
+      const windowEnd = clock.wallNow();
+      const prepared = captureCoordinator.prepareSnapshot({
+        start:
+          windowEnd -
+          launchOptions.get<number>(BugseeOption.Duration, options.maxRecordingTime ?? 60) * 1000,
+        end: windowEnd,
+      });
       const stream = captureExporter.stream(owner !== undefined ? { owner } : undefined);
       try {
-        return { source: stream, extras: await gatherSnapshots() };
+        const extras = await gatherSnapshots();
+        for (const entry of prepared) {
+          const existing = extras.get(entry.type);
+          if (existing !== undefined) {
+            existing.push(entry);
+          } else {
+            extras.set(entry.type, [entry]);
+          }
+        }
+        return { source: stream, extras };
       } catch (error) {
         await stream.return?.(); // the snapshot is pinned until released
         throw error;
