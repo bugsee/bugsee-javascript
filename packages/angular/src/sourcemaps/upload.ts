@@ -9,11 +9,12 @@
 // hashes in its runtime chunk. Stamping the scripts afterwards changes their bytes, so every digest of a changed
 // script is re-written wherever it appears (`resealSri`, bundler-plugin-core), and a build that cannot be re-sealed
 // is restored. Measured on real @angular/build 22.3 and build-angular 19.2 builds; see docs/design/source-maps.md §7.1.
-import { existsSync, readdirSync } from 'node:fs';
+import { existsSync, readdirSync, statSync } from 'node:fs';
 import { join, relative, resolve } from 'node:path';
 import {
   type BugseePluginOptions,
   type EnvRecord,
+  findSriProtectedScripts,
   isFencedPath,
   loadBuildPluginEnv,
   mergeBuildPluginEnv,
@@ -23,7 +24,7 @@ import {
   runPluginUpload,
 } from '@bugsee/bundler-plugin-core';
 import { type AngularOutput, resolveAngularOutput } from './output';
-import { findServerRoot } from './server-root';
+import { findServerRoot, looksLikeAngularServer } from './server-root';
 
 export interface AngularUploadOptions extends BugseePluginOptions {
   /** Workspace directory (angular.json is looked for here and above). Default: the working directory. */
@@ -158,13 +159,15 @@ export async function uploadAngularSourcemaps(
   let resealRoot: string | undefined;
   // The browser directory of that root (its name is not always `browser`).
   let rootBrowser: string | undefined;
+  // An SSR output root that could not be located safely: its server copies of the page are not re-sealed.
+  let unsafeNotice: string | undefined;
   const probeServerRoot = (): void => {
     const found = findServerRoot(outDir, cwd);
     if (found !== undefined && 'root' in found) {
       resealRoot = found.root;
       rootBrowser = found.browser;
     } else if (found !== undefined) {
-      say(found.notice);
+      unsafeNotice = found.notice; // said if the run goes on, part of the refusal if it cannot
     }
   };
   if (options.dist !== undefined) {
@@ -180,6 +183,15 @@ export async function uploadAngularSourcemaps(
       rootBrowser = outDir;
     } else {
       outDir = base;
+      if (looksLikeAngularServer(join(base, 'server'))) {
+        // `<base>` holds the server beside a client directory with another name: stamping it would stamp the server.
+        return misconfigured(
+          `${base} holds an Angular server output beside its browser output, and the browser directory is not named ` +
+            `browser/, so the whole of it would be stamped. Give the browser directory itself with --dist.`,
+          base,
+          options.configuration,
+        );
+      }
       probeServerRoot();
     }
   } else {
@@ -212,6 +224,21 @@ export async function uploadAngularSourcemaps(
       outDir,
       configuration,
     );
+  }
+  if (!statSync(outDir).isDirectory()) {
+    return misconfigured(`the build output ${outDir} is not a directory.`, outDir, configuration);
+  }
+  if (unsafeNotice !== undefined) {
+    if ((await findSriProtectedScripts(outDir)).length > 0) {
+      // The browser pages pin script hashes and the server copies of them cannot be re-sealed: stamping would leave
+      // server-rendered pages pinning the old hashes (every script blocked).
+      return misconfigured(
+        `${unsafeNotice} The browser pages pin script hashes, so nothing was stamped.`,
+        outDir,
+        configuration,
+      );
+    }
+    say(unsafeNotice);
   }
   const isProduction = !(configuration?.split(',').includes('development') ?? false);
   if (!isProduction && !resolved.uploadInDevelopment) {

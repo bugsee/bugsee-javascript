@@ -26,7 +26,7 @@ const ANGULAR_SERVER_FILE =
   /^(?:server|main\.server)\.mjs$|^index\.server\.html$|^angular-app(?:-engine)?-manifest\.mjs$/;
 
 /** Whether `dir` looks like Angular's server output: a marker file in it, or in a locale directory of it. */
-function looksLikeAngularServer(dir: string): boolean {
+export function looksLikeAngularServer(dir: string): boolean {
   try {
     return readdirSync(dir, { withFileTypes: true }).some((entry) =>
       entry.isDirectory()
@@ -81,8 +81,8 @@ export function findServerRoot(outDir: string, cwd: string, api: PathApi = path)
   }
   return {
     notice:
-      `found ${unmatched} near the output, but the output is not inside a browser/ directory next to it (a custom ` +
-      `outputPath.browser name?), so it cannot tell which is the browser output and did not re-seal the server pages, ` +
-      `which embed the page's integrity hashes. Pass --output-path <the output base directory>.`,
+      `found ${unmatched} near the output, but the output is not inside a browser/ directory next to it, so it cannot ` +
+      `tell which is the browser output and did not re-seal the server pages, which embed the page's integrity hashes. ` +
+      `A custom outputPath.browser name is not supported together with server pages: build with the default browser/ name.`,
   };
 }

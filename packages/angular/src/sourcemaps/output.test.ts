@@ -149,6 +149,24 @@ describe('resolveAngularOutput', () => {
     expect(resolveAngularOutput({ cwd, project: 'b' }).browserDir).toBe(join(cwd, 'dist', 'b'));
   });
 
+  it("reads the `targets` spelling of a project's targets (Angular accepts it beside `architect`)", async () => {
+    await writeFile(
+      join(cwd, 'angular.json'),
+      JSON.stringify({
+        projects: {
+          demo: {
+            projectType: 'application',
+            root: '',
+            targets: {
+              build: { builder: '@angular/build:application', options: { outputPath: 'out' } },
+            },
+          },
+        },
+      }),
+    );
+    expect(resolveAngularOutput({ cwd }).browserDir).toBe(join(cwd, 'out', 'browser'));
+  });
+
   it('treats a target with no builder as flat', async () => {
     await workspace({ demo: app({ options: {} }) });
     const out = resolveAngularOutput({ cwd });

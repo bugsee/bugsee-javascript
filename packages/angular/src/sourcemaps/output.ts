@@ -96,8 +96,11 @@ export function resolveAngularOutput(options: ResolveAngularOutputOptions): Angu
   const { file, json } = readWorkspace(options.cwd);
   const root = dirname(file);
   const project = pickProject(json, options.project);
-  const target = ((json.projects as Record<string, Json>)[project]?.architect as Json | undefined)
-    ?.build as Json | undefined;
+  const entry = (json.projects as Record<string, Json>)[project] as Json;
+  // Angular accepts `targets` as a spelling of `architect`.
+  const target = ((entry.architect ?? entry.targets) as Json | undefined)?.build as
+    | Json
+    | undefined;
   if (target === undefined) {
     throw new Error(`project "${project}" has no "build" target`);
   }

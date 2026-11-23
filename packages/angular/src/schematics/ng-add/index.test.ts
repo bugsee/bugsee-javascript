@@ -215,6 +215,22 @@ describe('ng add @bugsee/angular — without a token', () => {
 });
 
 describe('ng add @bugsee/angular — the .env file', () => {
+  it('warns when the env file already holds a DIFFERENT token than the one given, and leaves it', async () => {
+    const tree = await workspace();
+    tree.create('/.env.bugsee-build-plugin', 'BUGSEE_APP_TOKEN=OLD\n');
+    await run(tree, { appToken: 'NEW' });
+    expect(tree.readContent('/.env.bugsee-build-plugin')).toBe('BUGSEE_APP_TOKEN=OLD\n');
+    expect(logged('warn')).toMatch(/different BUGSEE_APP_TOKEN/);
+    expect(tree.readContent('/src/main.ts')).toContain(`launch('NEW');`);
+  });
+
+  it('says nothing when the env file already holds the same token', async () => {
+    const tree = await workspace();
+    tree.create('/.env.bugsee-build-plugin', 'BUGSEE_APP_TOKEN=SAME\n');
+    await run(tree, { appToken: 'SAME' });
+    expect(logged('warn')).not.toMatch(/different/);
+  });
+
   it('appends the token to an env file that has other settings, and leaves one that has a token alone', async () => {
     const tree = await workspace();
     tree.create('/.env.bugsee-build-plugin', 'BUGSEE_ENDPOINT=https://x');
@@ -439,14 +455,61 @@ describe('ng add @bugsee/angular — an app already using Bugsee', () => {
     expect(tree.readContent('/src/main.ts').match(/launch\(/g)).toHaveLength(1);
   });
 
-  it('does not add a handler when the app already provides BugseeErrorHandler somewhere', async () => {
+  it('does not add a handler when the app already PROVIDES BugseeErrorHandler somewhere', async () => {
+    const tree = await workspace();
+    tree.create(
+      '/src/app/errors.ts',
+      `import { ErrorHandler } from '@angular/core';\nimport { BugseeErrorHandler } from '@bugsee/angular';\nexport const p = { provide: ErrorHandler, useClass: BugseeErrorHandler };\n`,
+    );
+    await run(tree, { appToken: 'T' });
+    expect(tree.readContent('/src/app/app.config.ts')).not.toContain('BugseeErrorHandler');
+  });
+
+  it('an unused mention of BugseeErrorHandler (an export, a spec, a comment) is not a registration', async () => {
     const tree = await workspace();
     tree.create(
       '/src/app/errors.ts',
       `import { BugseeErrorHandler } from '@bugsee/angular';\nexport const X = BugseeErrorHandler;\n`,
     );
+    tree.create('/src/app/x.spec.ts', `{ provide: ErrorHandler, useClass: BugseeErrorHandler }\n`);
+    tree.create('/src/app/c.ts', `// { provide: ErrorHandler, useClass: BugseeErrorHandler }\n`);
     await run(tree, { appToken: 'T' });
-    expect(tree.readContent('/src/app/app.config.ts')).not.toContain('BugseeErrorHandler');
+    expect(tree.readContent('/src/app/app.config.ts')).toMatch(
+      /provide:\s*ErrorHandler,\s*useClass:\s*BugseeErrorHandler\b/,
+    );
+  });
+
+  it("recognises an aliased ErrorHandler import as the app's own handler", async () => {
+    const tree = await workspace();
+    tree.create(
+      '/src/app/mine.ts',
+      `import { ErrorHandler as AngularErrorHandler } from '@angular/core';\nexport const p = { provide: AngularErrorHandler, useClass: MyHandler };\n`,
+    );
+    const before = tree.readContent('/src/app/app.config.ts');
+    await run(tree, { appToken: 'T' });
+    expect(tree.readContent('/src/app/app.config.ts')).toBe(before);
+    expect(logged('warn')).toMatch(/already provides its own ErrorHandler/);
+  });
+
+  it('a comment mentioning @bugsee/angular in main.ts does not stop the launch from being added', async () => {
+    const tree = await workspace();
+    const main = tree.readContent('/src/main.ts');
+    tree.overwrite('/src/main.ts', `// TODO: add @bugsee/angular later\n${main}`);
+    await run(tree, { appToken: 'T' });
+    expect(tree.readContent('/src/main.ts')).toContain(`launch('T');`);
+  });
+
+  it('a main.ts that imports a Bugsee helper but never calls launch gets the call (and no second launch import)', async () => {
+    const tree = await workspace();
+    const main = tree.readContent('/src/main.ts');
+    tree.overwrite(
+      '/src/main.ts',
+      `import { launch } from '@bugsee/bugsee';\nimport { reportAngularError } from '@bugsee/angular';\n${main}`,
+    );
+    await run(tree, { appToken: 'T' });
+    const out = tree.readContent('/src/main.ts');
+    expect(out).toContain(`launch('T');`);
+    expect(out.match(/import \{ launch \}/g)).toHaveLength(1);
   });
 });
 

@@ -564,7 +564,10 @@ export async function uploadSourcemaps(
       const needsReseal =
         resealing &&
         !dryRun &&
+        // A re-seal that covers more than the output directory (an SSR build's server modules) cannot be skipped on
+        // what the output directory's HTML shows: a server module may be the only place that embeds a pinned page.
         (pinned.length > 0 ||
+          sealDirs.some((dir) => resolve(dir) !== resolve(outDir)) ||
           (await (options.hasServiceWorker ?? hasServiceWorkerManifest)(sealDirs)));
       const digests = needsReseal
         ? await (options.snapshotDigests ?? snapshotScriptDigests)([outDir])
@@ -627,6 +630,11 @@ export async function uploadSourcemaps(
       } catch (error) {
         // A rejected inject may already have rewritten files (an earlier batch, or a partial write): verify and
         // restore them BEFORE the failure propagates, so no unverified stamp stays on disk.
+        // When the pages were meant to be re-sealed, a stamp that stays on disk would sit against pages still pinning
+        // the old hashes (a blocked page): put EVERYTHING the stamp or the re-seal could write back first.
+        if (sealOriginal !== undefined) {
+          await restoreChanged(sealOriginal, options.restoreFile); // never throws: failures come back listed, the inject error below wins
+        }
         if (original !== undefined) {
           let note: string | undefined;
           try {

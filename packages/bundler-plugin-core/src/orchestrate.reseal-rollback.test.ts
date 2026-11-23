@@ -170,6 +170,24 @@ describeReal('uploadSourcemaps re-seal rollback', () => {
     expect(readdirSync(spillRoot)).toEqual([]);
   });
 
+  it('still reports the inject failure when putting the files back also fails', async () => {
+    const { out, server } = build();
+    const { opts, errors } = options(out, server, {
+      restoreFile: async () => {
+        throw new Error('EPERM');
+      },
+      run: async (args: string[], o: Parameters<typeof runBugseeCli>[1]) => {
+        if (args[1] === 'inject') {
+          await runBugseeCli(args, o);
+          throw new Error('bugsee-cli exited 1 on a later file');
+        }
+        return { code: 0, stdout: '', stderr: '' };
+      },
+    });
+    await uploadSourcemaps(opts);
+    expect(String(errors[0])).toContain('later file');
+  });
+
   it('throws the failure under failOnError, after restoring', async () => {
     const { out, server } = build();
     const before = snapshot(out, server);
@@ -326,12 +344,45 @@ describeReal('uploadSourcemaps re-seal rollback', () => {
 
   // The re-seal machinery (digest snapshot, a second spill of every file, the swap walk, the verify) is only worth
   // its cost when something can need it: a page that pins a hash, or a service worker manifest.
+  it('does NOT skip the re-seal when it covers more than the output directory: the server modules may hold the pin', async () => {
+    const { out, server } = build();
+    writeFileSync(join(out, 'index.html'), '<p>no pins</p>'); // only the server module embeds a page
+    const snapshotDigests = vi.fn(async () => new Map());
+    const { opts } = options(out, server, { snapshotDigests, resealDirs: [out, server] });
+    await uploadSourcemaps(opts);
+    expect(snapshotDigests).toHaveBeenCalled();
+  });
+
+  it('puts every byte back when inject fails AFTER it stamped (a later batch fails): no stamped bundle against an un-sealed page', async () => {
+    const { out, server } = build();
+    const before = snapshot(out, server);
+    const { opts, calls, errors } = options(out, server, {
+      run: async (args: string[], o: Parameters<typeof runBugseeCli>[1]) => {
+        if (args[1] === 'inject') {
+          await runBugseeCli(args, o); // stamped on disk...
+          throw new Error('bugsee-cli exited 1 on a later file'); // ...then the command fails
+        }
+        return { code: 0, stdout: '', stderr: '' };
+      },
+    });
+    const result = await uploadSourcemaps(opts);
+    expect(snapshot(out, server)).toEqual(before);
+    expect(calls).not.toContain('upload');
+    expect(result).toMatchObject({ injected: false, uploaded: false });
+    expect(String(errors[0])).toContain('later file');
+  });
+
   it('skips the whole re-seal when nothing pins a hash and there is no service worker manifest', async () => {
     const { out, server } = build();
     writeFileSync(join(out, 'index.html'), '<p>no pins</p>');
     const snapshotDigests = vi.fn(async () => new Map());
     const reseal = vi.fn(async () => ({ files: [] }));
-    const { opts } = options(out, server, { snapshotDigests, reseal, spillRoot: join(out, '..') });
+    const { opts } = options(out, server, {
+      snapshotDigests,
+      reseal,
+      resealDirs: [out],
+      spillRoot: join(out, '..'),
+    });
     await uploadSourcemaps(opts);
     expect(snapshotDigests).not.toHaveBeenCalled();
     expect(reseal).not.toHaveBeenCalled();
@@ -345,7 +396,7 @@ describeReal('uploadSourcemaps re-seal rollback', () => {
       join(out, 'ngsw.json'),
       JSON.stringify({ hashTable: { '/main.js': createHash('sha1').update(js).digest('hex') } }),
     );
-    const { opts, errors } = options(out, server);
+    const { opts, errors } = options(out, server, { resealDirs: [out] });
     await uploadSourcemaps(opts);
     expect(errors).toEqual([]);
     const table = JSON.parse(readFileSync(join(out, 'ngsw.json'), 'utf8')).hashTable;

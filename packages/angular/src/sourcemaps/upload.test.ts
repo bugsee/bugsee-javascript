@@ -321,6 +321,53 @@ describe('uploadAngularSourcemaps', () => {
       await expect(run({ failOnError: true })).rejects.toThrow(/ng build/);
     });
 
+    it('--dist naming a FILE is a misconfiguration said, not a crash', async () => {
+      await write('a-file', 'x');
+      const notices: string[] = [];
+      const out = await run({ dist: 'a-file' }, notices);
+      expect(out.status).toBe('misconfigured');
+      expect(notices.join('\n')).toMatch(/not a directory/);
+    });
+
+    it('--output-path <base> of a custom-browser build (client/ beside server/) is refused: it would stamp the server', async () => {
+      await write('o/client/main.js', 'x();');
+      await write('o/server/server.mjs', '');
+      const runPluginUpload = ran();
+      const notices: string[] = [];
+      const out = await uploadAngularSourcemaps(
+        base({ cwd, outputPath: 'o', onNotice: (m: string) => notices.push(m) }),
+        { runPluginUpload },
+      );
+      expect(out.status).toBe('misconfigured');
+      expect(runPluginUpload).not.toHaveBeenCalled();
+      expect(notices.join('\n')).toMatch(/--dist/);
+    });
+
+    it('the project root as output root with SRI pins in the browser pages is refused: the server copies cannot be re-sealed', async () => {
+      await write('browser/main.js', 'x();');
+      await write('browser/index.html', '<script src="main.js" integrity="sha384-AAAA"></script>');
+      await write('server/server.mjs', '');
+      const runPluginUpload = ran();
+      const out = await uploadAngularSourcemaps(base({ cwd, dist: 'browser' }), {
+        runPluginUpload,
+      });
+      expect(out.status).toBe('misconfigured');
+      expect(runPluginUpload).not.toHaveBeenCalled();
+    });
+
+    it('the project root as output root WITHOUT pins is only said, and still uploads', async () => {
+      await write('browser/main.js', 'x();');
+      await write('server/server.mjs', '');
+      const runPluginUpload = ran();
+      const notices: string[] = [];
+      const out = await uploadAngularSourcemaps(
+        base({ cwd, dist: 'browser', onNotice: (m: string) => notices.push(m) }),
+        { runPluginUpload },
+      );
+      expect(out.status).toBe('uploaded');
+      expect(notices.join('\n')).toMatch(/project root/);
+    });
+
     it('--output-path points at the base of an application build, and at a flat one', async () => {
       await write('moved/browser/main.js', 'x();');
       await write('moved/browser/main.js.map', '{}');

@@ -131,6 +131,21 @@ function endOfImports(source: string): number {
   return end;
 }
 
+/** Source without comments, so a mention in one is not read as code. */
+const withoutComments = (text: string): string =>
+  text.replace(/\/\*[\s\S]*?\*\/|(^|[^:'"`])\/\/.*$/gm, '$1');
+
+/** The names ErrorHandler is imported under from @angular/core in `text`: `ErrorHandler` and any `as` alias. */
+function errorHandlerNames(text: string): string[] {
+  const names = ['ErrorHandler'];
+  for (const [, list] of text.matchAll(/import\s*\{([^}]*)\}\s*from\s*['"]@angular\/core['"]/g)) {
+    for (const [, alias] of (list ?? '').matchAll(/\bErrorHandler\s+as\s+(\w+)/g)) {
+      names.push(alias as string);
+    }
+  }
+  return names;
+}
+
 const BOOTSTRAP = /\bbootstrap(Application|Module|ModuleFactory)\s*\(/;
 
 function manualSteps(token: string): string {
@@ -156,15 +171,18 @@ function instrument(located: Located, token: string): Rule {
       );
       return;
     }
-    if (!source.includes('@bugsee/')) {
+    const code = withoutComments(source);
+    // An existing launch CALL (not a mention of the package, not an imported helper) is left exactly as it is.
+    if (!(/@bugsee\//.test(code) && /\blaunch\s*\(/.test(code))) {
       const call = `// Launch Bugsee before the app starts, so startup errors are captured.\nlaunch(${quote(token)});`;
-      const statement = `import { launch } from '@bugsee/angular';`;
+      const importsLaunch = /import\s*\{[^}]*\blaunch\b[^}]*\}\s*from\s*['"]@bugsee\//.test(code);
+      const statement = importsLaunch ? '' : `import { launch } from '@bugsee/angular';\n\n`;
       const end = endOfImports(source);
       tree.overwrite(
         main,
         end === -1
-          ? `${statement}\n\n${call}\n\n${source}`
-          : `${source.slice(0, end)}\n${statement}\n\n${call}${source.slice(end)}`,
+          ? `${statement}${call}\n\n${source}`
+          : `${source.slice(0, end)}\n${statement === '' ? '\n' : statement}${call}${source.slice(end)}`,
       );
     }
     let provided = false;
@@ -173,10 +191,14 @@ function instrument(located: Located, token: string): Rule {
       if (!path.endsWith('.ts')) {
         return;
       }
-      const text = tree.readText(path);
-      if (text.includes('BugseeErrorHandler')) {
+      if (path.endsWith('.spec.ts')) {
+        return;
+      }
+      const text = withoutComments(tree.readText(path));
+      const tokens = errorHandlerNames(text).join('|');
+      if (new RegExp(`provide\\s*:\\s*(?:${tokens})\\b[^}]*\\bBugseeErrorHandler\\b`).test(text)) {
         provided = true;
-      } else if (!path.endsWith('.spec.ts') && /provide\s*:\s*ErrorHandler\b/.test(text)) {
+      } else if (new RegExp(`provide\\s*:\\s*(?:${tokens})\\b`).test(text)) {
         foreign = true;
       }
     });
@@ -244,7 +266,7 @@ function addBuildScript(located: Located): Rule {
 
 /** `.env.bugsee-build-plugin` with the token for the build step, git-ignored. */
 function keepToken(token: string | undefined): Rule {
-  return (tree) => {
+  return (tree, context) => {
     if (token === undefined) {
       return;
     }
@@ -252,6 +274,14 @@ function keepToken(token: string | undefined): Rule {
       tree.create(`/${ENV_FILE}`, `BUGSEE_APP_TOKEN=${token}\n`);
     } else {
       const text = tree.readText(`/${ENV_FILE}`);
+      const existing = /^\s*BUGSEE_APP_TOKEN\s*=\s*(.*?)\s*$/m.exec(text)?.[1];
+      if (existing !== undefined && existing !== token) {
+        context.logger.warn(
+          `Bugsee: ${ENV_FILE} already has a different BUGSEE_APP_TOKEN than the one you gave, and it was left as it is. ` +
+            `launch() uses the token you gave, the source-map upload uses the file's: if they are not the same app, ` +
+            `crash reports cannot be symbolicated. Make them match.`,
+        );
+      }
       if (!/^\s*BUGSEE_APP_TOKEN\s*=/m.test(text)) {
         tree.overwrite(
           `/${ENV_FILE}`,

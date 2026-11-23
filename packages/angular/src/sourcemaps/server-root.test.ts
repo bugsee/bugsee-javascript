@@ -60,7 +60,7 @@ describe('findServerRoot', () => {
     await file('o/server/server.mjs');
     const found = findServerRoot(join(cwd, 'o/dist'), cwd);
     expect(found).toMatchObject({ notice: expect.stringContaining('browser') });
-    expect((found as { notice: string }).notice).toMatch(/--output-path/);
+    expect((found as { notice: string }).notice).toMatch(/browser\/ name/);
   });
 
   it('a custom browser directory name (outputPath.browser) is not guessed: it is said', async () => {
