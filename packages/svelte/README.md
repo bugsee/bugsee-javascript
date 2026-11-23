@@ -4,16 +4,16 @@ Svelte and SvelteKit adapter for the Bugsee SDK: a `handleError` hook that repor
 
 Part of the Bugsee JavaScript SDK (public beta, 0.1.0-beta.x).
 
-Install this package directly in Svelte or SvelteKit apps, together with the `@bugsee/bugsee` umbrella that provides `launch()`. For SvelteKit with server-side code, prefer [`@bugsee/sveltekit`](https://github.com/bugsee/bugsee-javascript/tree/main/packages/sveltekit), which covers client and server.
+Install this package directly in Svelte or SvelteKit apps, on its own: it depends on `@bugsee/bugsee` and re-exports it, so `launch()` and the adapter API come from this one package. For SvelteKit with server-side code, prefer [`@bugsee/sveltekit`](https://github.com/bugsee/bugsee-javascript/tree/main/packages/sveltekit), which covers client and server.
 
 ## Install
 
 ```sh
-npm install @bugsee/bugsee @bugsee/svelte
+npm install @bugsee/svelte
 # or
-pnpm add @bugsee/bugsee @bugsee/svelte
+pnpm add @bugsee/svelte
 # or
-yarn add @bugsee/bugsee @bugsee/svelte
+yarn add @bugsee/svelte
 ```
 
 Peer dependencies: `svelte` >= 4 and `@sveltejs/kit` >= 2 (both optional).
@@ -24,7 +24,7 @@ Launch Bugsee as early as possible, at the top of your entry module. In the brow
 
 ```ts
 // src/main.ts
-import { launch } from "@bugsee/bugsee";
+import { launch } from "@bugsee/svelte";
 
 launch("YOUR_APP_TOKEN");
 ```
@@ -80,7 +80,7 @@ On SvelteKit 3 there is no `svelte.config.js`; pass `preprocess` to the `sveltek
 - `replay`: session replay settings, or `false` to turn replay off.
 - `captureInteractions`: capture user interactions (default `true`).
 
-This package also re-exports everything from `@bugsee/bugsee`.
+This package installs `@bugsee/bugsee` for you and re-exports everything from it, so you do not install or import it separately.
 
 ## Links
 
