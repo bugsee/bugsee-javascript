@@ -22,7 +22,13 @@ import {
   resolvePluginOptions,
   runPluginUpload,
 } from './resolve';
-import { type AssetStore, stampAssets } from './stamp-assets';
+import {
+  type AssetStore,
+  type RollupBundleLike,
+  rollupAssetStore,
+  rollupUnstampableMaps,
+  stampAssets,
+} from './stamp-assets';
 
 /** The subset of a rollup/vite output-options object we read. */
 export interface OutputLike {
@@ -74,13 +80,19 @@ interface WebpackCompilerLike {
    * `RawSource` class must be the ones this compilation uses, not a second copy of webpack or
    * webpack-sources that happens to resolve from this package.
    */
-  webpack?: {
-    Compilation: { PROCESS_ASSETS_STAGE_DEV_TOOLING: number };
-    sources: { RawSource: new (buffer: Buffer) => unknown };
-    DefinePlugin?: DefinePluginCtor;
-  };
-  /** Rspack's own API object (webpack-compatible `DefinePlugin`). */
-  rspack?: { DefinePlugin?: DefinePluginCtor };
+  webpack?: BundlerApi;
+  /**
+   * Rspack's own API object: the same webpack-compatible surface (`Compilation` stages, `sources.RawSource`,
+   * `DefinePlugin`), which is what lets one in-build stamp stage serve both.
+   */
+  rspack?: BundlerApi;
+}
+
+/** The webpack-compatible API a compiler exposes (webpack 5 as `compiler.webpack`, Rspack as `compiler.rspack`). */
+interface BundlerApi {
+  Compilation?: { PROCESS_ASSETS_STAGE_DEV_TOOLING: number };
+  sources?: { RawSource: new (buffer: Buffer) => unknown };
+  DefinePlugin?: DefinePluginCtor;
 }
 
 /** webpack's / rspack's `DefinePlugin`, as far as the identity injection uses it. */
@@ -351,13 +363,97 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
   // run then falls back to NODE_ENV. It decides whether the build registers (register-build.ts).
   let viteBuild: BundlerBuildContext = {};
 
+  // IN-BUILD STAMPING. Stamp the debug-IDs while the output is still in memory, before the bundler
+  // writes it and before any plugin hashes it (Subresource Integrity). Returns whether it took, which is
+  // what lets the upload skip the post-emit inject (and its SRI refusal). A failure is contained and
+  // NOT silent about what happens next: the post-emit path takes over and still carries the refusal, so a
+  // failed in-build stamp degrades to the old safe behaviour rather than to a page nobody checked.
+  const stampInBuild = async (store: AssetStore): Promise<boolean> => {
+    try {
+      await stampAssets(store, { dryRun: resolved.dryRun });
+      // True on a dry run too: the preview must follow the path the real run takes, and the real run
+      // would not refuse an SRI build — it would stamp it here.
+      return true;
+    } catch (error) {
+      if (resolved.failOnError) {
+        throw error;
+      }
+      (
+        resolved.onError ??
+        ((e: unknown) =>
+          console.warn(
+            `[bugsee] in-build debug-ID stamping failed; falling back to stamping after emit: ${String(e)}`,
+          ))
+      )(error);
+      return false;
+    }
+  };
+
+  // webpack 5 and Rspack share the stage: stamp at PROCESS_ASSETS_STAGE_DEV_TOOLING + 1. The source-map
+  // plugin emits the maps AT 500 (after minification at 400) and webpack-subresource-integrity /
+  // Rspack's SubresourceIntegrityPlugin hash later (measured: after 700), so one stage past 500 sees the
+  // final bytes and the SRI plugin then hashes the STAMPED bytes — for the HTML and for the lazy-chunk
+  // table alike. Nothing is rewritten after emit. Returns whether THIS compilation was stamped; reset per
+  // compilation, so in watch mode a stamp from the previous build cannot vouch for this one.
+  const tapProcessAssetsStamp = (compiler: WebpackCompilerLike): (() => boolean) => {
+    let preStamped = false;
+    const api = compiler.webpack ?? compiler.rspack;
+    const stage = api?.Compilation?.PROCESS_ASSETS_STAGE_DEV_TOOLING;
+    const RawSource = api?.sources?.RawSource;
+    const thisCompilation = compiler.hooks.thisCompilation;
+    if (resolved.enabled && stage !== undefined && RawSource !== undefined && thisCompilation) {
+      thisCompilation.tap(name, (compilation) => {
+        preStamped = false;
+        compilation.hooks.processAssets.tapPromise({ name, stage: stage + 1 }, async () => {
+          preStamped = await stampInBuild(webpackAssetStore(compilation, RawSource));
+        });
+      });
+    }
+    return () => preStamped;
+  };
+
+  // Vite and Rollup: stamp in `generateBundle`, where chunks (`code`) and their `.map` assets are in memory.
+  // Whether the output directory's bundle was stamped is kept per directory (a Vite app builds a client
+  // and a server into different ones), set by every generateBundle and CONSUMED by the matching write, so
+  // a stamp can never carry over to a later build of the same directory.
+  const stampedOutputs = new Map<string, boolean>();
+  const stampBundle = async (output: OutputLike, bundle: RollupBundleLike): Promise<void> => {
+    const outDir = resolveOutputDir(output);
+    if (outDir === undefined || !resolved.enabled) {
+      return;
+    }
+    stampedOutputs.set(outDir, false);
+    const unstampable = rollupUnstampableMaps(bundle);
+    if (unstampable.length > 0) {
+      say(
+        `${unstampable.join(', ')} ${unstampable.length > 1 ? 'have' : 'has'} a source map that is not a bundle asset ` +
+          '(an older Rollup, or `sourcemap: "inline"`), so debug-IDs cannot be stamped inside the build; ' +
+          'stamping after emit instead (a build that pins Subresource Integrity hashes is then refused).',
+      );
+      return;
+    }
+    stampedOutputs.set(outDir, await stampInBuild(rollupAssetStore(bundle)));
+  };
+  // Not `order: 'pre'` by taste: Vite builds `index.html` (and runs `transformIndexHtml`, where an SRI
+  // plugin hashes the chunks) in its own generateBundle, so ours must run first. Plugins sharing the
+  // `pre` order run in the order they appear in `plugins`: list this plugin BEFORE any SRI plugin.
+  const generateBundleHook = {
+    order: 'pre' as const,
+    handler: (output: OutputLike, bundle: RollupBundleLike) => stampBundle(output, bundle),
+  };
+
   const uploadForOutput = async (
     output: OutputLike,
     bundler: BundlerBuildContext,
   ): Promise<void> => {
     const outDir = resolveOutputDir(output);
     if (outDir !== undefined) {
-      await runPluginUpload(forOutput(outDir), outDir, { bundler });
+      const preStamped = stampedOutputs.get(outDir) === true;
+      stampedOutputs.delete(outDir);
+      await runPluginUpload(forOutput(outDir), outDir, {
+        bundler,
+        ...(preStamped ? { preStamped: true } : {}),
+      });
     }
   };
 
@@ -417,6 +513,7 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
       configResolved(config: { isProduction: boolean; mode: string }) {
         viteBuild = { isProduction: config.isProduction, configuration: config.mode };
       },
+      generateBundle: generateBundleHook,
       writeBundle: (output: OutputLike) => uploadForOutput(output, viteBuild),
     },
     rollup: {
@@ -455,6 +552,7 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
       buildStart() {
         unbakedOutDirs.clear();
       },
+      generateBundle: generateBundleHook,
       writeBundle: (output: OutputLike) => uploadForOutput(output, {}),
     },
     esbuild: {
@@ -566,9 +664,10 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
         taken,
       );
       injectDefines(compiler, DefinePlugin, identityDefines, taken);
-      // End of the build (#184): upload after emit, as webpack does. Rspack's in-build stamp stage is not
-      // wired, so the post-emit inject path runs and keeps the SRI guard that refuses a build whose
-      // integrity hashes the stamp would invalidate.
+      // Stamp inside the compilation (as webpack does); a failure falls back to the post-emit inject below,
+      // which keeps the SRI guard that refuses a build whose integrity hashes the stamp would invalidate.
+      const preStamped = tapProcessAssetsStamp(compiler);
+      // End of the build (#184): upload after emit, as webpack does.
       // Rspack's production default is `devtool: false`: no maps are emitted and the upload silently finds
       // nothing. Said once, like esbuild's `sourcemap: false`.
       // Judged on the RESOLVED default: an unset `devtool` is `eval` in development (the dev-skip notice covers
@@ -591,7 +690,7 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
           dir !== '' &&
           !skipDevelopment(compiler.options.mode !== 'development', 'Rspack')
         ) {
-          await runPluginUpload(forOutput(dir), dir, { bundler });
+          await runPluginUpload(forOutput(dir), dir, { bundler, preStamped: preStamped() });
         }
       });
     },
@@ -604,58 +703,15 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
         taken,
       );
       injectDefines(compiler, DefinePlugin, identityDefines, taken);
-      // Whether THIS compilation's bundles were stamped in the build. Reset per compilation, so in
-      // watch mode a stamp from the previous build cannot vouch for this one.
-      let preStamped = false;
-
-      // THE SRI FIX. On webpack 5, stamp the debug-ids
-      // INSIDE the compilation, at a stage after the maps exist and before any integrity hash is
-      // taken: SourceMapDevToolPlugin emits maps at PROCESS_ASSETS_STAGE_DEV_TOOLING (500, after
-      // minification at 400), and webpack-subresource-integrity hashes at
-      // PROCESS_ASSETS_STAGE_OPTIMIZE_INLINE (700). One stage past 500 sees the final bytes, and the
-      // SRI plugin then hashes the STAMPED bytes — for the HTML and for the lazy-chunk `sriHashes`
-      // table it writes into the runtime chunk alike. Nothing is rewritten after emit.
-      const api = compiler.webpack;
-      const thisCompilation = compiler.hooks.thisCompilation;
-      if (resolved.enabled && api !== undefined && thisCompilation !== undefined) {
-        thisCompilation.tap(name, (compilation) => {
-          preStamped = false;
-          compilation.hooks.processAssets.tapPromise(
-            { name, stage: api.Compilation.PROCESS_ASSETS_STAGE_DEV_TOOLING + 1 },
-            async () => {
-              try {
-                await stampAssets(webpackAssetStore(compilation, api.sources.RawSource), {
-                  dryRun: resolved.dryRun,
-                });
-                // True on a dry run too: the preview must follow the path the real run takes, and the
-                // real run would not refuse an SRI build — it would stamp it here.
-                preStamped = true;
-              } catch (error) {
-                if (resolved.failOnError) {
-                  throw error;
-                }
-                // Contained, and NOT silent about what happens next: the post-emit path takes over,
-                // and it still carries the SRI refusal, so a failed in-build stamp degrades to the old
-                // safe behaviour rather than to an unchecked page.
-                (
-                  resolved.onError ??
-                  ((e: unknown) =>
-                    console.warn(
-                      `[bugsee] in-build debug-ID stamping failed; falling back to stamping after emit: ${String(e)}`,
-                    ))
-                )(error);
-              }
-            },
-          );
-        });
-      }
+      // THE SRI FIX on webpack 5: stamp inside the compilation (see tapProcessAssetsStamp).
+      const preStamped = tapProcessAssetsStamp(compiler);
 
       compiler.hooks.afterEmit.tapPromise(name, async () => {
         const dir = compiler.options.output?.path;
         if (typeof dir === 'string' && dir !== '') {
           await runPluginUpload(forOutput(dir), dir, {
             bundler: webpackBuild(compiler.options.mode),
-            preStamped,
+            preStamped: preStamped(),
           });
         }
       });

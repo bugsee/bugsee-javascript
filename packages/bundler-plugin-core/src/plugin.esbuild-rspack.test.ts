@@ -434,11 +434,11 @@ describe('rspack: upload after emit', () => {
     expect(bundlerOf(1)).toEqual({ isProduction: true, configuration: 'production' });
   });
 
-  it('is not stamped in-build: the post-emit run carries no preStamped flag', async () => {
+  it('a compiler without the in-build API (no thisCompilation) takes the post-emit path: preStamped is false', async () => {
     const { compiler, taps } = rspackCompiler('/out');
     applyRspack({ appToken: 'tok' }, compiler);
     await taps[0]?.fn();
-    expect((uploadSpy.mock.calls[0]?.[2] as { preStamped?: boolean }).preStamped).toBeUndefined();
+    expect((uploadSpy.mock.calls[0]?.[2] as { preStamped?: boolean }).preStamped).toBe(false);
   });
 
   it('is a no-op when the compiler has no usable output path', async () => {
