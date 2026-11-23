@@ -14,6 +14,14 @@ import { baseConfig } from '../../tsup.config.base';
 // `.` entry (#172). Keeping them external is what preserves the code-split in the (non-splitting) CJS build.
 export default defineConfig({
   ...baseConfig,
-  entry: ['src/index.ts', 'src/server.ts', 'src/client.ts', 'src/edge.ts', 'src/middleware.ts'],
+  entry: {
+    index: 'src/index.ts',
+    server: 'src/server.ts',
+    client: 'src/client.ts',
+    edge: 'src/edge.ts',
+    middleware: 'src/middleware.ts',
+    // The build-time integration (next.config): node-only, never imported by an app runtime.
+    config: 'src/config/index.ts',
+  },
   external: ['@bugsee/nextjs/server', '@bugsee/nextjs/edge'],
 });

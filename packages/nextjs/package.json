@@ -7,7 +7,7 @@
     "url": "git+https://github.com/bugsee/bugsee-javascript.git",
     "directory": "packages/nextjs"
   },
-  "description": "Next.js meta-adapter: client + server + edge entries",
+  "description": "Next.js meta-adapter: client + server + edge entries, plus the withBugsee() build integration (source-map upload)",
   "type": "module",
   "main": "./src/index.ts",
   "types": "./src/index.ts",
@@ -31,6 +31,10 @@
     "./middleware": {
       "types": "./src/middleware.ts",
       "import": "./src/middleware.ts"
+    },
+    "./config": {
+      "types": "./src/config/index.ts",
+      "import": "./src/config/index.ts"
     }
   },
   "files": [
@@ -49,7 +53,8 @@
     "@bugsee/protocol": "workspace:*",
     "@bugsee/react": "workspace:*",
     "@bugsee/vercel-edge": "workspace:*",
-    "@bugsee/bugsee": "workspace:*"
+    "@bugsee/bugsee": "workspace:*",
+    "@bugsee/bundler-plugin-core": "workspace:*"
   },
   "peerDependencies": {
     "@opentelemetry/api": ">=1.0.0",
@@ -132,6 +137,16 @@
         "require": {
           "types": "./dist/middleware.d.cts",
           "default": "./dist/middleware.cjs"
+        }
+      },
+      "./config": {
+        "import": {
+          "types": "./dist/config.d.ts",
+          "default": "./dist/config.js"
+        },
+        "require": {
+          "types": "./dist/config.d.cts",
+          "default": "./dist/config.cjs"
         }
       }
     },
