@@ -287,14 +287,30 @@ export function createNextWebpackPlugin(
         // No upload will follow: the browser maps Bugsee itself turned on (the app did not ask for them) must not
         // be left in `.next/static`, which is served publicly. Only this compilation's own files, only the ones
         // Bugsee forced; maps the app enabled stay.
-        const discardForcedMaps = async (): Promise<boolean> => {
-          if (kind !== 'client' || context.forcedMaps !== true) {
-            return false;
+        // Never throws (a failed upload must not fail the build): reported, and only `failOnError` rethrows. Not on
+        // a dry run, which deletes nothing (as the core's own upload never does).
+        const discardForcedMaps = async (): Promise<{ removed: boolean; failed: boolean }> => {
+          if (kind !== 'client' || context.forcedMaps !== true || resolved.dryRun) {
+            return { removed: false, failed: false };
           }
-          for (const map of [...files.maps, ...files.stylesheetMaps]) {
-            await remove(map);
+          try {
+            for (const map of [...files.maps, ...files.stylesheetMaps]) {
+              await remove(map);
+            }
+            return { removed: true, failed: false };
+          } catch (error) {
+            if (resolved.failOnError) {
+              throw error;
+            }
+            (
+              resolved.onError ??
+              ((e: unknown) =>
+                console.warn(
+                  `[bugsee] could not remove the browser source maps Bugsee turned on: ${String(e)}`,
+                ))
+            )(error);
+            return { removed: false, failed: true };
           }
-          return true;
         };
         if (state.abandoned === true) {
           await discardForcedMaps();
@@ -304,12 +320,18 @@ export function createNextWebpackPlugin(
         // files, is not: it would invalidate the hashes Next already pinned, and the browser would refuse the
         // scripts (measured). Nothing is rewritten, so nothing is uploaded.
         if (!state.preStamped && (context.sri === true || (await hasSriManifest(outDir)))) {
-          const removed = await discardForcedMaps();
+          const { removed, failed } = await discardForcedMaps();
           context.say(
-            FALLBACK_SRI_NOTICE(kind, String(state.failure ?? 'it did not apply'), removed),
+            FALLBACK_SRI_NOTICE(kind, removed, { dryRun: resolved.dryRun, removalFailed: failed }),
           );
+          // The CAUSE goes through onError / console.warn, never through the notice sink: `silent` mutes notices,
+          // and a failure must not vanish with them.
           if (state.failure !== undefined) {
-            resolved.onError?.(state.failure);
+            (
+              resolved.onError ??
+              ((e: unknown) =>
+                console.warn(`[bugsee] in-build debug-ID stamping failed: ${String(e)}`))
+            )(state.failure);
           }
           return;
         }

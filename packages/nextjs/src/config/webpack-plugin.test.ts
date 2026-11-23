@@ -734,8 +734,72 @@ describe('createNextWebpackPlugin: no public maps Bugsee asked for when nothing 
     const warned = await run('client', ctx, deps({ stamp: failing() }));
     expect(warned.join('\n')).not.toMatch(/falling back/);
     expect(ctx.say).toHaveBeenCalledTimes(1);
-    expect(ctx.say).toHaveBeenCalledWith(expect.stringContaining('inject broke'));
     expect(onError).toHaveBeenCalledTimes(1);
+    expect(onError).toHaveBeenCalledWith(expect.objectContaining({ message: 'inject broke' }));
+  });
+
+  it('the CAUSE is never hidden by `silent`: with no onError it is a console warning, not a notice', async () => {
+    const ctx = context({}, { sri: true, forcedMaps: true });
+    const warned = await run('client', ctx, deps({ stamp: failing() }));
+    expect(warned).toHaveLength(1);
+    expect(warned[0]).toMatch(/in-build debug-ID stamping failed: Error: inject broke/);
+    // The notice does not carry the cause (so a silenced notice cannot be the only place it lives).
+    expect(vi.mocked(ctx.say).mock.calls[0]?.[0]).not.toContain('inject broke');
+  });
+
+  it('a maps-removal failure never fails the build: reported through onError, then the notice says so', async () => {
+    const onError = vi.fn();
+    const ctx = context({ onError }, { sri: true, forcedMaps: true });
+    const d = deps({
+      stamp: failing(),
+      remove: vi.fn(async () => {
+        throw Object.assign(new Error('EPERM'), { code: 'EPERM' });
+      }),
+    });
+    await expect(run('client', ctx, d)).resolves.toBeDefined();
+    expect(onError).toHaveBeenCalledWith(expect.objectContaining({ message: 'EPERM' }));
+    expect(ctx.say).toHaveBeenCalledWith(expect.stringContaining('could not all be removed'));
+  });
+
+  it('warns on the console when removal fails and there is no onError', async () => {
+    const ctx = context({}, { sri: true, forcedMaps: true });
+    const d = deps({
+      stamp: failing(),
+      remove: vi.fn(async () => {
+        throw new Error('EPERM');
+      }),
+    });
+    const warned = await run('client', ctx, d);
+    expect(warned.some((w) => w.includes('could not remove the browser source maps'))).toBe(true);
+  });
+
+  it('rethrows a removal failure under failOnError (reachable when nothing could be staged on an SRI build)', async () => {
+    const ctx = context({ failOnError: true }, { sri: true, forcedMaps: true });
+    const d = deps({
+      stamp: vi.fn(async () => ({ stamped: [], maps: {}, bundles: 0 })),
+      remove: vi.fn(async () => {
+        throw new Error('EPERM');
+      }),
+    });
+    await expect(run('client', ctx, d)).rejects.toThrow('EPERM');
+  });
+
+  it('deletes nothing on a dry run, and says so', async () => {
+    const ctx = context({ dryRun: true }, { sri: true, forcedMaps: true });
+    const d = deps({ stamp: failing() });
+    await run('client', ctx, d);
+    expect(d.remove).not.toHaveBeenCalled();
+    expect(ctx.say).toHaveBeenCalledWith(expect.stringContaining('Dry run: nothing was deleted'));
+  });
+
+  it('an abandoned stamp deletes nothing on a dry run either', async () => {
+    const d = deps({
+      stamp: vi.fn(async () => {
+        throw Object.assign(new Error('outside'), { unreachableMap: true });
+      }),
+    });
+    await run('client', context({ dryRun: true }, { forcedMaps: true }), d);
+    expect(d.remove).not.toHaveBeenCalled();
   });
 
   it('on a build without SRI the fallback message is printed, once', async () => {
