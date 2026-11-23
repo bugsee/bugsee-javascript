@@ -16,6 +16,10 @@ reports/
 # `biome check .` by the thousand.
 .next/
 
+# Fixture apps the Next source-map e2e generates and builds (packages/nextjs-e2e/test/source-maps.e2e.ts).
+packages/nextjs-e2e/.fixtures/
+packages/nextjs-e2e/.scratch/
+
 # tsup writes a bundled config next to the package when tsup.config.ts needs transpiling, and leaves
 # it behind if the build is interrupted. Untracked, it fails `biome check .` on a formatting rule.
 tsup.config.bundled_*.mjs
