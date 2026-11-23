@@ -282,6 +282,25 @@ describeReal('uploadAngularSourcemaps on real Angular output with subresourceInt
     expect(readFileSync(join(browser, 'fr', ENTRY), 'utf8')).toContain('_bugseeDebugIds');
   });
 
+  it('--dist on an SSR build re-seals the server copy of the page too (measured without this: every server digest stale)', async () => {
+    const { dir, browser, embedded } = workspace('dist-ssr', { ssr: true });
+    const errors: unknown[] = [];
+    await uploadAngularSourcemaps({
+      cwd: dir,
+      dist: browser,
+      appToken: 'tok',
+      endpoint,
+      vcs: false,
+      registerBuild: false,
+      env: {},
+      onError: (e) => errors.push(e),
+    });
+    expect(errors).toEqual([]);
+    const fresh = readFileSync(embedded as string, 'utf8');
+    expect(fresh).toContain(sha384(join(browser, ENTRY)));
+    expect(fresh).toContain(sha384(join(browser, LAZY)));
+  });
+
   it('the guard still refuses to stamp this build WITHOUT re-sealing: the import map is seen', async () => {
     const { browser } = workspace('refused');
     const errors: unknown[] = [];

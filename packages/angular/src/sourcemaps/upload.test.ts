@@ -141,6 +141,55 @@ describe('uploadAngularSourcemaps', () => {
     });
   });
 
+  it('--dist on an SSR build re-seals the whole output root: the server modules embed the page', async () => {
+    await write('custom/app/browser/main.js', 'x();');
+    await write('custom/app/browser/main.js.map', '{}');
+    await write('custom/app/server/server.mjs', '');
+    const runPluginUpload = ran();
+    await uploadAngularSourcemaps(base({ cwd, dist: 'custom/app/browser' }), { runPluginUpload });
+    expect(runPluginUpload.mock.calls[0]?.[2]).toMatchObject({
+      resealDirs: [join(cwd, 'custom', 'app')],
+    });
+  });
+
+  it('--dist: a sibling server/ outside the project is not pulled in', async () => {
+    const outside = await mkdtemp(join(tmpdir(), 'bugsee-ng-out-'));
+    try {
+      await mkdir(join(outside, 'browser'), { recursive: true });
+      await mkdir(join(outside, 'server'));
+      await writeFile(join(outside, 'browser', 'main.js'), 'x();');
+      const runPluginUpload = ran();
+      await uploadAngularSourcemaps(base({ cwd, dist: join(outside, 'browser') }), {
+        runPluginUpload,
+      });
+      expect(runPluginUpload.mock.calls[0]?.[2]).toMatchObject({
+        resealDirs: [join(outside, 'browser')],
+      });
+    } finally {
+      await rm(outside, { recursive: true, force: true });
+    }
+  });
+
+  it('--dist directly under the project root never re-seals the project root', async () => {
+    await write('browser/main.js', 'x();');
+    await write('server/server.mjs', '');
+    const runPluginUpload = ran();
+    await uploadAngularSourcemaps(base({ cwd, dist: 'browser' }), { runPluginUpload });
+    expect(runPluginUpload.mock.calls[0]?.[2]).toMatchObject({
+      resealDirs: [join(cwd, 'browser')],
+    });
+  });
+
+  it('--dist whose sibling is not named server/ stays browser-only', async () => {
+    await write('x/browser/main.js', 'x();');
+    await write('x/other/a.mjs', '');
+    const runPluginUpload = ran();
+    await uploadAngularSourcemaps(base({ cwd, dist: 'x/browser' }), { runPluginUpload });
+    expect(runPluginUpload.mock.calls[0]?.[2]).toMatchObject({
+      resealDirs: [join(cwd, 'x', 'browser')],
+    });
+  });
+
   it('reads the token and version from the environment and the env file, like the bundler plugins', async () => {
     await builtApp();
     await write('.env.bugsee-build-plugin', 'BUGSEE_APP_TOKEN=from-file\n');

@@ -10,7 +10,7 @@
 // script is re-written wherever it appears (`resealSri`, bundler-plugin-core), and a build that cannot be re-sealed
 // is restored. Measured on real @angular/build 22.3 and build-angular 19.2 builds; see docs/design/source-maps.md §7.1.
 import { existsSync, readdirSync } from 'node:fs';
-import { join, relative, resolve } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import {
   type BugseePluginOptions,
   type EnvRecord,
@@ -155,6 +155,26 @@ export async function uploadAngularSourcemaps(
   let outDir: string;
   if (options.dist !== undefined) {
     outDir = resolve(cwd, options.dist);
+    // An SSR build's server modules embed the page, hashes included, so its output ROOT must be re-sealed too. Only
+    // when the sibling server/ exists and the root is inside the project (never the project root itself, or above).
+    const root = dirname(outDir);
+    const inside = relative(cwd, root);
+    if (
+      existsSync(join(root, 'server')) &&
+      inside !== '' &&
+      !inside.startsWith('..') &&
+      !isAbsolute(inside)
+    ) {
+      located = {
+        project: options.project ?? '',
+        builder: undefined,
+        layout: 'application',
+        configuration: options.configuration,
+        baseDir: root,
+        browserDir: outDir,
+        serverDir: join(root, 'server'),
+      };
+    }
   } else if (options.outputPath !== undefined) {
     // `ng build --output-path <base>`: the base of an application build (browser/ and server/ below it), or the
     // browser directory itself for a flat one.

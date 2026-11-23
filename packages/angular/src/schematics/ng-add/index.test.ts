@@ -196,6 +196,15 @@ describe('ng add @bugsee/angular — without a token', () => {
     expect(tree.readContent('/src/main.ts')).toContain(`launch('YOUR_APP_TOKEN');`);
   });
 
+  it('rejects a token with a line break, which would inject a line into the env file', async () => {
+    const tree = await workspace();
+    await expect(run(tree, { appToken: 'abc\nBUGSEE_ENDPOINT=https://evil' })).rejects.toThrow(
+      /line break/,
+    );
+    await expect(run(tree, { appToken: 'abc\rdef' })).rejects.toThrow(/line break/);
+    expect(tree.exists('/.env.bugsee-build-plugin')).toBe(false);
+  });
+
   it('escapes a quote in the token so the launch call stays valid', async () => {
     const tree = await run(await workspace(), { appToken: `a'b\\c` });
     expect(tree.readContent('/src/main.ts')).toContain(`launch('a\\'b\\\\c');`);
