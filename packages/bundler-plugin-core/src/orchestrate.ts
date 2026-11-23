@@ -131,6 +131,8 @@ export interface UploadSourcemapsOptions {
   resealSri?: boolean;
   /** Directories whose HTML / `.mjs` carry a copy of the hashes. Default: `[outDir]`. */
   resealDirs?: readonly string[];
+  /** Directories whose page pins are verified after the re-seal (default: `[outDir]`): the whole output root of an SSR build. */
+  verifyDirs?: readonly string[];
   /** Injectable re-sealer (default {@link resealIntegrity}). */
   reseal?: typeof resealIntegrity;
   /** Injectable restore of one file from its spilled original, for the re-seal rollback (default: write temp, then rename). */
@@ -570,7 +572,10 @@ export async function uploadSourcemaps(
         let sealFailure: Error | undefined;
         try {
           await (options.reseal ?? resealIntegrity)(digests, options.resealDirs ?? [outDir]);
-          const broken = await (options.verifySri ?? findIntegrityMismatches)(outDir);
+          const broken: SriProtectedScript[] = [];
+          for (const dir of options.verifyDirs ?? [outDir]) {
+            broken.push(...(await (options.verifySri ?? findIntegrityMismatches)(dir)));
+          }
           if (broken.length > 0) {
             const [first] = broken as [SriProtectedScript, ...SriProtectedScript[]];
             sealFailure = new Error(

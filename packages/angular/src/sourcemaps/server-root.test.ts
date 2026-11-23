@@ -40,19 +40,41 @@ describe('findServerRoot', () => {
   it('finds the output root of an application build from its browser directory', async () => {
     await file('o/browser/main.js');
     await dir('o/server');
-    expect(findServerRoot(join(cwd, 'o/browser'), cwd)).toEqual({ root: join(cwd, 'o') });
+    expect(findServerRoot(join(cwd, 'o/browser'), cwd)).toEqual({
+      root: join(cwd, 'o'),
+      browser: join(cwd, 'o/browser'),
+    });
   });
 
   it('finds it from a locale directory of a localized build', async () => {
     await file('o/browser/fr/main.js');
     await dir('o/server/fr');
-    expect(findServerRoot(join(cwd, 'o/browser/fr'), cwd)).toEqual({ root: join(cwd, 'o') });
+    expect(findServerRoot(join(cwd, 'o/browser/fr'), cwd)).toEqual({
+      root: join(cwd, 'o'),
+      browser: join(cwd, 'o/browser'),
+    });
   });
 
-  it('does not take an unrelated server/ for the output root: a browser sibling is required', async () => {
+  it('does not take an unrelated server/ for the output root, and says it could not tell', async () => {
     await file('o/dist/main.js');
     await dir('o/server');
-    expect(findServerRoot(join(cwd, 'o/dist'), cwd)).toBeUndefined();
+    const found = findServerRoot(join(cwd, 'o/dist'), cwd);
+    expect(found).toMatchObject({ notice: expect.stringContaining('browser') });
+    expect((found as { notice: string }).notice).toMatch(/--output-path/);
+  });
+
+  it('a custom browser directory name (outputPath.browser) is not guessed: it is said', async () => {
+    await file('o/client/fr/main.js');
+    await dir('o/server/fr');
+    expect(findServerRoot(join(cwd, 'o/client/fr'), cwd)).toMatchObject({
+      notice: expect.stringContaining('o/server'),
+    });
+  });
+
+  it('looks at most two levels up: a root three levels above is not found', async () => {
+    await file('o/browser/a/b/main.js');
+    await dir('o/server');
+    expect(findServerRoot(join(cwd, 'o/browser/a/b'), cwd)).toBeUndefined();
   });
 
   it('finds nothing without a server/', async () => {
@@ -71,7 +93,10 @@ describe('findServerRoot', () => {
   it('works under a directory whose name starts with two dots', async () => {
     await file('..out/browser/main.js');
     await dir('..out/server');
-    expect(findServerRoot(join(cwd, '..out/browser'), cwd)).toEqual({ root: join(cwd, '..out') });
+    expect(findServerRoot(join(cwd, '..out/browser'), cwd)).toEqual({
+      root: join(cwd, '..out'),
+      browser: join(cwd, '..out/browser'),
+    });
   });
 
   it('says it cannot widen when the output root is the project root, instead of re-sealing the project', async () => {
@@ -120,7 +145,22 @@ describe('uploadAngularSourcemaps: the server pages are re-sealed whichever way 
     await build();
     const run = ran();
     await uploadAngularSourcemaps(base({ dist: 'o/browser/fr' }), { runPluginUpload: run });
-    expect(run.mock.calls[0]?.[2]).toMatchObject({ resealDirs: [join(cwd, 'o')] });
+    // Only the stamped locale and ITS server counterpart: Angular emits byte-identical shared scripts into every
+    // locale, so re-sealing the whole root would pin never-stamped scripts of the other locales to stamped digests.
+    expect(run.mock.calls[0]?.[2]).toMatchObject({
+      resealDirs: [join(cwd, 'o/browser/fr'), join(cwd, 'o/server/fr')],
+      verifyDirs: [join(cwd, 'o')],
+    });
+  });
+
+  it('--dist <browser> (all locales stamped) re-seals the whole root and verifies it', async () => {
+    await build();
+    const run = ran();
+    await uploadAngularSourcemaps(base({ dist: 'o/browser' }), { runPluginUpload: run });
+    expect(run.mock.calls[0]?.[2]).toMatchObject({
+      resealDirs: [join(cwd, 'o')],
+      verifyDirs: [join(cwd, 'o')],
+    });
   });
 
   it('--output-path <browser dir> (a flat reading of an application output)', async () => {
@@ -128,6 +168,15 @@ describe('uploadAngularSourcemaps: the server pages are re-sealed whichever way 
     const run = ran();
     await uploadAngularSourcemaps(base({ outputPath: 'o/browser' }), { runPluginUpload: run });
     expect(run.mock.calls[0]?.[2]).toMatchObject({ resealDirs: [join(cwd, 'o')] });
+  });
+
+  it('--output-path <base> with a browser/ but no server/ is browser-only, and verifies only it', async () => {
+    await file('b/browser/main.js');
+    const run = ran();
+    await uploadAngularSourcemaps(base({ outputPath: 'b' }), { runPluginUpload: run });
+    const deps = run.mock.calls[0]?.[2] as { resealDirs: string[]; verifyDirs?: string[] };
+    expect(deps.resealDirs).toEqual([join(cwd, 'b/browser')]);
+    expect(deps.verifyDirs).toEqual([join(cwd, 'b/browser')]);
   });
 
   it('a nested --dist with no server/ keeps the browser directory only', async () => {

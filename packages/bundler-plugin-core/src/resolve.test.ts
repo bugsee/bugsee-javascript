@@ -1068,9 +1068,14 @@ describe('runPluginUpload — re-sealing', () => {
       ...deps,
       resealSri: true,
       resealDirs: ['/out', '/server'],
+      verifyDirs: ['/'],
     });
     expect(deps.uploadSourcemaps).toHaveBeenCalledWith(
-      expect.objectContaining({ resealSri: true, resealDirs: ['/out', '/server'] }),
+      expect.objectContaining({
+        resealSri: true,
+        resealDirs: ['/out', '/server'],
+        verifyDirs: ['/'],
+      }),
     );
   });
 
@@ -1080,5 +1085,6 @@ describe('runPluginUpload — re-sealing', () => {
     const sent = deps.uploadSourcemaps.mock.calls[0]?.[0] as unknown as Record<string, unknown>;
     expect('resealSri' in sent).toBe(false);
     expect('resealDirs' in sent).toBe(false);
+    expect('verifyDirs' in sent).toBe(false);
   });
 });

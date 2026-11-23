@@ -281,6 +281,8 @@ export async function runPluginUpload(
     resealSri?: boolean;
     /** Directories whose HTML / `.mjs` carry a copy of the hashes. */
     resealDirs?: readonly string[];
+    /** Directories whose page pins are verified after the re-seal. */
+    verifyDirs?: readonly string[];
     /** The bundles the in-build stamp wrote (relative to the output directory), for the on-disk re-check. */
     stampedBundles?: readonly string[];
     /** The in-build stamp's bundle -> map names, for the on-disk re-check. */
@@ -338,6 +340,7 @@ export async function runPluginUpload(
       ...(deps.files !== undefined ? { files: deps.files } : {}),
       ...(deps.resealSri === true ? { resealSri: true } : {}),
       ...(deps.resealDirs !== undefined ? { resealDirs: deps.resealDirs } : {}),
+      ...(deps.verifyDirs !== undefined ? { verifyDirs: deps.verifyDirs } : {}),
     });
     // AFTER the upload, because the build id is derived from the debug-ids its inject step stamps
     // into the bundles — and regardless of whether the maps made it, because a build exists either

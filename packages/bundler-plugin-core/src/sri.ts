@@ -383,7 +383,7 @@ export async function findStaleDigests(
   before: ScriptDigests,
   dirs: readonly string[],
 ): Promise<{ file: string; script: string }[]> {
-  const tokens: { token: string; script: string }[] = [];
+  const tokens = new Map<string, string>();
   for (const [script, old] of before) {
     let bytes: Buffer;
     try {
@@ -394,18 +394,22 @@ export async function findStaleDigests(
     const now = digestsOf(bytes);
     for (const alg of SRI_ALGORITHMS) {
       if (now[alg] !== old[alg]) {
-        tokens.push({ token: `${alg}-${old[alg]}`, script });
+        tokens.set(`${alg}-${old[alg]}`, script);
       }
     }
   }
   const stale: { file: string; script: string }[] = [];
-  if (tokens.length === 0) {
+  if (tokens.size === 0) {
     return stale;
   }
+  // One pass per file over every digest-shaped token (exact lengths: 256 -> 43 chars + `=`, 384 -> 64, 512 -> 86 + `==`),
+  // looked up in a map, instead of a substring search per changed script per file.
+  const shaped = /sha256-[A-Za-z0-9+/]{43}=|sha384-[A-Za-z0-9+/]{64}|sha512-[A-Za-z0-9+/]{86}==/g;
   for (const file of await listResealFiles(dirs)) {
     const text = await readFile(file, 'utf8');
-    for (const { token, script } of tokens) {
-      if (text.includes(token)) {
+    for (const [found] of text.matchAll(shaped)) {
+      const script = tokens.get(found);
+      if (script !== undefined) {
         stale.push({ file, script });
         break;
       }

@@ -222,6 +222,46 @@ describeReal('uploadSourcemaps re-seal rollback', () => {
     expect(String(errors[0])).toContain('index.html.mjs');
   });
 
+  it('verifies the page pins over every verifyDirs, and a mismatch in a later one rolls the build back', async () => {
+    const { out, server } = build();
+    const before = snapshot(out, server);
+    const seen: string[] = [];
+    const { opts, calls, errors } = options(out, server, {
+      verifyDirs: [out, server],
+      verifySri: async (dir: string) => {
+        seen.push(dir);
+        return dir === server
+          ? [
+              {
+                html: join(server, 'fr/index.html'),
+                script: join(server, 'fr/main.js'),
+                integrity: 'sha384-X',
+              },
+            ]
+          : [];
+      },
+    });
+    const result = await uploadSourcemaps(opts);
+    expect(seen).toEqual([out, server]);
+    expect(snapshot(out, server)).toEqual(before);
+    expect(calls).not.toContain('upload');
+    expect(result).toMatchObject({ injected: false, uploaded: false });
+    expect(String(errors[0])).toContain('fr/main.js');
+  });
+
+  it('verifies the output directory alone when no verifyDirs is given', async () => {
+    const { out, server } = build();
+    const seen: string[] = [];
+    const { opts } = options(out, server, {
+      verifySri: async (dir: string) => {
+        seen.push(dir);
+        return [];
+      },
+    });
+    await uploadSourcemaps(opts);
+    expect(seen).toEqual([out]);
+  });
+
   it('seals a build with a real service worker manifest (control)', async () => {
     const { out, server } = build();
     const js = readFileSync(join(out, 'main.js'), 'utf8');

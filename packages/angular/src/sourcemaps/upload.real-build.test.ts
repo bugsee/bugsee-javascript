@@ -301,6 +301,58 @@ describeReal('uploadAngularSourcemaps on real Angular output with subresourceInt
     expect(fresh).toContain(sha384(join(browser, LAZY)));
   });
 
+  // Angular emits byte-identical shared scripts into every locale. Stamping ONE locale must leave the others' pages and
+  // server copies pinning their never-stamped scripts: re-sealing the whole root would swap the old digest for the
+  // stamped one everywhere and block the other locales (measured on 22.3: a blank /fr/, "Failed to find a valid digest").
+  it('--dist <browser>/<locale> stamps and re-seals that locale and its server pages only', async () => {
+    const dir = join(root, 'locales-one');
+    const page = (file: string) =>
+      `<script src="${file}" type="module" integrity="${sha384(join(fixtures, file))}"></script>`;
+    const files: Record<string, string> = {};
+    for (const locale of ['en-US', 'fr']) {
+      for (const f of [ENTRY, `${ENTRY}.map`]) {
+        mkdirSync(join(dir, 'dist/browser', locale), { recursive: true });
+        cpSync(join(fixtures, f), join(dir, 'dist/browser', locale, f));
+      }
+      writeFileSync(join(dir, 'dist/browser', locale, 'index.html'), page(ENTRY));
+      mkdirSync(join(dir, 'dist/server', locale), { recursive: true });
+      writeFileSync(
+        join(dir, 'dist/server', locale, 'index.html.mjs'),
+        `export default ${JSON.stringify(page(ENTRY))};\n`,
+      );
+    }
+    const read = (rel: string) => readFileSync(join(dir, 'dist', rel), 'utf8');
+    for (const rel of [
+      'browser/en-US/index.html',
+      `browser/en-US/${ENTRY}`,
+      'server/en-US/index.html.mjs',
+    ]) {
+      files[rel] = read(rel);
+    }
+    const errors: unknown[] = [];
+
+    await uploadAngularSourcemaps({
+      cwd: dir,
+      dist: 'dist/browser/fr',
+      appToken: 'tok',
+      endpoint,
+      vcs: false,
+      registerBuild: false,
+      env: {},
+      onError: (e) => errors.push(e),
+    });
+
+    expect(errors).toEqual([]);
+    expect(readFileSync(join(dir, 'dist/browser/fr', ENTRY), 'utf8')).toContain('_bugseeDebugIds');
+    for (const [rel, before] of Object.entries(files)) {
+      expect(read(rel)).toBe(before); // the unstamped locale is byte-for-byte what Angular wrote
+    }
+    const fresh = sha384(join(dir, 'dist/browser/fr', ENTRY));
+    expect(read('browser/fr/index.html')).toContain(fresh);
+    expect(read('server/fr/index.html.mjs')).toContain(fresh);
+    expect(await findIntegrityMismatches(join(dir, 'dist'))).toEqual([]);
+  });
+
   it('the guard still refuses to stamp this build WITHOUT re-sealing: the import map is seen', async () => {
     const { browser } = workspace('refused');
     const errors: unknown[] = [];

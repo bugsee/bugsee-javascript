@@ -24,7 +24,7 @@ const isRealDirectory = (p: string): boolean => {
 /** How far above the output directory the root is looked for: `browser/` -> root, `browser/<locale>/` -> two. */
 const MAX_LEVELS_UP = 2;
 
-export type ServerRoot = { root: string } | { notice: string } | undefined;
+export type ServerRoot = { root: string; browser: string } | { notice: string } | undefined;
 
 /**
  * The output root of the SSR build `outDir` belongs to: the nearest ancestor (at most {@link MAX_LEVELS_UP} up) that
@@ -34,14 +34,18 @@ export type ServerRoot = { root: string } | { notice: string } | undefined;
  */
 export function findServerRoot(outDir: string, cwd: string, api: PathApi = path): ServerRoot {
   let root = api.dirname(outDir);
+  let unmatched: string | undefined;
   for (let level = 0; level < MAX_LEVELS_UP; level++, root = api.dirname(root)) {
+    if (!isRealDirectory(api.join(root, 'server'))) {
+      continue;
+    }
     const browser = api.join(root, 'browser');
-    const within = outDir === browser || isStrictlyInside(outDir, browser, api);
-    if (!within || !isRealDirectory(api.join(root, 'server'))) {
+    if (outDir !== browser && !isStrictlyInside(outDir, browser, api)) {
+      unmatched ??= api.join(root, 'server');
       continue;
     }
     if (isStrictlyInside(root, cwd, api)) {
-      return { root };
+      return { root, browser };
     }
     return {
       notice:
@@ -53,5 +57,13 @@ export function findServerRoot(outDir: string, cwd: string, api: PathApi = path)
         `pass --output-path <that directory>.`,
     };
   }
-  return undefined;
+  if (unmatched === undefined) {
+    return undefined;
+  }
+  return {
+    notice:
+      `found ${unmatched} near the output, but the output is not inside a browser/ directory next to it (a custom ` +
+      `outputPath.browser name?), so it cannot tell which is the browser output and did not re-seal the server pages, ` +
+      `which embed the page's integrity hashes. Pass --output-path <the output base directory>.`,
+  };
 }

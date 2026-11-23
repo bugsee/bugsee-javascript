@@ -156,10 +156,13 @@ export async function uploadAngularSourcemaps(
   let outDir: string;
   // The output ROOT whose pages must be re-sealed: an SSR build's server modules embed the page.
   let resealRoot: string | undefined;
+  // The browser directory of that root (its name is not always `browser`).
+  let rootBrowser: string | undefined;
   const probeServerRoot = (): void => {
     const found = findServerRoot(outDir, cwd);
     if (found !== undefined && 'root' in found) {
       resealRoot = found.root;
+      rootBrowser = found.browser;
     } else if (found !== undefined) {
       say(found.notice);
     }
@@ -174,6 +177,7 @@ export async function uploadAngularSourcemaps(
     if (existsSync(join(base, 'browser'))) {
       outDir = join(base, 'browser');
       resealRoot = existsSync(join(base, 'server')) ? base : undefined;
+      rootBrowser = outDir;
     } else {
       outDir = base;
       probeServerRoot();
@@ -193,6 +197,7 @@ export async function uploadAngularSourcemaps(
       );
     }
     outDir = located.browserDir;
+    rootBrowser = outDir;
     resealRoot =
       located.serverDir !== undefined && existsSync(located.serverDir)
         ? located.baseDir
@@ -228,7 +233,15 @@ export async function uploadAngularSourcemaps(
     // Only acts when the build pins script hashes; then inject runs with --allow-sri and the page is re-sealed.
     resealSri: true,
     // The server modules of an SSR build embed the page, hashes included.
-    resealDirs: [resealRoot ?? outDir],
+    resealDirs:
+      resealRoot === undefined || outDir === rootBrowser
+        ? [resealRoot ?? outDir]
+        : // One locale of several: stamp and re-seal only it and ITS server pages. Angular emits byte-identical
+          // shared scripts into every locale, so re-sealing the whole root would pin the other locales' never-stamped
+          // scripts to stamped digests.
+          [outDir, join(resealRoot, 'server', relative(rootBrowser as string, outDir))],
+    // Verified across the whole output root: a pin anywhere that no longer matches its file is a failure.
+    verifyDirs: [resealRoot ?? outDir],
     bundler: { isProduction, ...(configuration !== undefined ? { configuration } : {}) },
     ownFiles: ownFilesOf(outDir),
   });
