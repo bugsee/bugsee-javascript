@@ -1450,6 +1450,35 @@ describe('catch-up is best effort and never costs the build its other maps', () 
     expect(errors.map(String).join('\n')).not.toContain('remaining script maps failed');
   });
 
+  it('a bundle that VANISHES between the existence check and the read is skipped; the other pairs still stamp', async () => {
+    await seedPair('a.js');
+    await seedPair('good.js');
+    const { run, calls } = cli();
+    const errors: unknown[] = [];
+    await uploadSourcemaps(
+      opts({
+        run,
+        onError: (e: unknown) => errors.push(e),
+        ownFiles: own('a.js', 'good.js'),
+        // runs after the candidates were found (a.js existed) and before their bytes are read
+        findSri: async () => {
+          await rm(join(dir, 'a.js'));
+          return [];
+        },
+      }),
+    );
+    expect(await readFile(join(dir, 'good.js'), 'utf8')).toContain('//# debugId=');
+    expect(errors.map(String).join('\n')).not.toContain('remaining script maps failed');
+    // the vanished bundle is never handed to the CLI (and so never reported as failing)
+    expect(
+      calls
+        .filter((c) => c[1] === 'inject')
+        .flatMap((c) => c.slice(2))
+        .some((x) => x.endsWith('a.js')),
+    ).toBe(false);
+    expect(errors).toEqual([]);
+  });
+
   it('stamps .mjs and .cjs pairs too', async () => {
     await seedPair('m.mjs');
     await seedPair('c.cjs');
