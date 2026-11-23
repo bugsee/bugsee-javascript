@@ -5,9 +5,9 @@ import { withBugsee } from './with-bugsee';
 // The compilation kind Next's webpack function is called with decides which policy a plugin instance gets
 // (browser maps are public and deleted, server maps are kept), so it is pinned here at the seam.
 const created = vi.hoisted(() => [] as string[]);
-const contexts = vi.hoisted(() => [] as Array<{ sri?: boolean }>);
+const contexts = vi.hoisted(() => [] as Array<{ sri?: boolean; forcedMaps?: boolean }>);
 vi.mock('./webpack-plugin', () => ({
-  createNextWebpackPlugin: (context: { sri?: boolean }, kind: string) => {
+  createNextWebpackPlugin: (context: { sri?: boolean; forcedMaps?: boolean }, kind: string) => {
     created.push(kind);
     contexts.push(context);
     return { apply: () => undefined };
@@ -54,5 +54,30 @@ describe('withBugsee: the SRI flag reaches the plugins', () => {
     );
     webpackOf()({}, { dev: false, isServer: false });
     expect(contexts.map((c) => c.sri === true)).toEqual([true, false]);
+  });
+});
+
+describe('withBugsee: whether Bugsee turned the browser maps on', () => {
+  const forced = (config: object, env: Record<string, string> = {}): boolean | undefined => {
+    contexts.length = 0;
+    const out = withBugsee(
+      config,
+      {},
+      {
+        env,
+        cwd: () => '/app',
+        createContext: () => context,
+        nextVersion: () => '16.4.6',
+      },
+    ) as { webpack?: Webpack };
+    out.webpack?.({}, { dev: false, isServer: false });
+    return contexts[0]?.forcedMaps;
+  };
+
+  it('is set only when the app said nothing and an upload is possible', () => {
+    expect(forced({})).toBe(true);
+    expect(forced({ productionBrowserSourceMaps: true })).toBeUndefined();
+    expect(forced({ productionBrowserSourceMaps: false })).toBeUndefined();
+    expect(forced({ experimental: { sri: {} } })).toBe(true);
   });
 });

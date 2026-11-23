@@ -4,6 +4,7 @@ import {
   type CompilerLike,
   createNextWebpackPlugin,
   nextAssetStore,
+  removeFile,
   type WebpackPluginDeps,
 } from './webpack-plugin';
 
@@ -119,6 +120,7 @@ const deps = (over: WebpackPluginDeps = {}): WebpackPluginDeps => ({
   upload: vi.fn(async () => undefined),
   exists: vi.fn(async () => true),
   hasSriManifest: vi.fn(async () => false),
+  remove: vi.fn(async () => undefined),
   ...over,
 });
 
@@ -302,7 +304,7 @@ describe('createNextWebpackPlugin', () => {
     warn.mockRestore();
   });
 
-  it('reports a stamp failure through onError', async () => {
+  it('reports a stamp failure through onError, once the build knows what follows', async () => {
     const onError = vi.fn();
     const d = deps({
       stamp: vi.fn(async () => {
@@ -314,7 +316,10 @@ describe('createNextWebpackPlugin', () => {
     const c = fakeCompilation({ 'a.js': 'x' });
     fake.startCompilation(c.compilation);
     await c.run();
+    expect(onError).not.toHaveBeenCalled();
+    await fake.emit(c.compilation);
     expect(onError).toHaveBeenCalledWith(expect.objectContaining({ message: 'boom' }));
+    expect(onError).toHaveBeenCalledTimes(1);
   });
 
   it('rethrows a stamp failure under failOnError', async () => {
@@ -651,5 +656,142 @@ describe('createNextWebpackPlugin: the post-emit fallback on an SRI build', () =
     await run(context({}, { sri: true }), d);
     expect(d.upload).toHaveBeenCalledTimes(1);
     expect(d.hasSriManifest).not.toHaveBeenCalled();
+  });
+});
+
+describe('createNextWebpackPlugin: no public maps Bugsee asked for when nothing is uploaded', () => {
+  const failing = () =>
+    vi.fn(async () => {
+      throw new Error('inject broke');
+    });
+  const assets = {
+    'static/a.js': 'x',
+    'static/a.js.map': 'm',
+    'static/a.css': 'c',
+    'static/a.css.map': 'cm',
+  };
+  const run = async (kind: 'client' | 'server', ctx: BugseeNextContext, d: WebpackPluginDeps) => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const fake = fakeCompiler({ path: '/out/.next' });
+    createNextWebpackPlugin(ctx, kind, d).apply(fake.compiler);
+    const c = fakeCompilation(assets);
+    fake.startCompilation(c.compilation);
+    await c.run();
+    await fake.emit(c.compilation);
+    const warned = warn.mock.calls.map((call) => String(call[0]));
+    warn.mockRestore();
+    return warned;
+  };
+
+  it('deletes the browser maps it turned on when an SRI build\u2019s stamp failed (nothing is uploaded)', async () => {
+    const ctx = context({}, { sri: true, forcedMaps: true });
+    const d = deps({ stamp: failing() });
+    await run('client', ctx, d);
+    expect(d.upload).not.toHaveBeenCalled();
+    expect(d.remove).toHaveBeenCalledTimes(2);
+    expect(d.remove).toHaveBeenCalledWith('/out/.next/static/a.js.map');
+    expect(d.remove).toHaveBeenCalledWith('/out/.next/static/a.css.map');
+    expect(ctx.say).toHaveBeenCalledWith(expect.stringContaining('were removed'));
+  });
+
+  it('keeps maps the app asked for, and says they are public', async () => {
+    const ctx = context({}, { sri: true });
+    const d = deps({ stamp: failing() });
+    await run('client', ctx, d);
+    expect(d.remove).not.toHaveBeenCalled();
+    expect(ctx.say).toHaveBeenCalledWith(expect.stringContaining('publicly served'));
+  });
+
+  it('never touches a server compilation\u2019s maps (not public)', async () => {
+    const ctx = context({}, { sri: true, forcedMaps: true });
+    const d = deps({ stamp: failing() });
+    await run('server', ctx, d);
+    expect(d.remove).not.toHaveBeenCalled();
+    expect(ctx.say).toHaveBeenCalledWith(expect.not.stringContaining('browser source maps'));
+  });
+
+  it('deletes them when the stamp was abandoned (a map outside the output), too', async () => {
+    const d = deps({
+      stamp: vi.fn(async () => {
+        throw Object.assign(new Error('outside'), { unreachableMap: true });
+      }),
+    });
+    await run('client', context({}, { forcedMaps: true }), d);
+    expect(d.upload).not.toHaveBeenCalled();
+    expect(d.remove).toHaveBeenCalledTimes(2);
+  });
+
+  it('leaves them alone when the upload runs (it deletes them itself after confirming)', async () => {
+    const d = deps();
+    await run('client', context({}, { forcedMaps: true }), d);
+    expect(d.upload).toHaveBeenCalledTimes(1);
+    expect(d.remove).not.toHaveBeenCalled();
+  });
+
+  it('prints ONE accurate message on an SRI build, never "falling back"', async () => {
+    const onError = vi.fn();
+    const ctx = context({ onError }, { sri: true, forcedMaps: true });
+    const warned = await run('client', ctx, deps({ stamp: failing() }));
+    expect(warned.join('\n')).not.toMatch(/falling back/);
+    expect(ctx.say).toHaveBeenCalledTimes(1);
+    expect(ctx.say).toHaveBeenCalledWith(expect.stringContaining('inject broke'));
+    expect(onError).toHaveBeenCalledTimes(1);
+  });
+
+  it('on a build without SRI the fallback message is printed, once', async () => {
+    const warned = await run('client', context(), deps({ stamp: failing() }));
+    expect(warned.filter((w) => w.includes('falling back to stamping after emit'))).toHaveLength(1);
+  });
+
+  it('the default remover tolerates a file that is already gone and reports other errors', async () => {
+    const { mkdtempSync, rmSync, writeFileSync, existsSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const dir = mkdtempSync(join(tmpdir(), 'bugsee-rm-'));
+    try {
+      writeFileSync(join(dir, 'a.js'), 'x');
+      writeFileSync(join(dir, 'a.js.map'), 'm');
+      const ctx = context({}, { sri: true, forcedMaps: true });
+      const fake = fakeCompiler({ path: dir });
+      createNextWebpackPlugin(ctx, 'client', {
+        ...deps({ stamp: failing() }),
+        remove: undefined,
+        exists: undefined,
+      }).apply(fake.compiler);
+      const c = fakeCompilation({
+        'a.js': 'x',
+        'a.js.map': 'm',
+        'gone.js': 'x',
+        'gone.js.map': 'm',
+      });
+      fake.startCompilation(c.compilation);
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      await c.run();
+      await fake.emit(c.compilation);
+      warn.mockRestore();
+      expect(existsSync(join(dir, 'a.js.map'))).toBe(false);
+      expect(existsSync(join(dir, 'a.js'))).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('removeFile', () => {
+  it('deletes a file, ignores one that is gone, and reports anything else', async () => {
+    const { mkdirSync, mkdtempSync, rmSync, writeFileSync, existsSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const dir = mkdtempSync(join(tmpdir(), 'bugsee-rmf-'));
+    try {
+      writeFileSync(join(dir, 'a.map'), 'm');
+      await removeFile(join(dir, 'a.map'));
+      expect(existsSync(join(dir, 'a.map'))).toBe(false);
+      await expect(removeFile(join(dir, 'gone.map'))).resolves.toBeUndefined();
+      mkdirSync(join(dir, 'd'));
+      await expect(removeFile(join(dir, 'd'))).rejects.toThrow();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

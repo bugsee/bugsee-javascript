@@ -10,7 +10,6 @@ import {
   readdirSync,
   readFileSync,
   rmSync,
-  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -29,8 +28,10 @@ function workspaceClosure(name: string, seen = new Map<string, string>()): Map<s
   seen.set(name, dir);
   const manifest = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8')) as {
     dependencies?: Record<string, string>;
+    optionalDependencies?: Record<string, string>;
   };
-  for (const [dep, range] of Object.entries(manifest.dependencies ?? {})) {
+  const wanted = { ...manifest.dependencies, ...manifest.optionalDependencies };
+  for (const [dep, range] of Object.entries(wanted)) {
     if (range.startsWith('workspace:')) workspaceClosure(dep, seen);
   }
   return seen;
@@ -43,25 +44,37 @@ beforeAll(() => {
     stdio: 'ignore',
   });
   app = mkdtempSync(join(tmpdir(), 'bugsee-packed-'));
-  const modules = join(app, 'node_modules');
-  mkdirSync(join(modules, '@bugsee'), { recursive: true });
-  // Third-party dependencies: whatever the monorepo installed (pnpm's flat virtual-store directory).
-  const flat = join(repo, 'node_modules', '.pnpm', 'node_modules');
-  for (const entry of readdirSync(flat)) {
-    if (entry === '@bugsee') continue;
-    symlinkSync(join(flat, entry), join(modules, entry));
-  }
+  const tarballs = join(app, '.tarballs');
+  mkdirSync(tarballs);
+  const overrides: Record<string, string> = {};
   for (const [name, dir] of closure) {
-    const target = join(modules, name);
-    mkdirSync(target, { recursive: true });
-    const out = mkdtempSync(join(tmpdir(), 'bugsee-pack-'));
+    const out = mkdtempSync(join(tarballs, 'p-'));
     execFileSync('pnpm', ['pack', '--pack-destination', out], { cwd: dir, stdio: 'ignore' });
-    const tarball = join(out, readdirSync(out)[0] as string);
-    execFileSync('tar', ['-xzf', tarball, '-C', target, '--strip-components=1']);
-    rmSync(out, { recursive: true, force: true });
+    overrides[name] = `file:${join(out, readdirSync(out)[0] as string)}`;
   }
-  writeFileSync(join(app, 'package.json'), JSON.stringify({ name: 'app', version: '3.2.1' }));
-}, 600_000);
+  writeFileSync(
+    join(app, 'package.json'),
+    JSON.stringify({
+      name: 'app',
+      version: '3.2.1',
+      private: true,
+      dependencies: { '@bugsee/nextjs': overrides['@bugsee/nextjs'] },
+    }),
+  );
+  // A CLEAN install of the packed tarballs, as a user gets them: every `@bugsee/*` the packed manifests name is
+  // redirected to its tarball (they are not on a registry), everything else comes from the offline store. A
+  // dependency a package forgot to declare is simply not there, instead of being found through the monorepo.
+  writeFileSync(
+    join(app, 'pnpm-workspace.yaml'),
+    `overrides:\n${Object.entries(overrides)
+      .map(([name, spec]) => `  '${name}': '${spec}'`)
+      .join('\n')}\n`,
+  );
+  execFileSync('pnpm', ['install', '--offline', '--no-frozen-lockfile', '--ignore-scripts'], {
+    cwd: app,
+    stdio: 'pipe',
+  });
+}, 900_000);
 
 afterAll(() => {
   if (app) rmSync(app, { recursive: true, force: true });

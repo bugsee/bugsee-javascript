@@ -9,7 +9,7 @@
 // `.next/server/chunks` with asset names like `../app/page.js` (outside its own output path), so the generic
 // plugin neither stamped them (an asset name may not escape the staging directory) nor found their maps, and its
 // directory-wide upload of `.next` swept up the server compilation's half-written files.
-import { stat } from 'node:fs/promises';
+import { stat, unlink } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import {
   type AssetStore,
@@ -68,6 +68,8 @@ export interface WebpackPluginDeps {
   exists?: (path: string) => Promise<boolean>;
   /** Whether Next's integrity manifest sits next to this output (default: looks on disk). */
   hasSriManifest?: (outDir: string) => Promise<boolean>;
+  /** Delete a file (default `fs.unlink`; a file that is already gone is fine). */
+  remove?: (path: string) => Promise<void>;
 }
 
 const PLUGIN = 'bugsee-next';
@@ -80,11 +82,24 @@ interface InBuildStamp {
   /** The bundles it stamped and their maps, by real asset name, for the on-disk re-check. */
   stampedBundles?: string[];
   stampedMaps?: Record<string, string>;
+  /** Why the in-build stamp failed, reported once the build knows what happens next (fallback or not). */
+  failure?: unknown;
   /** The stamp was refused in a way that makes stamping after emit unsafe too. */
   abandoned?: boolean;
 }
 /** Stands in for each leading `../` of an asset name inside the staging directory. */
 const UP = '__bugsee_up__';
+
+/** Delete a file; one that is already gone is not an error. */
+export async function removeFile(path: string): Promise<void> {
+  try {
+    await unlink(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+      throw error;
+    }
+  }
+}
 
 async function fileExists(path: string): Promise<boolean> {
   try {
@@ -177,6 +192,7 @@ export function createNextWebpackPlugin(
   const upload = deps.upload ?? runPluginUpload;
   const exists = deps.exists ?? fileExists;
   const hasSriManifest = deps.hasSriManifest ?? ((dir: string) => sriManifestNear(dir));
+  const remove = deps.remove ?? removeFile;
   const { resolved } = context;
   // Only the browser compilation registers the build (once per `next build`), and only it follows the client
   // deletion policy: `.next/static` is public, `.next/server` is not.
@@ -234,16 +250,20 @@ export function createNextWebpackPlugin(
                 // half-stamp the build, so nothing is stamped or uploaded for it.
                 const abandoned =
                   (error as { unreachableMap?: boolean } | null)?.unreachableMap === true;
-                (
-                  resolved.onError ??
-                  ((e: unknown) =>
-                    console.warn(
-                      abandoned
-                        ? `[bugsee] debug-IDs were NOT stamped, and stamping after emit would half-stamp this build: ${String(e)}`
-                        : `[bugsee] in-build debug-ID stamping failed; falling back to stamping after emit: ${String(e)}`,
-                    ))
-                )(error);
-                state = { preStamped: false, ...(abandoned ? { abandoned: true } : {}) };
+                if (abandoned) {
+                  (
+                    resolved.onError ??
+                    ((e: unknown) =>
+                      console.warn(
+                        `[bugsee] debug-IDs were NOT stamped, and stamping after emit would half-stamp this build: ${String(e)}`,
+                      ))
+                  )(error);
+                }
+                // Said at the end of the build, once it is known whether stamping after emit follows.
+                state = {
+                  preStamped: false,
+                  ...(abandoned ? { abandoned: true } : { failure: error }),
+                };
               }
             },
           );
@@ -255,16 +275,6 @@ export function createNextWebpackPlugin(
         if (typeof outDir !== 'string' || outDir === '') {
           return;
         }
-        if (state.abandoned === true) {
-          return;
-        }
-        // The in-build stamp is SRI-safe (it runs before anything hashes). Its fallback, stamping the written
-        // files, is not: it would invalidate the hashes Next already pinned, and the browser would refuse the
-        // scripts (measured). Nothing is rewritten, so nothing is uploaded.
-        if (!state.preStamped && (context.sri === true || (await hasSriManifest(outDir)))) {
-          context.say(FALLBACK_SRI_NOTICE(kind));
-          return;
-        }
         const emitted: string[] = [];
         for (const { name } of compilation.getAssets()) {
           // The file on disk has no `?query` (webpack drops it when it writes the file).
@@ -274,6 +284,44 @@ export function createNextWebpackPlugin(
           }
         }
         const files: BuildFiles = partitionBuildFiles(emitted);
+        // No upload will follow: the browser maps Bugsee itself turned on (the app did not ask for them) must not
+        // be left in `.next/static`, which is served publicly. Only this compilation's own files, only the ones
+        // Bugsee forced; maps the app enabled stay.
+        const discardForcedMaps = async (): Promise<boolean> => {
+          if (kind !== 'client' || context.forcedMaps !== true) {
+            return false;
+          }
+          for (const map of [...files.maps, ...files.stylesheetMaps]) {
+            await remove(map);
+          }
+          return true;
+        };
+        if (state.abandoned === true) {
+          await discardForcedMaps();
+          return;
+        }
+        // The in-build stamp is SRI-safe (it runs before anything hashes). Its fallback, stamping the written
+        // files, is not: it would invalidate the hashes Next already pinned, and the browser would refuse the
+        // scripts (measured). Nothing is rewritten, so nothing is uploaded.
+        if (!state.preStamped && (context.sri === true || (await hasSriManifest(outDir)))) {
+          const removed = await discardForcedMaps();
+          context.say(
+            FALLBACK_SRI_NOTICE(kind, String(state.failure ?? 'it did not apply'), removed),
+          );
+          if (state.failure !== undefined) {
+            resolved.onError?.(state.failure);
+          }
+          return;
+        }
+        if (state.failure !== undefined) {
+          (
+            resolved.onError ??
+            ((e: unknown) =>
+              console.warn(
+                `[bugsee] in-build debug-ID stamping failed; falling back to stamping after emit: ${String(e)}`,
+              ))
+          )(state.failure);
+        }
         if (files.scripts.length === 0) {
           if (kind === 'client') {
             context.say(

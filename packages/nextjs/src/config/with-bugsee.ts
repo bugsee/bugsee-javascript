@@ -101,14 +101,23 @@ function extendConfig<C extends NextConfigObject>(
   projectDir: string,
 ): C {
   const sri = Boolean(config.experimental?.sri);
-  const context: BugseeNextContext = sri ? { ...baseContext, sri: true } : baseContext;
-  const { resolved } = context;
   const next: NextConfigObject = { ...config };
   // Whether this build has a way to upload at all: webpack always does (it stamps inside the build, SRI included);
   // Turbopack needs the post-build hook (Next >= 15.4.0) and cannot stamp an SRI build.
   const noHook =
     turbopack && nextVersion !== undefined && !versionAtLeast(nextVersion, MIN_TURBOPACK_HOOK);
   const uploadAvailable = !turbopack || (!noHook && !sri);
+  // Bugsee turns browser maps on only when the app said nothing AND an upload is possible.
+  const forced =
+    baseContext.resolved.enabled &&
+    config.productionBrowserSourceMaps === undefined &&
+    uploadAvailable;
+  const context: BugseeNextContext = {
+    ...baseContext,
+    ...(sri ? { sri: true } : {}),
+    ...(forced ? { forcedMaps: true } : {}),
+  };
+  const { resolved } = context;
 
   // The app's version and build, baked into every bundle (browser, node, edge) for the runtime SDK to read.
   // `compiler.define` applies to all three; `defineServer` must NOT repeat the keys (measured, Next 15.5: it
@@ -136,7 +145,7 @@ function extendConfig<C extends NextConfigObject>(
   // Browser maps are what Bugsee symbolicates browser crashes with. Forced on only when nothing says otherwise AND
   // an upload is possible for this build: they are written to `.next/static`, which is served publicly, and only a
   // confirmed upload removes them. If the upload cannot happen, the app's own setting stands.
-  if (config.productionBrowserSourceMaps === undefined && uploadAvailable) {
+  if (forced) {
     next.productionBrowserSourceMaps = true;
   }
 

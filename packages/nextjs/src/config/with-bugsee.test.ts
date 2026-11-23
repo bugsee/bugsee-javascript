@@ -291,7 +291,10 @@ describe('withBugsee: Turbopack', () => {
     await out.compiler.runAfterProductionCompile(metadata);
     expect(order).toEqual(['user', 'bugsee']);
     expect(user).toHaveBeenCalledWith(metadata);
-    expect(runPostBuild).toHaveBeenCalledWith(d.ctx, metadata);
+    expect(runPostBuild).toHaveBeenCalledWith(
+      expect.objectContaining({ resolved: d.ctx.resolved }),
+      metadata,
+    );
     // The rest of `compiler`, and the baked identity, survive next to the hook.
     expect(out.compiler.removeConsole).toBe(true);
     expect(out.compiler.define.__BUGSEE_APP_VERSION__).toBe('1.0.0');

@@ -542,8 +542,12 @@ describe('withBugsee — Subresource Integrity', () => {
       failInBuildStamp: true,
     });
     expect(built.status, built.log.split('\n').slice(-40).join('\n')).toBe(0);
-    expect(built.log).toMatch(/falling back to stamping after emit/);
-    expect(built.log).toMatch(/stamping after emit.*was skipped/s);
+    // ONE accurate message: the stamp failed and the fallback was refused. Never "falling back".
+    expect(built.log).not.toMatch(/falling back to stamping after emit/);
+    expect(built.log.split('\n').filter((l) => l.includes('Subresource Integrity'))).toHaveLength(
+      3,
+    ); // client, server, edge: one notice each
+    expect(built.log).toMatch(/nothing was stamped or uploaded/);
     expect(built.uploads).toEqual([]);
     // Nothing was rewritten, so the pinned hashes still describe the bytes on disk and the page runs.
     for (const bundle of walk(join(built.dir, '.next', 'static')).filter((f) =>
@@ -551,6 +555,27 @@ describe('withBugsee — Subresource Integrity', () => {
     )) {
       expect(debugIdOf(bundle), bundle).toBeUndefined();
     }
+    expectRuns(await openInBrowser(built.dir), { stamped: false });
+    // Bugsee had turned the browser maps on (the app did not ask); with no upload they must not stay public.
+    expect(maps(join(built.dir, '.next', 'static'))).toEqual([]);
+    expect(built.log).toMatch(/browser source maps Bugsee had turned on were removed/);
+  });
+
+  it('turbopack + SRI + maps the APP asked for: they stay, the notice says they are public, said once', async () => {
+    const built = await build({
+      name: 'sri-turbopack-own-maps',
+      next: 'next16',
+      args: [],
+      nextConfig:
+        "experimental: { sri: { algorithm: 'sha256' } }, productionBrowserSourceMaps: true,",
+      options: 'failOnError: false,',
+    });
+    expect(built.status, built.log.split('\n').slice(-40).join('\n')).toBe(0);
+    expect(built.uploads).toEqual([]);
+    expect(maps(join(built.dir, '.next', 'static')).length).toBeGreaterThan(0);
+    const said = built.log.split('\n').filter((l) => l.includes('Subresource Integrity'));
+    expect(said).toHaveLength(1);
+    expect(said[0]).toMatch(/publicly served/);
     expectRuns(await openInBrowser(built.dir), { stamped: false });
   });
 });

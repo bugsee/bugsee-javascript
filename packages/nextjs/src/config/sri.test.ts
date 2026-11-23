@@ -14,6 +14,26 @@ describe('sriManifestNear', () => {
     expect(await sriManifestNear('/o/.next/server', only(server))).toBe(true);
   });
 
+  it('does not mistake a root file of that name for Next\u2019s manifest', async () => {
+    const root = '/o/.next/subresource-integrity-manifest.json';
+    expect(await sriManifestNear('/o/.next/chunks', only(root))).toBe(false);
+    expect(
+      await sriManifestNear(
+        '/o/.next/server/app/x',
+        only('/o/.next/server/app/subresource-integrity-manifest.json'),
+      ),
+    ).toBe(false);
+    expect(await sriManifestNear('/o/proj', only('/o/subresource-integrity-manifest.json'))).toBe(
+      false,
+    );
+  });
+
+  it('a manifest-named file in a plain directory is not Next\u2019s', async () => {
+    expect(
+      await sriManifestNear('/o/proj', only('/o/proj/subresource-integrity-manifest.json')),
+    ).toBe(false);
+  });
+
   it('finds nothing when there is none', async () => {
     expect(await sriManifestNear('/o/.next', async () => false)).toBe(false);
   });
