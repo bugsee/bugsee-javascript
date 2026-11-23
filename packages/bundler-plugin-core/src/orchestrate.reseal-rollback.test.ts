@@ -344,6 +344,36 @@ describeReal('uploadSourcemaps re-seal rollback', () => {
 
   // The re-seal machinery (digest snapshot, a second spill of every file, the swap walk, the verify) is only worth
   // its cost when something can need it: a page that pins a hash, or a service worker manifest.
+  it('skips the re-seal for an SSR layout too when no page and no server module holds a digest and there is no manifest', async () => {
+    const { out, server } = build();
+    writeFileSync(join(out, 'index.html'), '<p>no pins</p>');
+    writeFileSync(join(server, 'index.html.mjs'), 'export default "<p>no pins</p>";');
+    const snapshotDigests = vi.fn(async () => new Map());
+    const { opts } = options(out, server, { snapshotDigests, resealDirs: [out, server] });
+    await uploadSourcemaps(opts);
+    expect(snapshotDigests).not.toHaveBeenCalled();
+  });
+
+  it('reports a file it could not put back after a failed inject, naming it', async () => {
+    const { out, server } = build();
+    const { opts, errors } = options(out, server, {
+      restoreFile: async (_spill: string, target: string) => {
+        throw new Error(`EBUSY ${target}`);
+      },
+      run: async (args: string[], o: Parameters<typeof runBugseeCli>[1]) => {
+        if (args[1] === 'inject') {
+          await runBugseeCli(args, o);
+          throw new Error('bugsee-cli exited 1 on a later file');
+        }
+        return { code: 0, stdout: '', stderr: '' };
+      },
+    });
+    await uploadSourcemaps(opts);
+    const message = String(errors[0]);
+    expect(message).toContain('later file');
+    expect(message).toMatch(/COULD NOT restore.*EBUSY.*still stamped/s);
+  });
+
   it('does NOT skip the re-seal when it covers more than the output directory: the server modules may hold the pin', async () => {
     const { out, server } = build();
     writeFileSync(join(out, 'index.html'), '<p>no pins</p>'); // only the server module embeds a page

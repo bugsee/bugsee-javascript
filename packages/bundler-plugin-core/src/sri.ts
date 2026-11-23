@@ -444,6 +444,20 @@ export async function findStaleDigests(
   return stale;
 }
 
+/**
+ * Whether any re-sealable file under `dirs` holds an SRI digest (`sha256-` / `sha384-` / `sha512-` plus base64 of the
+ * right length): a cheap check of whether a copy of a page's pins could be there at all.
+ */
+export async function hasDigestTokens(dirs: readonly string[]): Promise<boolean> {
+  const shaped = /sha256-[A-Za-z0-9+/]{43}=|sha384-[A-Za-z0-9+/]{64}|sha512-[A-Za-z0-9+/]{86}==/;
+  for (const file of await listResealFiles(dirs)) {
+    if (shaped.test(await readFile(file, 'utf8'))) {
+      return true;
+    }
+  }
+  return false;
+}
+
 /** Whether any directory holds an `ngsw.json`: the one thing besides a pinned hash that a re-seal has to fix. */
 export async function hasServiceWorkerManifest(dirs: readonly string[]): Promise<boolean> {
   for (const dir of dirs) {

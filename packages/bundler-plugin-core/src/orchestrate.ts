@@ -11,6 +11,7 @@ import {
   findSriProtectedScripts,
   findStaleDigests,
   findStaleServiceWorkerEntries,
+  hasDigestTokens,
   hasServiceWorkerManifest,
   listResealFiles,
   resealIntegrity,
@@ -145,6 +146,8 @@ export interface UploadSourcemapsOptions {
   verifyDirs?: readonly string[];
   /** Injectable: does any directory hold a service worker manifest (default {@link hasServiceWorkerManifest}). */
   hasServiceWorker?: (dirs: readonly string[]) => Promise<boolean>;
+  /** Injectable: does any file under these directories hold an SRI digest (default {@link hasDigestTokens}). */
+  hasDigestTokens?: (dirs: readonly string[]) => Promise<boolean>;
   /** Injectable re-sealer (default {@link resealIntegrity}). */
   reseal?: typeof resealIntegrity;
   /** Injectable restore of one file from its spilled original, for the re-seal rollback (default: write temp, then rename). */
@@ -565,9 +568,12 @@ export async function uploadSourcemaps(
         resealing &&
         !dryRun &&
         // A re-seal that covers more than the output directory (an SSR build's server modules) cannot be skipped on
-        // what the output directory's HTML shows: a server module may be the only place that embeds a pinned page.
+        // what the output directory's HTML shows alone: a server module may embed a pinned page, so those directories
+        // are scanned (cheaply, for a digest-shaped token) rather than assumed to need it.
         (pinned.length > 0 ||
-          sealDirs.some((dir) => resolve(dir) !== resolve(outDir)) ||
+          (await (options.hasDigestTokens ?? hasDigestTokens)(
+            sealDirs.filter((dir) => resolve(dir) !== resolve(outDir)),
+          )) ||
           (await (options.hasServiceWorker ?? hasServiceWorkerManifest)(sealDirs)));
       const digests = needsReseal
         ? await (options.snapshotDigests ?? snapshotScriptDigests)([outDir])
@@ -632,19 +638,30 @@ export async function uploadSourcemaps(
         // restore them BEFORE the failure propagates, so no unverified stamp stays on disk.
         // When the pages were meant to be re-sealed, a stamp that stays on disk would sit against pages still pinning
         // the old hashes (a blocked page): put EVERYTHING the stamp or the re-seal could write back first.
+        let sealNote: string | undefined;
         if (sealOriginal !== undefined) {
-          await restoreChanged(sealOriginal, options.restoreFile); // never throws: failures come back listed, the inject error below wins
+          const undone = await restoreChanged(sealOriginal, options.restoreFile); // never throws: failures come back listed
+          if (undone.failed.length > 0) {
+            sealNote = `COULD NOT restore ${undone.failed.map((f) => `${f.path} (${f.error})`).join(', ')}, which are still stamped against integrity hashes that were not updated`;
+          }
         }
-        if (original !== undefined) {
-          let note: string | undefined;
-          try {
-            const { issues, restored, failed } = await verifyAndRestore(original);
-            if (failed.length > 0) {
-              // Files still carry the unverified rewrite: that must not go unmentioned.
-              note = verifyFailure(issues, restored, failed).message;
+        {
+          let note: string | undefined = sealNote;
+          const addNote = (text: string): void => {
+            note = note === undefined ? text : `${note}; ${text}`;
+          };
+          if (original !== undefined) {
+            try {
+              const { issues, restored, failed } = await verifyAndRestore(original);
+              if (failed.length > 0) {
+                // Files still carry the unverified rewrite: that must not go unmentioned.
+                addNote(verifyFailure(issues, restored, failed).message);
+              }
+            } catch (restoreError) {
+              addNote(
+                `restoring the originals also failed: ${restoreError instanceof Error ? restoreError.message : String(restoreError)}`,
+              );
             }
-          } catch (restoreError) {
-            note = `restoring the originals also failed: ${restoreError instanceof Error ? restoreError.message : String(restoreError)}`;
           }
           if (note !== undefined) {
             // The ORIGINAL error object is kept (a BugseeCliError stays one); the restore problem is appended.
