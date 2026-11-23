@@ -10,10 +10,11 @@
 // script is re-written wherever it appears (`resealSri`, bundler-plugin-core), and a build that cannot be re-sealed
 // is restored. Measured on real @angular/build 22.3 and build-angular 19.2 builds; see docs/design/source-maps.md §7.1.
 import { existsSync, readdirSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { join, relative, resolve } from 'node:path';
 import {
   type BugseePluginOptions,
   type EnvRecord,
+  isFencedPath,
   loadBuildPluginEnv,
   mergeBuildPluginEnv,
   type PluginRunResult,
@@ -71,6 +72,30 @@ function hasSourceMaps(dir: string, depth = 0): boolean {
     }
   }
   return false;
+}
+
+/**
+ * Every file under `dir` that is not inside a fenced directory (`node_modules`, `src`, `test`, a dot-directory),
+ * relative to it. Angular reports no list of what it emitted, and cleans its output directory before a build, so
+ * what is outside the fence IS this build's. Naming them makes the deletion identity-based: a keyed map a foreign
+ * tool left in a fenced directory is uploaded with the directory but never deleted.
+ */
+function ownFilesOf(dir: string): string[] {
+  const found: string[] = [];
+  const walk = (current: string, level: number): void => {
+    for (const entry of readdirSync(current, { withFileTypes: true })) {
+      const full = join(current, entry.name);
+      if (entry.isDirectory()) {
+        if (level < 8) {
+          walk(full, level + 1);
+        }
+      } else if (!isFencedPath(relative(dir, full))) {
+        found.push(relative(dir, full));
+      }
+    }
+  };
+  walk(dir, 0);
+  return found;
 }
 
 /** Upload the source maps of an Angular build. Never throws for an upload failure unless `failOnError` is set. */
@@ -168,6 +193,7 @@ export async function uploadAngularSourcemaps(
         ? [located.baseDir]
         : [outDir],
     bundler: { isProduction, ...(configuration !== undefined ? { configuration } : {}) },
+    ownFiles: ownFilesOf(outDir),
   });
   return { status: 'uploaded', outDir, configuration, ...(result !== undefined ? { result } : {}) };
 }

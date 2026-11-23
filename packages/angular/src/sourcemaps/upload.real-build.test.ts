@@ -184,6 +184,53 @@ describeReal('uploadAngularSourcemaps on real Angular output with subresourceInt
     );
   });
 
+  // The upload path used here is a directory run without the build's emitted names (Angular reports none), so
+  // the directory-name fence decides what is "this build's": every map Angular wrote is deleted, and a map a
+  // foreign tool left under node_modules, src, test or a dot-directory is not touched.
+  it("deletes all of this build's maps and leaves foreign files under fenced directories alone", async () => {
+    const { dir, browser } = workspace('foreign');
+    const foreign = [
+      'node_modules/pkg/vendor.js.map',
+      'src/app.js.map',
+      'test/t.js.map',
+      '.cache/c.js.map',
+      'notes.txt',
+    ];
+    const keyed = JSON.stringify({
+      version: 3,
+      sources: [],
+      names: [],
+      mappings: '',
+      debugId: 'f0f0f0f0-0000-4000-8000-000000000000',
+    });
+    for (const rel of foreign) {
+      mkdirSync(join(browser, rel, '..'), { recursive: true });
+      writeFileSync(join(browser, rel), rel.endsWith('.map') ? keyed : 'keep me');
+    }
+    const errors: unknown[] = [];
+
+    const out = await uploadAngularSourcemaps({
+      cwd: dir,
+      appToken: 'tok',
+      endpoint,
+      vcs: false,
+      registerBuild: false,
+      env: {},
+      onError: (e) => errors.push(e),
+      onNotice: () => undefined,
+    });
+
+    expect(errors).toEqual([]);
+    expect(out.result?.deletedMaps?.map((p) => p.slice(browser.length + 1)).sort()).toEqual(
+      [`${ENTRY}.map`, `${LAZY}.map`].sort(),
+    );
+    for (const rel of foreign) {
+      expect(readFileSync(join(browser, rel), 'utf8')).toBe(
+        rel.endsWith('.map') ? keyed : 'keep me',
+      );
+    }
+  });
+
   it('the guard still refuses to stamp this build WITHOUT re-sealing: the import map is seen', async () => {
     const { browser } = workspace('refused');
     const errors: unknown[] = [];

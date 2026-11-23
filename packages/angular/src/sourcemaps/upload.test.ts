@@ -105,6 +105,21 @@ describe('uploadAngularSourcemaps', () => {
     expect(notices).toEqual([]);
   });
 
+  it("names this build's own files, so foreign files under fenced directories are never deleted", async () => {
+    await builtApp();
+    await write('dist/demo/browser/assets/img/logo.png', 'x');
+    await write('dist/demo/browser/node_modules/p/v.js.map', '{}');
+    await write('dist/demo/browser/src/a.js.map', '{}');
+    await write('dist/demo/browser/test/t.js.map', '{}');
+    await write('dist/demo/browser/.cache/c.js.map', '{}');
+    const runPluginUpload = ran();
+    await uploadAngularSourcemaps(base({ cwd }), { runPluginUpload });
+    const own = (runPluginUpload.mock.calls[0]?.[2] as { ownFiles?: string[] }).ownFiles?.sort();
+    expect(own).toEqual(
+      ['assets/img/logo.png', 'index.html', 'main-ABC.js', 'main-ABC.js.map'].sort(),
+    );
+  });
+
   it('re-seals across the whole output root when the build has a server, which embeds the page', async () => {
     await builtApp({ ssr: true });
     const runPluginUpload = ran();

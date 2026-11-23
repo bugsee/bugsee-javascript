@@ -67,6 +67,7 @@ export {
   type SriProtectedScript,
   snapshotScriptDigests,
 } from './sri';
+export { isFencedPath } from './stamp-files';
 export {
   isWorkingTreeDirty,
   type ResolveVcsMetadataOptions,
