@@ -1,7 +1,8 @@
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
+
 import type { BugseeNextContext } from './context';
 import {
   type CompilerLike,
@@ -11,6 +12,10 @@ import {
   removeFile,
   type WebpackPluginDeps,
 } from './webpack-plugin';
+
+// Native absolute paths: the plugin resolves and joins with the host's path API (win32: `C:\out\.next`).
+// Compilation asset names (`../app/page.js`) stay as the bundler reports them.
+const p = (path: string): string => resolve(path);
 
 /**
  * webpack-sources' RawSource, as far as it matters here: a STRING source is text webpack can still rewrite after
@@ -73,7 +78,7 @@ function fakeCompiler(options: { path?: string; api?: boolean } = {}) {
   let onThis: ((c: Compilation) => void) | undefined;
   let onEmit: ((c: Compilation) => Promise<void>) | undefined;
   const compiler = {
-    options: { output: { path: options.path ?? '/out/.next/server/chunks' } },
+    options: { output: { path: options.path ?? p('/out/.next/server/chunks') } },
     hooks: {
       thisCompilation: { tap: (_n: string, fn: (c: Compilation) => void) => (onThis = fn) },
       afterEmit: {
@@ -205,7 +210,7 @@ describe('createNextWebpackPlugin', () => {
 
   it('uploads after emit with the stamped flag, over exactly this compilation’s own files', async () => {
     const d = deps();
-    const fake = fakeCompiler({ path: '/out/.next/server/chunks' });
+    const fake = fakeCompiler({ path: p('/out/.next/server/chunks') });
     createNextWebpackPlugin(context(), 'server', d).apply(fake.compiler);
     const c = fakeCompilation({
       '../app/page.js': 'x',
@@ -223,16 +228,16 @@ describe('createNextWebpackPlugin', () => {
       string,
       { bundler: unknown; preStamped: boolean; files: Record<string, string[]> },
     ];
-    expect(outDir).toBe('/out/.next/server/chunks');
+    expect(outDir).toBe(p('/out/.next/server/chunks'));
     expect(options.preStamped).toBe(true);
     expect(options.bundler).toEqual({ isProduction: true, configuration: 'server' });
     expect(options.files.scripts).toEqual([
-      '/out/.next/server/app/page.js',
-      '/out/.next/server/chunks/chunks/1.js',
+      p('/out/.next/server/app/page.js'),
+      p('/out/.next/server/chunks/chunks/1.js'),
     ]);
     expect(options.files.maps).toEqual([
-      '/out/.next/server/app/page.js.map',
-      '/out/.next/server/chunks/chunks/1.js.map',
+      p('/out/.next/server/app/page.js.map'),
+      p('/out/.next/server/chunks/chunks/1.js.map'),
     ]);
     // The server follows the server deletion policy and never registers the build.
     expect(resolved).toMatchObject({ deleteMaps: false, registerBuild: false });
@@ -240,7 +245,7 @@ describe('createNextWebpackPlugin', () => {
 
   it('gives the client the client policy: deleted maps, the build registered', async () => {
     const d = deps();
-    const fake = fakeCompiler({ path: '/out/.next' });
+    const fake = fakeCompiler({ path: p('/out/.next') });
     createNextWebpackPlugin(context(), 'client', d).apply(fake.compiler);
     const c = fakeCompilation({ 'static/a.js': 'x', 'static/a.js.map': 'm' });
     fake.startCompilation(c.compilation);
@@ -283,7 +288,7 @@ describe('createNextWebpackPlugin', () => {
       unknown,
       { files: { scripts: string[] } },
     ];
-    expect(options.files.scripts).toEqual(['/out/.next/server/chunks/here.js']);
+    expect(options.files.scripts).toEqual([p('/out/.next/server/chunks/here.js')]);
   });
 
   it('falls back to the post-emit stamp (preStamped false) and warns when the in-build stamp fails', async () => {
@@ -513,7 +518,7 @@ describe('createNextWebpackPlugin: the new core contract', () => {
           : 'plain',
       ),
     });
-    const fake = fakeCompiler({ path: '/out/.next/server/chunks' });
+    const fake = fakeCompiler({ path: p('/out/.next/server/chunks') });
     createNextWebpackPlugin(context(), 'server', d).apply(fake.compiler);
     const c = fakeCompilation({
       '../app/page.js': 'x',
@@ -539,7 +544,7 @@ describe('createNextWebpackPlugin: the new core contract', () => {
       stamp: vi.fn(async () => ({ stamped: ['a.js'], maps: { 'a.js': 'a.js.map' }, bundles: 1 })),
       tail: vi.fn(async () => 'plain, no id'),
     });
-    const fake = fakeCompiler({ path: '/o' });
+    const fake = fakeCompiler({ path: p('/o') });
     createNextWebpackPlugin(context({ onError }), 'client', d).apply(fake.compiler);
     const c = fakeCompilation({ 'a.js': 'x', 'a.js.map': 'm' });
     fake.startCompilation(c.compilation);
@@ -557,7 +562,7 @@ describe('createNextWebpackPlugin: the new core contract', () => {
         stamp: vi.fn(async () => ({ stamped: ['a.js'], maps: { 'a.js': 'a.js.map' }, bundles: 1 })),
         tail: vi.fn(async () => 'plain'),
       });
-      const fake = fakeCompiler({ path: '/o' });
+      const fake = fakeCompiler({ path: p('/o') });
       createNextWebpackPlugin(ctx, 'client', d).apply(fake.compiler);
       const c = fakeCompilation({ 'a.js': 'x', 'a.js.map': 'm' });
       fake.startCompilation(c.compilation);
@@ -583,7 +588,7 @@ describe('createNextWebpackPlugin: the new core contract', () => {
         bundles: 1,
       })),
     });
-    const fake = fakeCompiler({ path: '/o' });
+    const fake = fakeCompiler({ path: p('/o') });
     createNextWebpackPlugin(context(), 'client', d).apply(fake.compiler);
     const c = fakeCompilation(
       { 'static/a.js': 'x', 'maps/a.js.map': 'm' },
@@ -658,11 +663,11 @@ describe('createNextWebpackPlugin: the new core contract', () => {
         return true;
       }),
     });
-    const fake = fakeCompiler({ path: '/out/.next' });
+    const fake = fakeCompiler({ path: p('/out/.next') });
     createNextWebpackPlugin(context(), 'client', d).apply(fake.compiler);
     const c = fakeCompilation({ 'static/a.js?h': 'x', 'static/a.js.map?h': 'm' });
     await fake.emit(c.compilation);
-    expect(seen).toEqual(['/out/.next/static/a.js', '/out/.next/static/a.js.map']);
+    expect(seen).toEqual([p('/out/.next/static/a.js'), p('/out/.next/static/a.js.map')]);
   });
 });
 
@@ -696,7 +701,7 @@ describe('createNextWebpackPlugin: the post-emit fallback on an SRI build', () =
     const d = deps({ stamp: failing(), hasSriManifest: vi.fn(async () => true) });
     await run(ctx, d);
     expect(d.upload).not.toHaveBeenCalled();
-    expect(d.hasSriManifest).toHaveBeenCalledWith('/out/.next/server/chunks');
+    expect(d.hasSriManifest).toHaveBeenCalledWith(p('/out/.next/server/chunks'));
   });
 
   it('still falls back without SRI', async () => {
@@ -727,7 +732,7 @@ describe('createNextWebpackPlugin: no public maps Bugsee asked for when nothing 
   const run = async (kind: 'client' | 'server', ctx: BugseeNextContext, d: WebpackPluginDeps) => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     try {
-      const fake = fakeCompiler({ path: '/out/.next' });
+      const fake = fakeCompiler({ path: p('/out/.next') });
       createNextWebpackPlugin(ctx, kind, d).apply(fake.compiler);
       const c = fakeCompilation(assets);
       fake.startCompilation(c.compilation);
@@ -745,8 +750,8 @@ describe('createNextWebpackPlugin: no public maps Bugsee asked for when nothing 
     await run('client', ctx, d);
     expect(d.upload).not.toHaveBeenCalled();
     expect(d.remove).toHaveBeenCalledTimes(2);
-    expect(d.remove).toHaveBeenCalledWith('/out/.next/static/a.js.map');
-    expect(d.remove).toHaveBeenCalledWith('/out/.next/static/a.css.map');
+    expect(d.remove).toHaveBeenCalledWith(p('/out/.next/static/a.js.map'));
+    expect(d.remove).toHaveBeenCalledWith(p('/out/.next/static/a.css.map'));
     expect(ctx.say).toHaveBeenCalledWith(expect.stringContaining('were removed'));
   });
 
@@ -782,14 +787,14 @@ describe('createNextWebpackPlugin: no public maps Bugsee asked for when nothing 
     await run('client', context({}, { forcedMaps: true }), d);
     expect(d.upload).toHaveBeenCalledTimes(1);
     // the sweep tolerates what the upload already deleted (removeFile ignores ENOENT) and takes what is left
-    expect(d.remove).toHaveBeenCalledWith('/out/.next/static/a.js.map');
+    expect(d.remove).toHaveBeenCalledWith(p('/out/.next/static/a.js.map'));
   });
 
   it('deletes them when the upload ran but was NOT confirmed (contained failure), and when it throws', async () => {
     const unconfirmed = deps(); // resolves undefined: nothing confirmed
     await run('client', context({}, { forcedMaps: true }), unconfirmed);
-    expect(unconfirmed.remove).toHaveBeenCalledWith('/out/.next/static/a.js.map');
-    expect(unconfirmed.remove).toHaveBeenCalledWith('/out/.next/static/a.css.map');
+    expect(unconfirmed.remove).toHaveBeenCalledWith(p('/out/.next/static/a.js.map'));
+    expect(unconfirmed.remove).toHaveBeenCalledWith(p('/out/.next/static/a.css.map'));
 
     const notUploaded = deps({ upload: vi.fn(async () => ({ uploaded: false }) as never) });
     await run('client', context({}, { forcedMaps: true }), notUploaded);
@@ -825,7 +830,7 @@ describe('createNextWebpackPlugin: no public maps Bugsee asked for when nothing 
     const d = deps({ stamp: failing() });
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     try {
-      const fake = fakeCompiler({ path: '/out/.next' });
+      const fake = fakeCompiler({ path: p('/out/.next') });
       createNextWebpackPlugin(ctx, 'client', d).apply(fake.compiler);
       const c = fakeCompilation({ 'static/a.js': 'x', 'static/orphan.js.map': 'm' });
       fake.startCompilation(c.compilation);
@@ -834,7 +839,7 @@ describe('createNextWebpackPlugin: no public maps Bugsee asked for when nothing 
     } finally {
       warn.mockRestore();
     }
-    expect(d.remove).toHaveBeenCalledWith('/out/.next/static/orphan.js.map');
+    expect(d.remove).toHaveBeenCalledWith(p('/out/.next/static/orphan.js.map'));
   });
 
   it('strict: an SRI build whose scripts could not be staged fails (nothing was rewritten or uploaded)', async () => {
@@ -851,7 +856,7 @@ describe('createNextWebpackPlugin: no public maps Bugsee asked for when nothing 
     const stampedOne = () =>
       vi.fn(async () => ({ stamped: [], maps: { 'static/a.js': 'static/a.js.map' }, bundles: 1 }));
     const emitOnlyScript = async (ctx: BugseeNextContext, d: WebpackPluginDeps) => {
-      const fake = fakeCompiler({ path: '/out/.next' });
+      const fake = fakeCompiler({ path: p('/out/.next') });
       createNextWebpackPlugin(ctx, 'client', d).apply(fake.compiler);
       const c = fakeCompilation({ 'static/a.js': 'x' });
       fake.startCompilation(c.compilation);
@@ -876,7 +881,7 @@ describe('createNextWebpackPlugin: no public maps Bugsee asked for when nothing 
         bundles: 1,
       })),
     });
-    const fake = fakeCompiler({ path: '/out/.next' });
+    const fake = fakeCompiler({ path: p('/out/.next') });
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     try {
       createNextWebpackPlugin(context(), 'client', lostPair).apply(fake.compiler);
@@ -1067,6 +1072,58 @@ describe('createNextWebpackPlugin: no public maps Bugsee asked for when nothing 
     expect(own.say).not.toHaveBeenCalled();
   });
 
+  it('deleteMaps: false keeps the forced browser maps when stamping is refused or abandoned, and the notice says so', async () => {
+    const keep = context({ deleteMaps: false }, { sri: true, forcedMaps: true });
+    const d = deps({ stamp: failing() });
+    await run('client', keep, d);
+    expect(d.remove).not.toHaveBeenCalled();
+    expect(keep.say).toHaveBeenCalledWith(expect.stringContaining('`deleteMaps: false`'));
+    expect(keep.say).toHaveBeenCalledWith(expect.stringContaining('publicly served'));
+    expect(keep.say).toHaveBeenCalledWith(expect.not.stringContaining('were removed'));
+
+    // maps the app asked for are not "the ones Bugsee turned on": the notice does not claim them
+    const own = context({ deleteMaps: false }, { sri: true });
+    await run('client', own, deps({ stamp: failing() }));
+    expect(own.say).toHaveBeenCalledWith(expect.not.stringContaining('`deleteMaps: false`'));
+
+    const abandoned = deps({
+      stamp: vi.fn(async () => {
+        throw Object.assign(new Error('outside'), { unreachableMap: true });
+      }),
+    });
+    const keepAbandoned = context({ deleteMaps: false }, { forcedMaps: true });
+    await run('client', keepAbandoned, abandoned);
+    expect(abandoned.remove).not.toHaveBeenCalled();
+    expect(keepAbandoned.say).toHaveBeenCalledWith(expect.stringContaining('`deleteMaps: false`'));
+  });
+
+  it('sweeps the forced browser maps when a later stage dropped the last client script but left its map', async () => {
+    const orphanRun = async (ctx: BugseeNextContext, d: WebpackPluginDeps) => {
+      const fake = fakeCompiler({ path: p('/out/.next') });
+      createNextWebpackPlugin(ctx, 'client', d).apply(fake.compiler);
+      const c = fakeCompilation({ 'static/a.js.map': 'm', 'static/a.css.map': 'cm' });
+      fake.startCompilation(c.compilation);
+      await c.run();
+      await fake.emit(c.compilation);
+    };
+    const d = deps();
+    await orphanRun(context({}, { forcedMaps: true }), d);
+    expect(d.upload).not.toHaveBeenCalled();
+    expect(d.remove).toHaveBeenCalledWith(p('/out/.next/static/a.js.map'));
+    expect(d.remove).toHaveBeenCalledWith(p('/out/.next/static/a.css.map'));
+
+    // not on a dry run, not with deleteMaps: false, not for maps the app asked for, not for a server compilation
+    for (const [resolved, extra] of [
+      [{ dryRun: true }, { forcedMaps: true }],
+      [{ deleteMaps: false }, { forcedMaps: true }],
+      [{}, {}],
+    ] as const) {
+      const kept = deps();
+      await orphanRun(context(resolved, extra), kept);
+      expect(kept.remove).not.toHaveBeenCalled();
+    }
+  });
+
   it('on a build without SRI the fallback message is printed, once', async () => {
     const warned = await run('client', context(), deps({ stamp: failing() }));
     expect(warned.filter((w) => w.includes('falling back to stamping after emit'))).toHaveLength(1);
@@ -1126,7 +1183,7 @@ describe('removeFile', () => {
 });
 
 describe('pairRecorded', () => {
-  const emitted = (names: string[]) => names.map((n) => `/o/${n}`);
+  const emitted = (names: string[]) => names.map((n) => p(`/o/${n}`));
 
   it('pairs a script with the map the compilation recorded for it, wherever that map is', () => {
     const { compilation } = fakeCompilation(
@@ -1135,11 +1192,11 @@ describe('pairRecorded', () => {
     );
     const files = pairRecorded(
       compilation,
-      '/o',
+      p('/o'),
       emitted(['static/a.js', 'maps/a.js.map', 'static/b.js', 'static/b.js.map']),
     );
-    expect(files.scripts).toEqual(['/o/static/a.js', '/o/static/b.js']);
-    expect(files.maps).toEqual(['/o/maps/a.js.map', '/o/static/b.js.map']);
+    expect(files.scripts).toEqual([p('/o/static/a.js'), p('/o/static/b.js')]);
+    expect(files.maps).toEqual([p('/o/maps/a.js.map'), p('/o/static/b.js.map')]);
   });
 
   it('the map the compilation recorded wins over a same-named sibling a later stage emitted', () => {
@@ -1149,10 +1206,10 @@ describe('pairRecorded', () => {
     );
     const files = pairRecorded(
       compilation,
-      '/o',
+      p('/o'),
       emitted(['a.js', 'a.js.map', 'maps/original.map']),
     );
-    expect(files.pairs?.['/o/a.js']).toBe('/o/maps/original.map');
+    expect(files.pairs?.[p('/o/a.js')]).toBe(p('/o/maps/original.map'));
   });
 
   it('accepts a recorded list and a ?query on the recorded map', () => {
@@ -1160,8 +1217,8 @@ describe('pairRecorded', () => {
       { 'a.js': 'x', 'm/a.js.map?v': 'm' },
       { 'a.js': ['m/a.js.map?v', 'other'] },
     );
-    expect(pairRecorded(compilation, '/o', emitted(['a.js', 'm/a.js.map'])).maps).toEqual([
-      '/o/m/a.js.map',
+    expect(pairRecorded(compilation, p('/o'), emitted(['a.js', 'm/a.js.map'])).maps).toEqual([
+      p('/o/m/a.js.map'),
     ]);
   });
 
@@ -1170,7 +1227,7 @@ describe('pairRecorded', () => {
       { 'a.js': 'x', 'b.js': 'x', 'c.txt': 'x' },
       { 'a.js': 'gone.js.map' },
     );
-    const files = pairRecorded(compilation, '/o', emitted(['a.js', 'b.js', 'c.txt']));
+    const files = pairRecorded(compilation, p('/o'), emitted(['a.js', 'b.js', 'c.txt']));
     expect(files.scripts).toEqual([]);
     expect(files.maps).toEqual([]);
   });
@@ -1180,7 +1237,7 @@ describe('pairRecorded', () => {
       { 'a.js': 'x', 'm/a.js.map': 'm' },
       { 'a.js': 'm/a.js.map' },
     );
-    expect(pairRecorded(compilation, '/o', emitted(['m/a.js.map'])).scripts).toEqual([]);
+    expect(pairRecorded(compilation, p('/o'), emitted(['m/a.js.map'])).scripts).toEqual([]);
   });
 });
 
@@ -1193,7 +1250,7 @@ describe('createNextWebpackPlugin: queries, recorded maps, registration', () => 
         bundles: 1,
       })),
     });
-    const fake = fakeCompiler({ path: '/o' });
+    const fake = fakeCompiler({ path: p('/o') });
     createNextWebpackPlugin(context(), 'client', d).apply(fake.compiler);
     const c = fakeCompilation({ 'static/a.js?v=1': 'x', 'static/a.js.map?v=1': 'm' });
     fake.startCompilation(c.compilation);
@@ -1210,7 +1267,7 @@ describe('createNextWebpackPlugin: queries, recorded maps, registration', () => 
 
   it('uploads maps a script\u2019s recorded relationship names even when none sits beside it', async () => {
     const d = deps();
-    const fake = fakeCompiler({ path: '/o' });
+    const fake = fakeCompiler({ path: p('/o') });
     createNextWebpackPlugin(context(), 'client', d).apply(fake.compiler);
     const c = fakeCompilation(
       { 'static/a.js': 'x', 'maps/a.js.map': 'm' },
@@ -1224,7 +1281,7 @@ describe('createNextWebpackPlugin: queries, recorded maps, registration', () => 
   it('the server compilation registers the build only when the app writes no browser maps', async () => {
     const reg = async (browserMaps: boolean | undefined, kind: 'client' | 'server' | 'edge') => {
       const d = deps();
-      const fake = fakeCompiler({ path: '/o' });
+      const fake = fakeCompiler({ path: p('/o') });
       createNextWebpackPlugin(
         context({}, { ...(browserMaps === undefined ? {} : { browserMaps }) }),
         kind,
@@ -1256,7 +1313,7 @@ describe('createNextWebpackPlugin: the on-disk scan and the no-maps notice', () 
     d: WebpackPluginDeps,
     assets: Record<string, string>,
   ) => {
-    const fake = fakeCompiler({ path: '/o' });
+    const fake = fakeCompiler({ path: p('/o') });
     createNextWebpackPlugin(ctx, 'client', d).apply(fake.compiler);
     const c = fakeCompilation(assets);
     fake.startCompilation(c.compilation);

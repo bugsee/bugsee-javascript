@@ -56,7 +56,7 @@ export const TURBOPACK_SRI_NOTICE = `this build uses Subresource Integrity (\`ex
 export const FALLBACK_SRI_NOTICE = (
   kind: string,
   mapsRemoved: boolean,
-  options: { dryRun?: boolean; removalFailed?: boolean } = {},
+  options: { dryRun?: boolean; removalFailed?: boolean; retained?: boolean } = {},
 ): string =>
   `the ${kind} build uses Subresource Integrity (\`experimental.sri\`) and its in-build debug-ID stamp did not apply (the reason is reported separately), so nothing was stamped or uploaded: stamping after emit would invalidate the pinned hashes and make the browser refuse the scripts.` +
   (kind !== 'client'
@@ -65,9 +65,11 @@ export const FALLBACK_SRI_NOTICE = (
       ? ' The browser source maps Bugsee had turned on were removed from `.next/static`.'
       : options.dryRun === true
         ? ` Dry run: nothing was deleted. ${PUBLIC_MAPS}`
-        : options.removalFailed === true
-          ? ` The browser maps Bugsee turned on could not all be removed. ${PUBLIC_MAPS}`
-          : ` ${PUBLIC_MAPS}`);
+        : options.retained === true
+          ? ` \`deleteMaps: false\` keeps the browser source maps Bugsee turned on. ${PUBLIC_MAPS}`
+          : options.removalFailed === true
+            ? ` The browser maps Bugsee turned on could not all be removed. ${PUBLIC_MAPS}`
+            : ` ${PUBLIC_MAPS}`);
 
 /** Turbopack on a Next without the post-build hook. */
 export const NO_HOOK_NOTICE = (version: string): string =>
