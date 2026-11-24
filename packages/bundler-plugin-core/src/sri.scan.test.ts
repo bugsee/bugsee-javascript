@@ -212,3 +212,29 @@ describe('symlinked pages', () => {
     );
   });
 });
+
+describe('a page predicate skips pages before they are read', () => {
+  it("a skipped page contributes no pins and cannot claim a later page's identical pin", async () => {
+    const dir = await fixture();
+    const page = '<script src="a.js" integrity="sha384-x"></script>';
+    await mkdir(join(dir, 'a-skip'));
+    await writeFile(join(dir, 'a-skip', 'p.html'), page.replace('a.js', '../a.js'));
+    await writeFile(join(dir, 'z.html'), page);
+    const all = await findSriProtectedScriptsDetailed(dir);
+    expect(all.scripts.map((s) => s.html)).toEqual([join(dir, 'a-skip', 'p.html')]);
+    const skipped: string[] = [];
+    const scan = await findSriProtectedScriptsDetailed(dir, MAX_HTML_BYTES, true, (html) => {
+      skipped.push(html);
+      return html.includes('a-skip');
+    });
+    expect(scan.scripts.map((s) => s.html)).toEqual([join(dir, 'z.html')]);
+    expect(skipped.sort()).toEqual([join(dir, 'a-skip', 'p.html'), join(dir, 'z.html')].sort());
+    const big = join(dir, 'a-skip', 'big.html');
+    await writeFile(big, '');
+    await truncate(big, MAX_HTML_BYTES + 1);
+    const again = await findSriProtectedScriptsDetailed(dir, MAX_HTML_BYTES, true, (html) =>
+      html.includes('a-skip'),
+    );
+    expect(again.skippedPages).toEqual([]);
+  });
+});

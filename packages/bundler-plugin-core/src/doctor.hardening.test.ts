@@ -4,6 +4,7 @@ import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
   chmodSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   rmSync,
@@ -12,13 +13,15 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join, win32 } from 'node:path';
+import { dirname, join, posix, win32 } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   batchEnd,
+  boundedMemo,
   type DoctorReport,
   diagnoseBuildOutput,
   doctorExitCode,
+  hasOriginalPosition,
   sourcePath,
   walk,
 } from './doctor';
@@ -283,14 +286,14 @@ describe('source resolution', () => {
   });
 
   it('sourcePath: posix, project root, file URLs, virtual and malformed sources', () => {
-    expect(sourcePath('/m', '', 'webpack://app/./src/x.ts', '/proj')).toBe('/proj/src/x.ts');
-    expect(sourcePath('/m', '', 'webpack://app/./src/x.ts')).toBe('/m/src/x.ts');
-    expect(sourcePath('/m/d', '../s', 'a.ts', '/proj')).toBe('/m/s/a.ts');
-    expect(sourcePath('/m', '', '/abs/a.ts')).toBe('/abs/a.ts');
-    expect(sourcePath('/m', '', 'file:///x/a%20b.ts')).toBe('/x/a b.ts');
-    expect(sourcePath('/m', '', 'file:///x/%zz.ts')).toBeUndefined();
-    expect(sourcePath('/m', '', 'webpack/runtime/x')).toBeUndefined();
-    expect(sourcePath('/m', '', '')).toBeUndefined();
+    expect(sourcePath('/m', '', 'webpack://app/./src/x.ts', '/proj', posix)).toBe('/proj/src/x.ts');
+    expect(sourcePath('/m', '', 'webpack://app/./src/x.ts', undefined, posix)).toBe('/m/src/x.ts');
+    expect(sourcePath('/m/d', '../s', 'a.ts', '/proj', posix)).toBe('/m/s/a.ts');
+    expect(sourcePath('/m', '', '/abs/a.ts', undefined, posix)).toBe('/abs/a.ts');
+    expect(sourcePath('/m', '', 'file:///x/a%20b.ts', undefined, posix)).toBe('/x/a b.ts');
+    expect(sourcePath('/m', '', 'file:///x/%zz.ts', undefined, posix)).toBeUndefined();
+    expect(sourcePath('/m', '', 'webpack/runtime/x', undefined, posix)).toBeUndefined();
+    expect(sourcePath('/m', '', '', undefined, posix)).toBeUndefined();
   });
 
   it('sourcePath on Windows: drive-letter file URLs and project-relative bundler paths', () => {
@@ -356,10 +359,10 @@ describe('pointer reading and pairing (round 2)', () => {
       'rollup:plugin/x',
       'vite/preload-helper.js',
     ]) {
-      expect(sourcePath('/m', '', virtual), virtual).toBeUndefined();
+      expect(sourcePath('/m', '', virtual, undefined, posix), virtual).toBeUndefined();
     }
     for (const real of ['webpackx/a.ts', 'viteish/a.ts', 'rollupx.ts', 'webpack.config.js']) {
-      expect(sourcePath('/m', '', real), real).toBe(`/m/${real}`);
+      expect(sourcePath('/m', '', real, undefined, posix), real).toBe(`/m/${real}`);
     }
   });
 });
@@ -419,7 +422,17 @@ describe.skipIf(process.getuid?.() === 0)('an unreadable output directory', () =
         ),
       ).toBe(true);
       // a glob that would NOT hide the directory's files if it could be listed must not hide the directory either
-      for (const pattern of ['vendor', 'vendor*', 'vendor/*', '*', 'assets/*']) {
+      for (const pattern of [
+        'vendor',
+        'vendor*',
+        'vendor/*',
+        '*',
+        'assets/*',
+        'vendor/**/*.js',
+        '**/*.js',
+        '**/a/**',
+        'vendor/**/*.map',
+      ]) {
         const kept = find(await run({ exclude: [pattern] }), 'output.dir-unreadable')?.details;
         expect(kept, pattern).toEqual({ directories: ['assets', 'vendor'] });
       }
@@ -1156,8 +1169,17 @@ describe('a pointer with a ?query (webpack / Rspack [name].js?[contenthash]) (ro
 });
 
 describe('index (sectioned) source maps (round 10)', () => {
+  // Sections must not overlap: each starts at a later generated line.
   const index = (sections: unknown[], extra: Record<string, unknown> = {}): string =>
-    JSON.stringify({ version: 3, sections, ...extra });
+    JSON.stringify({
+      version: 3,
+      sections: sections.map((s, i) =>
+        typeof s === 'object' && s !== null && 'offset' in s
+          ? { ...s, offset: { line: i * 10, column: 0 } }
+          : s,
+      ),
+      ...extra,
+    });
   const section = (sources: string[], content?: string[]) => ({
     offset: { line: 0, column: 0 },
     map: {
@@ -1288,6 +1310,7 @@ describe('index (sectioned) source maps (round 10)', () => {
         debugId: ID_A,
         sources: ['a.ts'],
         sourcesContent: ['x'],
+        mappings: 'AAAA',
       }),
     );
     expect(find(await run(), 'map.sources-content')?.message).toContain('all 1 sources');
@@ -1335,7 +1358,8 @@ describe('symlinked HTML pages are scanned, or reported, never skipped silently 
 
   it('a link to a page inside the directory is read through its real path (stale pin found)', async () => {
     put('a.js', `console.log(1);${stamp(ID_A)}`);
-    put('pages/real.html', stalePage.replace('a.js', '../a.js'));
+    // `a.js` from pages/ is pages/a.js (absent): only the link at the ROOT resolves this pin to the script under test
+    put('pages/real.html', stalePage);
     symlinkSync(join(dist, 'pages', 'real.html'), join(dist, 'index.html'));
     const report = await run();
     expect(ids(report)).toContain('sri.mismatch');
@@ -1359,12 +1383,161 @@ describe('sourcePath with a scheme sourceRoot (unit)', () => {
   it('a source that already carries its own scheme or is absolute ignores the root', () => {
     const map = '/p/dist';
     const proj = '/p';
-    expect(sourcePath(map, 'webpack:///', 'src/x.ts', proj)).toBe('/p/src/x.ts');
-    expect(sourcePath(map, 'webpack:///', 'webpack://app/src/x.ts', proj)).toBe('/p/src/x.ts');
-    expect(sourcePath(map, 'webpack:///', 'file:///tmp/y.ts', proj)).toBe('/tmp/y.ts');
-    expect(sourcePath(map, 'webpack:///', '/abs/z.ts', proj)).toBe('/abs/z.ts');
-    expect(sourcePath(map, 'https://h/r', '/abs/z.ts', proj)).toBe('/abs/z.ts');
+    expect(sourcePath(map, 'webpack:///', 'src/x.ts', proj, posix)).toBe('/p/src/x.ts');
+    expect(sourcePath(map, 'webpack:///', 'webpack://app/src/x.ts', proj, posix)).toBe(
+      '/p/src/x.ts',
+    );
+    expect(sourcePath(map, 'webpack:///', 'file:///tmp/y.ts', proj, posix)).toBe('/tmp/y.ts');
+    expect(sourcePath(map, 'webpack:///', '/abs/z.ts', proj, posix)).toBe('/abs/z.ts');
+    expect(sourcePath(map, 'https://h/r', '/abs/z.ts', proj, posix)).toBe('/abs/z.ts');
     // a non-URL source with a single-colon scheme is not joined to the root either: it resolves from the map
-    expect(sourcePath(map, 'webpack:///', 'node:fs', proj)).toBe('/p/dist/webpack:/node:fs');
+    expect(sourcePath(map, 'webpack:///', 'node:fs', proj, posix)).toBe('/p/dist/webpack:/node:fs');
+    // file URL semantics follow the path API it is given, not the host: a drive letter is a plain path segment here
+    expect(sourcePath('/m', '', 'file:///C:/x/a.ts', '/p', posix)).toBe('/C:/x/a.ts');
+  });
+});
+
+describe('round 13 review findings', () => {
+  const sri = (bytes: string): string =>
+    `sha384-${createHash('sha384').update(bytes).digest('base64')}`;
+  const pair = (map: string, bundle = 'a.js'): void => {
+    put(bundle, `a\n//# sourceMappingURL=${bundle}.map${stamp(ID_A)}`);
+    put(`${bundle}.map`, map);
+  };
+
+  it("--exclude applies to a READABLE page before its pins are collected (and cannot claim an included page's pin)", async () => {
+    const js = `console.log(1);${stamp(ID_A)}`;
+    put('app.js', js);
+    const stale = `<script src="/app.js" integrity="${sri('older bytes')}"></script>`;
+    put('a-legacy/x.html', stale.replace('/app.js', '../app.js'));
+    expect(ids(await run())).toContain('sri.mismatch');
+    expect(ids(await run({ exclude: ['a-legacy/**'] }))).not.toContain('sri.mismatch');
+    expect(ids(await run({ exclude: ['a-legacy/**'] }))).not.toContain('output.exclude-unmatched');
+    // an included page with the SAME pin is still judged although the excluded page sorts first
+    put('index.html', stale.replace('/app.js', 'app.js'));
+    const report = await run({ exclude: ['a-legacy/**'] });
+    expect(find(report, 'sri.mismatch')?.details).toEqual({ scripts: ['app.js'] });
+  });
+
+  it('a map with no original positions (empty, generated-only, short segments) is map.invalid; a mixed one is fine', async () => {
+    for (const mappings of ['', ';;;', 'A', 'AAA', 'AAAA;;AAAA', 'A,AAAA', 'AAAAA', 'AAAAIAAAA']) {
+      pair(mapJson({ debugId: ID_A, mappings }));
+      const invalid = find(await run(), 'map.invalid');
+      const expectInvalid = ['', ';;;', 'A', 'AAA'].includes(mappings);
+      expect(invalid !== undefined, `mappings ${JSON.stringify(mappings)}`).toBe(expectInvalid);
+      if (expectInvalid) {
+        expect(invalid?.message).toContain('original');
+      }
+    }
+  });
+
+  it('hasOriginalPosition: a segment needs four or more VLQ values (continuation bits respected)', () => {
+    expect(hasOriginalPosition('AAAA')).toBe(true);
+    expect(hasOriginalPosition('AAA')).toBe(false);
+    expect(hasOriginalPosition('')).toBe(false);
+    expect(hasOriginalPosition(',,;')).toBe(false);
+    expect(hasOriginalPosition('A;AAAA')).toBe(true);
+    expect(hasOriginalPosition('A,AAAA')).toBe(true);
+    // `gB` is ONE value (g has the continuation bit): gBAAA is 4 values, gBAA is 3
+    expect(hasOriginalPosition('gBAAA')).toBe(true);
+    expect(hasOriginalPosition('gBAA')).toBe(false);
+    expect(hasOriginalPosition('AAA$A')).toBe(false); // not base64: that segment is unusable
+    expect(hasOriginalPosition('AA$A,AAAA')).toBe(true);
+    expect(hasOriginalPosition('AAAA$')).toBe(false); // a bad character spoils the whole segment, wherever it is
+  });
+
+  it('index maps: at least one leaf must carry an original position', async () => {
+    const leaf = (mappings: string, line: number) => ({
+      offset: { line, column: 0 },
+      map: { version: 3, sources: ['a.ts'], sourcesContent: ['x'], names: [], mappings },
+    });
+    pair(JSON.stringify({ version: 3, debugId: ID_A, sections: [leaf('', 0), leaf(';;', 5)] }));
+    expect(find(await run(), 'map.invalid')?.message).toContain('original');
+    pair(JSON.stringify({ version: 3, debugId: ID_A, sections: [leaf('', 0), leaf('AAAA', 5)] }));
+    expect(ids(await run())).not.toContain('map.invalid');
+    pair(JSON.stringify({ version: 3, debugId: ID_A, sections: [leaf('AAAA', 0), leaf('', 5)] }));
+    expect(ids(await run())).not.toContain('map.invalid'); // any leaf counts, not just the last
+  });
+
+  it('one map reached through aliases in DIFFERENT directories has its relative sources checked against each', async () => {
+    put(
+      'real/app.js.map',
+      mapJson({ debugId: ID_A, sourcesContent: undefined, sources: ['src/x.ts'] }),
+    );
+    put('a/src/x.ts', 'x'); // only a/ has the source
+    for (const d of ['a', 'b']) {
+      put(`${d}/app.js`, `a\n//# sourceMappingURL=app.js.map${stamp(ID_A)}`);
+      symlinkSync(join(dist, 'real', 'app.js.map'), join(dist, d, 'app.js.map'));
+    }
+    const report = await run();
+    const unresolved = report.findings.filter((f) => f.id === 'map.sources-unresolvable');
+    // the real file itself (real/) has no src/x.ts either; a/ is the only base that does
+    expect(unresolved.map((f) => f.file)).toEqual(['b/app.js.map', 'real/app.js.map']);
+    expect(ids(report)).not.toContain('map.invalid');
+  });
+
+  it("aliases in different directories report a shared map's CONTENT and STRUCTURE once", async () => {
+    const alias = (body: Record<string, unknown>): void => {
+      put('real/app.js.map', mapJson({ debugId: ID_A, ...body }));
+      for (const d of ['a', 'b']) {
+        put(`${d}/app.js`, `a\n//# sourceMappingURL=app.js.map${stamp(ID_A)}`);
+        if (!existsSync(join(dist, d, 'app.js.map'))) {
+          symlinkSync(join(dist, 'real', 'app.js.map'), join(dist, d, 'app.js.map'));
+        }
+      }
+    };
+    const count = (report: DoctorReport, id: string): number =>
+      report.findings.filter((f) => f.id === id && !(f.file ?? '').startsWith('real/')).length;
+    alias({}); // content embedded
+    expect(count(await run(), 'map.sources-content')).toBe(1);
+    put('a/src/x.ts', 'x');
+    put('b/src/x.ts', 'x');
+    alias({ sourcesContent: undefined, sources: ['src/x.ts'] }); // not embedded, resolvable from both
+    expect(count(await run(), 'map.sources-content')).toBe(1);
+    alias({ version: 2 });
+    expect(count(await run(), 'map.invalid')).toBe(1);
+  });
+
+  it('aliases in the SAME directory are still judged once', async () => {
+    put('real/m.map', mapJson({ debugId: ID_A, sourcesContent: undefined, sources: ['src/x.ts'] }));
+    for (const n of ['one', 'two']) {
+      put(`${n}.js`, `a\n//# sourceMappingURL=${n}.map${stamp(ID_A)}`);
+      symlinkSync(join(dist, 'real', 'm.map'), join(dist, `${n}.map`));
+    }
+    const report = await run();
+    const aliases = report.findings.filter(
+      (f) => f.id === 'map.sources-unresolvable' && !(f.file ?? '').startsWith('real/'),
+    );
+    expect(aliases).toHaveLength(1);
+  });
+});
+
+describe('boundedMemo', () => {
+  it('computes once per key, caches failures-as-values, and evicts the least recently used', async () => {
+    const calls: string[] = [];
+    const memo = boundedMemo(2, async (key: string) => {
+      calls.push(key);
+      return key.toUpperCase();
+    });
+    expect(await memo('a')).toBe('A');
+    expect(await memo('a')).toBe('A');
+    expect(await memo('b')).toBe('B');
+    expect(await memo('a')).toBe('A'); // refreshes a: b is now the oldest
+    expect(await memo('c')).toBe('C'); // evicts b
+    expect(await memo('a')).toBe('A');
+    expect(calls).toEqual(['a', 'b', 'c']);
+    expect(await memo('b')).toBe('B');
+    expect(calls).toEqual(['a', 'b', 'c', 'b']);
+  });
+
+  it('shares an in-flight computation between concurrent callers', async () => {
+    let runs = 0;
+    const memo = boundedMemo(4, async (key: string) => {
+      runs++;
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      return key;
+    });
+    await Promise.all([memo('x'), memo('x'), memo('x')]);
+    expect(runs).toBe(1);
   });
 });

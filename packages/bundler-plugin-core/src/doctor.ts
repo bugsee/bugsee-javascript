@@ -249,7 +249,9 @@ export function mapSources(json: Record<string, unknown>): {
   sources: unknown[];
   content: unknown[];
   roots: string[];
+  hasOriginal: boolean;
 } {
+  let hasOriginal = false;
   const sources: unknown[] = [];
   const content: unknown[] = [];
   const roots: string[] = [];
@@ -259,6 +261,7 @@ export function mapSources(json: Record<string, unknown>): {
       const own = map.sources as unknown[];
       const embedded = Array.isArray(map.sourcesContent) ? (map.sourcesContent as unknown[]) : [];
       const root = typeof map.sourceRoot === 'string' ? map.sourceRoot : '';
+      hasOriginal ||= typeof map.mappings === 'string' && hasOriginalPosition(map.mappings);
       own.forEach((source, i) => {
         sources.push(source);
         content.push(embedded[i]);
@@ -278,11 +281,64 @@ export function mapSources(json: Record<string, unknown>): {
     }
   };
   collect(json, 0);
-  return { sources, content, roots };
+  return { sources, content, roots, hasOriginal };
 }
 
 /** Nested index maps are followed this deep (a real one is 1-2 levels); a hostile chain must not overflow the stack. */
 const MAX_INDEX_DEPTH = 32;
+
+const BASE64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+
+/**
+ * Whether a `mappings` string has at least one segment that names an ORIGINAL position (four or more VLQ values:
+ * generated column, source, line, column). A map made only of generated-position segments (or empty) cannot map any
+ * frame back to your code. A segment with a character outside the base64 alphabet is unusable and does not count.
+ */
+export function hasOriginalPosition(mappings: string): boolean {
+  for (const segment of mappings.split(/[;,]/)) {
+    let values = 0;
+    let usable = true;
+    for (const ch of segment) {
+      const digit = BASE64.indexOf(ch);
+      if (digit < 0) {
+        usable = false;
+        break;
+      }
+      if ((digit & 32) === 0) {
+        values++; // no continuation bit: this digit ends a value
+      }
+    }
+    if (usable && values >= 4) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Memoise an async computation per key, keeping at most `limit` results (least recently used out first). Used so a
+ * map that many bundles share is read and parsed once, without keeping every map of a big build in memory.
+ */
+export function boundedMemo<V>(
+  limit: number,
+  compute: (key: string) => Promise<V>,
+): (key: string) => Promise<V> {
+  const cache = new Map<string, Promise<V>>();
+  return (key) => {
+    const hit = cache.get(key);
+    if (hit !== undefined) {
+      cache.delete(key);
+      cache.set(key, hit); // most recently used goes last
+      return hit;
+    }
+    const value = compute(key);
+    cache.set(key, value);
+    if (cache.size > limit) {
+      cache.delete(cache.keys().next().value as string);
+    }
+    return value;
+  };
+}
 
 interface ParsedMap {
   ok: true;
@@ -310,6 +366,18 @@ function parseMap(text: string): ParsedMap | { ok: false; why: string } {
   const id = [json.debugId, json.debug_id].find((v) => typeof v === 'string' && v !== '');
   return { ok: true, json, debugId: typeof id === 'string' ? id.toLowerCase() : undefined };
 }
+
+/** Paths probed to ask "would these patterns hide everything the doctor could find in this directory". */
+const DIR_PROBES = [
+  'zz-probe-1/zz-probe-2/c.js',
+  'zz-probe-1/zz-probe-2/c.mjs',
+  'zz-probe-1/zz-probe-2/c.cjs',
+  'zz-probe-1/zz-probe-2/c.js.map',
+  'zz-probe-1/zz-probe-2/c.map',
+  'zz-probe-1/zz-probe-2/c.html',
+  'zz-probe-1/zz-probe-2/c.htm',
+  'zz-probe-1/zz-probe-2/c',
+];
 
 /** `scheme://...`: a URL, not a directory name. */
 const SCHEME_URL = /^[a-z][a-z0-9+.-]*:\/\//i;
@@ -343,7 +411,7 @@ export function sourcePath(
   }
   if (/^file:\/\//i.test(path)) {
     try {
-      return fileURLToPath(path, api === nodePath.win32 ? { windows: true } : undefined);
+      return fileURLToPath(path, { windows: api === nodePath.win32 });
     } catch {
       return undefined;
     }
@@ -554,6 +622,8 @@ async function diagnose(dirInput: string, options: DoctorOptions): Promise<Docto
   const mapSet = new Set(maps);
   // A map reached through two names (a symlinked directory, a case-variant pointer) is the same file: judged once.
   const seenMaps = new Set<string>();
+  // Relative sources resolve from the map URL's directory, so an alias in another directory has its own verdict.
+  const seenBases = new Set<string>();
   const markSeen = (real: string): boolean => {
     if (seenMaps.has(real)) {
       return false;
@@ -567,6 +637,14 @@ async function diagnose(dirInput: string, options: DoctorOptions): Promise<Docto
     message: string;
     details?: Record<string, unknown>;
   }> = [];
+  // A map shared by many bundles is read and parsed once (a few at a time are kept: a build of mostly unique maps
+  // must not retain them all).
+  const loadMap = boundedMemo(4, async (path: string) => {
+    const read = await readInside(path, maxMapBytes, realDir);
+    return read.ok
+      ? { ok: true as const, real: read.real, parsed: parseMap(read.bytes.toString('utf8')) }
+      : read;
+  });
   const claimedMaps = new Set<string>();
   const stampedIds = new Map<string, Array<{ file: string; path: string }>>();
   let stamped = 0;
@@ -687,12 +765,12 @@ async function diagnose(dirInput: string, options: DoctorOptions): Promise<Docto
     if (mapPath !== undefined) {
       claimedMaps.add(mapPath);
       const mapName = rel(dir, mapPath);
-      const mapRead = await readInside(mapPath, maxMapBytes, realDir);
+      const mapRead = await loadMap(mapPath);
       if (!mapRead.ok) {
         reportUnreadableMap(mapName, mapRead);
         continue;
       }
-      const parsed = parseMap(mapRead.bytes.toString('utf8'));
+      const parsed = mapRead.parsed;
       if (!parsed.ok) {
         if (markSeen(mapRead.real)) {
           add({
@@ -743,12 +821,12 @@ async function diagnose(dirInput: string, options: DoctorOptions): Promise<Docto
   for (const map of maps) {
     if (!claimedMaps.has(map)) {
       const mapName = rel(dir, map);
-      const mapRead = await readInside(map, maxMapBytes, realDir);
+      const mapRead = await loadMap(map);
       if (!mapRead.ok) {
         reportUnreadableMap(mapName, mapRead);
         continue;
       }
-      const parsed = parseMap(mapRead.bytes.toString('utf8'));
+      const parsed = mapRead.parsed;
       if (!parsed.ok) {
         if (markSeen(mapRead.real)) {
           add({
@@ -792,48 +870,57 @@ async function diagnose(dirInput: string, options: DoctorOptions): Promise<Docto
     json: Record<string, unknown>,
     real: string,
   ): void {
-    if (!markSeen(real)) {
-      return; // a map shared by several bundles is validated once
+    const first = markSeen(real); // content and structure are the same for every name of one file
+    const base = `${real}\0${dirname(mapPath)}`;
+    if (seenBases.has(base)) {
+      return; // a map shared by several bundles in one directory is validated once
     }
+    seenBases.add(base);
+    const invalid = (message: string, fix: string, id = 'map.invalid'): void => {
+      if (first) {
+        add({ id, severity: 'error', file: mapName, message, fix });
+      }
+    };
     if (json.version !== 3) {
-      add({
-        id: 'map.invalid',
-        severity: 'error',
-        file: mapName,
-        message: `${mapName} is not a source map v3 (version is ${JSON.stringify(json.version)}).`,
-        fix: 'Only version 3 maps are supported; check the bundler/minifier output.',
-      });
+      invalid(
+        `${mapName} is not a source map v3 (version is ${JSON.stringify(json.version)}).`,
+        'Only version 3 maps are supported; check the bundler/minifier output.',
+      );
       return;
     }
     if (typeof json.mappings !== 'string' && !Array.isArray(json.sections)) {
-      add({
-        id: 'map.invalid',
-        severity: 'error',
-        file: mapName,
-        message: `${mapName} has neither \`mappings\` nor \`sections\`: it carries no position data, so no frame can be mapped.`,
-        fix: 'Check the build is not stripping the map; rebuild.',
-      });
+      invalid(
+        `${mapName} has neither \`mappings\` nor \`sections\`: it carries no position data, so no frame can be mapped.`,
+        'Check the build is not stripping the map; rebuild.',
+      );
       return;
     }
-    const { sources, content, roots } = mapSources(json);
+    const { sources, content, roots, hasOriginal } = mapSources(json);
     if (sources.length === 0) {
-      add({
-        id: 'map.no-sources',
-        severity: 'error',
-        file: mapName,
-        message: `${mapName} has no \`sources\`; it can map nothing back to your code.`,
-        fix: 'Enable full source maps in the bundler (not a stripped / empty map).',
-      });
+      invalid(
+        `${mapName} has no \`sources\`; it can map nothing back to your code.`,
+        'Enable full source maps in the bundler (not a stripped / empty map).',
+        'map.no-sources',
+      );
+      return;
+    }
+    if (!hasOriginal) {
+      invalid(
+        `${mapName} has no mapping to an original position (its \`mappings\` is empty or holds only generated positions), so no frame can be mapped back to your code.`,
+        'Check the build is not stripping the map or minifying without tracking sources; rebuild.',
+      );
       return;
     }
     const missingAt = sources.flatMap((_, i) => (typeof content[i] !== 'string' ? [i] : []));
     const missing = missingAt.map((i) => String(sources[i]));
     if (missing.length === 0) {
-      contentFacts.push({
-        file: mapName,
-        embeddedAll: true,
-        message: `${mapName} embeds sourcesContent for all ${sources.length} sources.`,
-      });
+      if (first) {
+        contentFacts.push({
+          file: mapName,
+          embeddedAll: true,
+          message: `${mapName} embeds sourcesContent for all ${sources.length} sources.`,
+        });
+      }
       return;
     }
     const mapDir = dirname(mapPath);
@@ -850,7 +937,7 @@ async function diagnose(dirInput: string, options: DoctorOptions): Promise<Docto
         fix: 'Build with sourcesContent embedded (inlineSources / `sourcesContent: true`), or upload from a machine that still has the sources.',
         details: { unresolved: unresolved.length, total: sources.length },
       });
-    } else {
+    } else if (first) {
       contentFacts.push({
         file: mapName,
         embeddedAll: false,
@@ -1019,14 +1106,22 @@ async function diagnose(dirInput: string, options: DoctorOptions): Promise<Docto
   }
 
   // --- SRI ------------------------------------------------------------------------------------------
-  const sriScan = await findSriProtectedScriptsDetailed(dir, MAX_HTML_BYTES, walked.fenced);
+  // A page named by `--exclude` is skipped BEFORE it is read: it contributes no pins (and cannot claim one first).
+  const sriScan = await findSriProtectedScriptsDetailed(
+    dir,
+    MAX_HTML_BYTES,
+    walked.fenced,
+    isExcluded,
+  );
   const allUnreadable = [
     ...new Set([...walked.unreadable, ...sriScan.unreadableDirs.map((d) => rel(dir, d) || '.')]),
   ].sort();
   // `--exclude vendor/**` (or `vendor/`) names a directory too.
-  // Excluded only if a pattern would hide the files INSIDE (probed with a deep path, so `vendor/*` or `vendor*` do not
-  // hide a directory that, if it could be listed, would still be audited): never broader than for a readable one.
-  const excludedDirs = allUnreadable.filter((d) => isExcludedName(`${d}/a/b/c.js`));
+  // Excluded only if the patterns would hide EVERY kind of file the doctor looks at inside it (a probe of each, deep
+  // down, plus one no extension glob can target): never broader than for a readable directory.
+  const excludedDirs = allUnreadable.filter((d) =>
+    DIR_PROBES.every((probe) => isExcludedName(`${d}/${probe}`)),
+  );
   const unreadableDirs = allUnreadable.filter((d) => !excludedDirs.includes(d));
   if (excludedDirs.length > 0) {
     add({
@@ -1047,9 +1142,6 @@ async function diagnose(dirInput: string, options: DoctorOptions): Promise<Docto
     });
   }
   const pinned = sriScan.scripts.filter((pin) => !isExcluded(pin.script));
-  // Pages named by `--exclude` are not the build's to judge either (oversized or unreadable alike).
-  const skippedPages = sriScan.skippedPages.filter((page) => !isExcluded(page.html));
-  const unreadablePages = sriScan.unreadablePages.filter((page) => !isExcluded(page));
   const unmatched = excludeGlobs.filter((_, i) => !matchedPatterns.has(i));
   if (unmatched.length > 0) {
     add({
@@ -1059,8 +1151,8 @@ async function diagnose(dirInput: string, options: DoctorOptions): Promise<Docto
       details: { patterns: unmatched },
     });
   }
-  if (skippedPages.length > 0) {
-    const names = skippedPages.map((page) => rel(dir, page.html));
+  if (sriScan.skippedPages.length > 0) {
+    const names = sriScan.skippedPages.map((page) => rel(dir, page.html));
     add({
       id: 'sri.html-skipped',
       severity: 'warning',
@@ -1069,8 +1161,8 @@ async function diagnose(dirInput: string, options: DoctorOptions): Promise<Docto
       details: listDetails('files', names),
     });
   }
-  if (unreadablePages.length > 0) {
-    const names = unreadablePages.map((page) => rel(dir, page));
+  if (sriScan.unreadablePages.length > 0) {
+    const names = sriScan.unreadablePages.map((page) => rel(dir, page));
     add({
       id: 'sri.html-skipped',
       severity: 'warning',

@@ -198,6 +198,8 @@ export async function findSriProtectedScriptsDetailed(
   maxHtmlBytes: number = MAX_HTML_BYTES,
   /** Skip `test`/dot-directories and stop below depth 6 (the stamp guard's default; the doctor passes its own fence). */
   fenced = true,
+  /** A page for which this returns true is not read at all (the doctor's `--exclude`). */
+  skipPage?: (html: string) => boolean,
 ): Promise<SriScan> {
   // Resolved FIRST: a bundler hands us whatever the user configured, and Rollup passes `output.dir`
   // through verbatim (`'dist'`) while `output.file: 'bundle.js'` resolves to `'.'`. Comparing an
@@ -213,6 +215,9 @@ export async function findSriProtectedScriptsDetailed(
   const skippedPages: SriScan['skippedPages'] = [];
   const unreadablePages: string[] = [];
   for (const html of pages.sort()) {
+    if (skipPage?.(html) === true) {
+      continue;
+    }
     // A symlinked page is read through its REAL path, and only if that stays inside the output directory (the
     // same rule as every other symlinked artifact); one that leads out, or dangles, is a page that was not checked.
     let readPath = html;
