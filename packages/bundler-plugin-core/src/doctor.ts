@@ -219,7 +219,9 @@ export async function walkDetailed(
             target === undefined ||
             !(await stat(target).then(
               (info) => info.isDirectory(),
+              /* v8 ignore start -- the link vanished between realpath and stat: a race that cannot be reproduced deterministically */
               () => false,
+              /* v8 ignore stop */
             ))
           ) {
             continue;

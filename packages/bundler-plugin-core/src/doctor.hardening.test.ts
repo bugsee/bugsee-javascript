@@ -24,6 +24,7 @@ import {
   hasOriginalPosition,
   sourcePath,
   walk,
+  walkDetailed,
 } from './doctor';
 import { listOutputMaps } from './stamp-files';
 
@@ -1549,6 +1550,14 @@ describe('boundedMemo', () => {
     });
     await Promise.all([memo('x'), memo('x'), memo('x')]);
     expect(runs).toBe(1);
+  });
+});
+
+describe('walkDetailed on a path that does not exist', () => {
+  it('does not throw: nothing found, the root itself reported as unreadable', async () => {
+    const missing = join(root, 'no-such-dir');
+    expect(await walk(missing)).toEqual([]);
+    expect((await walkDetailed(missing)).unreadable).toEqual(['.']);
   });
 });
 
