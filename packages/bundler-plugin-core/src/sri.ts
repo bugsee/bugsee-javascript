@@ -18,6 +18,10 @@ import { createHash } from 'node:crypto';
 import type { Dirent } from 'node:fs';
 import { readdir, readFile } from 'node:fs/promises';
 import { isAbsolute, join, normalize, resolve, sep } from 'node:path';
+import { readRegularFile } from './safe-read';
+
+/** A page larger than this is not scanned (a real page is a few KB): the scan must stay bounded on hostile input. */
+export const MAX_HTML_BYTES = 8 * 1024 * 1024;
 
 /** One `<script>` whose `integrity` pins a file in the build output. */
 export interface SriProtectedScript {
@@ -36,19 +40,56 @@ const NEVER_WALK = new Set(['node_modules', '.git', 'test', 'tests', '__tests__'
 const MAX_DEPTH = 6;
 
 /**
- * Every `<script>` tag, captured with its attributes. Deliberately a regex and not a parser: this is
- * a guard, and the shapes that matter are the ones bundlers emit (minified, attributes in any order,
- * quoted or bare). A tag we fail to parse is a tag we do not flag, which is the pre-existing
- * behaviour — this can only ever be MORE cautious than shipping the page blind.
+ * Every `<script>` tag, captured with its attributes. Deliberately not a parser: this is a guard, and the shapes
+ * that matter are the ones bundlers emit (minified, attributes in any order, quoted or bare). A tag we fail to
+ * parse is a tag we do not flag, which is the pre-existing behaviour: this can only ever be MORE cautious than
+ * shipping the page blind. Found by {@link findTags}, a LINEAR scan (the regex `/<script\b[^>]*>/gi` it replaces
+ * was quadratic on a page that is thousands of unterminated `<script `).
  */
-const SCRIPT_TAG = /<script\b[^>]*>/gi;
 // A `<link rel=modulepreload integrity>` pins a chunk just as hard: the preload fails the integrity
 // check, poisons the module map, and the later `import()` of that chunk fails with it. Angular's
 // builder and the Vite SRI plugins emit these alongside the entry `<script>`.
-const PRELOAD_TAG = /<link\b[^>]*>/gi;
 const PRELOADS_SCRIPT = /\brel\s*=\s*("|')?(modulepreload|preload)\1?/i;
-// HTML comments are not markup. `<!-- <script src=app.js integrity=…> -->` used to refuse the build.
-const HTML_COMMENT = /<!--[\s\S]*?-->/g;
+
+/** `<name ...>` tags of `markup` (case-insensitive name, then a word boundary, up to the first `>`). Linear. */
+export function findTags(markup: string, name: string): string[] {
+  const tags: string[] = [];
+  let from = 0;
+  for (let open = markup.indexOf('<', from); open !== -1; open = markup.indexOf('<', from)) {
+    from = open + 1;
+    if (markup.slice(open + 1, open + 1 + name.length).toLowerCase() !== name) {
+      continue;
+    }
+    if (/\w/.test(markup.charAt(open + 1 + name.length))) {
+      continue; // `<scripts>`, `<linkage>`: the name must end at a word boundary
+    }
+    const close = markup.indexOf('>', open);
+    if (close === -1) {
+      break; // no `>` anywhere after this point: no later tag can be closed either
+    }
+    tags.push(markup.slice(open, close + 1));
+    from = close + 1;
+  }
+  return tags;
+}
+
+/**
+ * `source` without its HTML comments (`<!-- ... -->` is not markup: `<!-- <script src=app.js integrity=...> -->`
+ * used to refuse the build). An unterminated `<!--` is left as it is. Linear: once no `-->` follows, none ever will.
+ */
+export function stripComments(source: string): string {
+  let out = '';
+  let at = 0;
+  for (let open = source.indexOf('<!--', at); open !== -1; open = source.indexOf('<!--', at)) {
+    const close = source.indexOf('-->', open + 4);
+    if (close === -1) {
+      break; // no `-->` anywhere after this point: no later comment can be closed either
+    }
+    out += source.slice(at, open);
+    at = close + 3;
+  }
+  return out + source.slice(at);
+}
 // `[\s"'<]` and not `\b`: `\bintegrity` also matches `data-integrity`, and `\bsrc` matches
 // `data-src` — attributes a framework uses for its own bookkeeping, which pin nothing.
 const INTEGRITY_ATTR = /[\s"'<]integrity\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/i;
@@ -102,7 +143,9 @@ const walkHtml = async (dir: string, depth = 0): Promise<string[]> => {
       if (NEVER_WALK.has(entry.name) || entry.name.startsWith('.')) {
         continue;
       }
-      found.push(...(await walkHtml(full, depth + 1)));
+      for (const page of await walkHtml(full, depth + 1)) {
+        found.push(page);
+      }
     } else if (entry.isFile() && /\.x?html?$/i.test(entry.name)) {
       found.push(full);
     }
@@ -117,6 +160,16 @@ const walkHtml = async (dir: string, depth = 0): Promise<string[]> => {
  * to report.
  */
 export async function findSriProtectedScripts(outDirInput: string): Promise<SriProtectedScript[]> {
+  return (await findSriProtectedScriptsDetailed(outDirInput)).scripts;
+}
+
+/** What {@link findSriProtectedScripts} found, and the pages it did not scan because they are larger than {@link MAX_HTML_BYTES}. */
+export interface SriScan {
+  scripts: SriProtectedScript[];
+  skippedPages: Array<{ html: string; size: number }>;
+}
+
+export async function findSriProtectedScriptsDetailed(outDirInput: string): Promise<SriScan> {
   // Resolved FIRST: a bundler hands us whatever the user configured, and Rollup passes `output.dir`
   // through verbatim (`'dist'`) while `output.file: 'bundle.js'` resolves to `'.'`. Comparing an
   // absolute resolved script path against a relative root made every `src="main.js"` look like it
@@ -125,18 +178,20 @@ export async function findSriProtectedScripts(outDirInput: string): Promise<SriP
   const pages = await walkHtml(outDir);
   const seen = new Set<string>();
   const found: SriProtectedScript[] = [];
+  const skippedPages: SriScan['skippedPages'] = [];
   for (const html of pages.sort()) {
-    let source: string;
-    try {
-      source = await readFile(html, 'utf8');
-    } catch {
+    const read = await readRegularFile(html, MAX_HTML_BYTES);
+    if (!read.ok) {
+      if (read.tooLarge !== undefined) {
+        skippedPages.push({ html, size: read.tooLarge.size });
+      }
       continue;
     }
     const htmlDir = join(html, '..');
-    const markup = source.replace(HTML_COMMENT, '');
+    const markup = stripComments(read.bytes.toString('utf8'));
     const tags = [
-      ...(markup.match(SCRIPT_TAG) ?? []).map((tag) => ({ tag, url: SRC_ATTR.exec(tag)?.[1] })),
-      ...(markup.match(PRELOAD_TAG) ?? [])
+      ...findTags(markup, 'script').map((tag) => ({ tag, url: SRC_ATTR.exec(tag)?.[1] })),
+      ...findTags(markup, 'link')
         .filter((tag) => PRELOADS_SCRIPT.test(tag))
         .map((tag) => ({ tag, url: HREF_ATTR.exec(tag)?.[1] })),
     ];
@@ -155,7 +210,7 @@ export async function findSriProtectedScripts(outDirInput: string): Promise<SriP
       found.push({ html, script, integrity: unquote(integrity).trim() });
     }
   }
-  return found;
+  return { scripts: found, skippedPages };
 }
 
 /** SRI's hash algorithms, weakest to strongest — the order the spec compares them in. */

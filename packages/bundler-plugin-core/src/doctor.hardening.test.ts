@@ -149,7 +149,7 @@ describe('reads', () => {
     expect(ids(report)).not.toContain('map.pointer-dangling');
   });
 
-  it('a FIFO or symlink named as a map inside the directory is map.unreadable, not opened', async () => {
+  it('a FIFO named as a map is map.unreadable, not opened; a symlink to a map inside the directory is read', async () => {
     put('a.js', `a\n//# sourceMappingURL=a.js.map${stamp(ID_A)}`);
     if (!mkfifo(join(dist, 'a.js.map'))) {
       return;
@@ -159,10 +159,11 @@ describe('reads', () => {
     symlinkSync(join(dist, 'real.map'), join(dist, 'link.map'));
     const report = await run();
     const unreadable = report.findings.filter((f) => f.id === 'map.unreadable');
-    expect(unreadable.map((f) => f.file).sort()).toEqual(['a.js.map', 'link.map']);
-    expect(unreadable.find((f) => f.file === 'a.js.map')?.message).toContain('not a regular file');
-    expect(unreadable.find((f) => f.file === 'link.map')?.message).toContain('symbolic link');
-    expect(unreadable.every((f) => f.severity === 'error')).toBe(true);
+    // the FIFO is refused; the symlink to a map INSIDE the directory is simply read
+    expect(unreadable.map((f) => f.file)).toEqual(['a.js.map']);
+    expect(unreadable[0]?.message).toContain('not a regular file');
+    expect(unreadable[0]?.severity).toBe('error');
+    expect(ids(report)).not.toContain('stamp.map-id-mismatch');
   });
 
   it('a map larger than the limit is judged by its size, before it is read (a sparse 3 GiB file)', async () => {
@@ -426,14 +427,14 @@ describe('symlinks never lead outside the output directory (round 3)', () => {
     expect((await walk(dist)).map((f) => f.slice(dist.length + 1))).toEqual(['a.js']);
   });
 
-  it('a symlinked bundle is reported, not silently invisible (no misleading output.no-js)', async () => {
+  it('a symlinked bundle that leads OUTSIDE is reported, not silently invisible (no misleading output.no-js)', async () => {
     const real = join(root, 'real.js');
     writeFileSync(real, `a${stamp(ID_A)}`);
     symlinkSync(real, join(dist, 'app.js'));
     const report = await run();
     expect(ids(report)).not.toContain('output.no-js');
     expect(find(report, 'output.unreadable')?.details).toEqual({
-      files: ['app.js is a symbolic link'],
+      files: ['app.js resolves outside the output directory'],
     });
     expect(report.summary.bundles).toBe(1);
   });
@@ -480,10 +481,16 @@ describe('SRI reads are as guarded as every other read (review thread)', () => {
     }
     put('index.html', page('app.js', sri('x')));
     const report = await run();
-    // the walk does not list a FIFO; the point is that the pin does not open it either
-    expect(ids(report)).toContain('output.no-js');
+    // a FIFO named like a script is listed and refused (never opened), and the pin does not open it either
+    expect(find(report, 'output.unreadable')?.details).toEqual({
+      files: ['app.js is not a regular file'],
+    });
+    expect(ids(report)).not.toContain('output.no-js');
     expect(ids(report)).not.toContain('sri.mismatch');
     expect(ids(report)).not.toContain('sri.unstamped-hazard');
+    expect(find(report, 'sri.pin-unreadable')?.details).toEqual({
+      scripts: ['app.js is not a regular file'],
+    });
   }, 10_000);
 
   it('a pinned symlink to /dev/zero is refused, never read', async () => {
@@ -491,7 +498,10 @@ describe('SRI reads are as guarded as every other read (review thread)', () => {
     put('index.html', page('zero.js', sri('x')));
     const report = await run();
     expect(find(report, 'output.unreadable')?.details).toEqual({
-      files: ['zero.js is a symbolic link'],
+      files: ['zero.js resolves outside the output directory'],
+    });
+    expect(find(report, 'sri.pin-unreadable')?.details).toEqual({
+      scripts: ['zero.js resolves outside the output directory'],
     });
     expect(ids(report)).not.toContain('sri.mismatch');
   }, 10_000);
@@ -512,5 +522,139 @@ describe('SRI reads are as guarded as every other read (review thread)', () => {
     put('index.html', page('app.js', sri('c')));
     const report = await run();
     expect(find(report, 'sri.mismatch')?.details).toEqual({ scripts: ['app.js'] });
+  });
+});
+
+describe('symlinks that stay inside the directory (round 4)', () => {
+  it('a pnpm-style symlinked bundle and map are read through their real path: no error, no double report', async () => {
+    put('.store/app.js', `c\n//# sourceMappingURL=app.js.map${stamp(ID_A)}`);
+    put('.store/app.js.map', mapJson({ debugId: ID_A }));
+    mkdirSync(join(dist, 'assets'));
+    symlinkSync(join(dist, '.store', 'app.js'), join(dist, 'assets', 'app.js'));
+    symlinkSync(join(dist, '.store', 'app.js.map'), join(dist, 'assets', 'app.js.map'));
+    const report = await run();
+    expect(report.summary.errors).toBe(0);
+    expect(ids(report)).not.toContain('output.unreadable');
+    expect(ids(report)).not.toContain('map.unreadable');
+    expect(ids(report)).not.toContain('stamp.duplicate-debug-id');
+  });
+
+  it('a symlink to a file inside whose map id differs is judged like the real file', async () => {
+    put('.store/app.js', `c${stamp(ID_A)}`);
+    put('.store/app.js.map', mapJson({ debugId: ID_B }));
+    symlinkSync(join(dist, '.store', 'app.js'), join(dist, 'app.js'));
+    symlinkSync(join(dist, '.store', 'app.js.map'), join(dist, 'app.js.map'));
+    const report = await run();
+    expect(ids(report)).toContain('stamp.map-id-mismatch');
+  });
+
+  it('a dangling or looping symlink is still reported, never read', async () => {
+    symlinkSync(join(dist, 'nowhere.js'), join(dist, 'dangling.js'));
+    symlinkSync(join(dist, 'loop-b.js'), join(dist, 'loop-a.js'));
+    symlinkSync(join(dist, 'loop-a.js'), join(dist, 'loop-b.js'));
+    put('ok.js', `a${stamp(ID_A)}`);
+    const report = await run();
+    const files = (find(report, 'output.unreadable')?.details?.files as string[]).sort();
+    expect(files).toEqual([
+      'dangling.js could not be resolved (ENOENT)',
+      'loop-a.js could not be resolved (ELOOP)',
+      'loop-b.js could not be resolved (ELOOP)',
+    ]);
+  });
+
+  it('a pinned script that is a symlink INSIDE the directory is read: a mismatch is not silently skipped', async () => {
+    put('.store/app.js', `c${stamp(ID_A)}`);
+    symlinkSync(join(dist, '.store', 'app.js'), join(dist, 'app.js'));
+    put('index.html', `<script src="app.js" integrity="sha384-AAAA"></script>`);
+    const report = await run();
+    expect(find(report, 'sri.mismatch')?.details).toEqual({ scripts: ['app.js'] });
+    expect(ids(report)).not.toContain('sri.pin-unreadable');
+  });
+
+  it('a map reached through two names is validated once', async () => {
+    put('real/x.map', 'not json');
+    symlinkSync(join(dist, 'real'), join(dist, 'alias'));
+    put('a.js', `a\n//# sourceMappingURL=real/x.map${stamp(ID_A)}`);
+    put('b.js', `b\n//# sourceMappingURL=alias/x.map${stamp(ID_B)}`);
+    const report = await run();
+    expect(report.findings.filter((f) => f.id === 'map.invalid')).toHaveLength(1);
+  });
+});
+
+describe('big outputs stay readable (round 4)', () => {
+  it('sources-content notes: a few are listed, many become ONE finding with counts', async () => {
+    for (let i = 0; i < 3; i++) {
+      put(`s${i}.js`, `a${stamp(`0000000${i}-1111-4111-8111-111111111111`)}`);
+      put(`s${i}.js.map`, mapJson({ debugId: `0000000${i}-1111-4111-8111-111111111111` }));
+    }
+    const few = await run();
+    expect(few.findings.filter((f) => f.id === 'map.sources-content')).toHaveLength(3);
+    // 10 notes (2 x the listing cap) are still listed one by one; the 11th folds them into one finding.
+    for (let i = 3; i < 10; i++) {
+      const id = `${i.toString(16).padStart(8, '0')}-1111-4111-8111-111111111111`;
+      put(`s${i}.js`, `a${stamp(id)}`);
+      put(`s${i}.js.map`, mapJson({ debugId: id }));
+    }
+    const ten = await run();
+    expect(ten.findings.filter((f) => f.id === 'map.sources-content')).toHaveLength(10);
+    for (let i = 10; i < 11; i++) {
+      const id = `${i.toString(16).padStart(8, '0')}-1111-4111-8111-111111111111`;
+      put(`s${i}.js`, `a${stamp(id)}`);
+      put(`s${i}.js.map`, mapJson({ debugId: id }));
+    }
+    expect((await run()).findings.filter((f) => f.id === 'map.sources-content')).toHaveLength(1);
+    for (let i = 11; i < 14; i++) {
+      const id = `${i.toString(16).padStart(8, '0')}-1111-4111-8111-111111111111`;
+      put(`s${i}.js`, `a${stamp(id)}`);
+      put(`s${i}.js.map`, mapJson({ debugId: id }));
+    }
+    const many = await run();
+    const notes = many.findings.filter((f) => f.id === 'map.sources-content');
+    expect(notes).toHaveLength(1);
+    expect(notes[0]?.details).toEqual({ maps: 14, embedded: 14, resolvableOnDisk: 0 });
+    expect(notes[0]?.file).toBeUndefined();
+  });
+
+  it('a list of exactly 100 is not capped and carries no total', async () => {
+    for (let i = 0; i < 100; i++) {
+      put(`e${i}.js`, `x${i}`);
+    }
+    const finding = find(await run(), 'stamp.missing-debug-id');
+    expect((finding?.details?.files as string[]).length).toBe(100);
+    expect(finding?.details).not.toHaveProperty('total');
+  });
+
+  it('long file lists in details are capped, with the total', async () => {
+    for (let i = 0; i < 130; i++) {
+      put(`v${i}.js`, `x${i}`);
+    }
+    const report = await run();
+    const finding = find(report, 'stamp.missing-debug-id');
+    expect((finding?.details?.files as string[]).length).toBe(100);
+    expect(finding?.details?.total).toBe(130);
+    put('w.js', 'x');
+    const exact = await run();
+    expect(find(exact, 'stamp.missing-debug-id')?.details?.total).toBe(131);
+  });
+
+  it('an oversized page is reported as sri.html-skipped, and the rest of the audit goes on', async () => {
+    put('a.js', `a${stamp(ID_A)}`);
+    const big = put('huge.html', '');
+    truncateSync(big, 8 * 1024 * 1024 + 1);
+    const report = await run();
+    expect(find(report, 'sri.html-skipped')).toMatchObject({
+      severity: 'warning',
+      details: { files: ['huge.html'] },
+    });
+    expect(report.summary.bundles).toBe(1);
+  });
+
+  it('a page of pathological unterminated tags does not stall the doctor', async () => {
+    put('a.js', `a${stamp(ID_A)}`);
+    put('index.html', '<script '.repeat(400_000 / 8));
+    const started = Date.now();
+    const report = await run();
+    expect(Date.now() - started).toBeLessThan(5_000);
+    expect(ids(report)).not.toContain('doctor.internal-error');
   });
 });

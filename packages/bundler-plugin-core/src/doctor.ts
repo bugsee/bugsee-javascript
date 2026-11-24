@@ -7,14 +7,15 @@
 import { createHash } from 'node:crypto';
 import type { Dirent } from 'node:fs';
 import { existsSync } from 'node:fs';
-import { lstat, readdir, readFile, realpath, stat } from 'node:fs/promises';
+import { readdir, realpath, stat } from 'node:fs/promises';
 import nodePath, { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { findAppIdentity } from './app-identity';
 import { readDebugId } from './debug-ids';
 import { loadBuildPluginEnv, mergeBuildPluginEnv } from './env-file';
 import type { EnvRecord } from './run-cli';
-import { findSriProtectedScripts, passesIntegrity } from './sri';
+import { type ReadResult, readRegularFile } from './safe-read';
+import { findSriProtectedScriptsDetailed, MAX_HTML_BYTES, passesIntegrity } from './sri';
 import { isProjectRootOrAbove, MAX_WALK_DEPTH, NEVER_WALK } from './stamp-files';
 import { lastSourceMappingUrl, localPointerTarget } from './verify-stamp';
 
@@ -107,6 +108,8 @@ export const DOCTOR_CHECK_IDS = [
   'map.public-leftover',
   'sri.unstamped-hazard',
   'sri.mismatch',
+  'sri.html-skipped',
+  'sri.pin-unreadable',
   'sri.manifest-hashes',
   'build.dev-bundle',
   'env.token-source',
@@ -161,10 +164,7 @@ export async function walk(root: string): Promise<string[]> {
         if (!skip) {
           pending.push({ dir: full, depth: next.depth + 1 });
         }
-      } else if (
-        (entry.isFile() || entry.isSymbolicLink()) &&
-        (BUNDLE.test(entry.name) || MAP.test(entry.name))
-      ) {
+      } else if (!entry.isDirectory() && (BUNDLE.test(entry.name) || MAP.test(entry.name))) {
         found.push(full);
       }
     }
@@ -238,35 +238,38 @@ export function sourcePath(
   return fromProject ? api.resolve(projectRoot, path) : api.resolve(mapDir, sourceRoot, path);
 }
 
-type ReadResult =
-  | { ok: true; bytes: Buffer }
-  | { ok: false; reason: string; tooLarge?: { size: number } };
+type InsideRead = { ok: true; bytes: Buffer; real: string } | Extract<ReadResult, { ok: false }>;
 
 /**
- * Read a REGULAR file of at most `limit` bytes. `lstat` first, so a FIFO, a device (`/dev/zero`) or a symlink
- * is never opened (callers pass only paths that cannot run through a symlinked directory: the walk does not
- * descend into one, and a pointer target is `realpath`-checked against the output directory first), and the size is judged before a single byte is read. A failure is a value, not a throw.
+ * Read `path` if, and only if, it is a regular file whose REAL path is inside `realRoot`. A symlink that resolves
+ * inside the directory (pnpm-style `assets/app.js -> ../.store/app.js`) is read through its real path; one that
+ * leads outside, dangles or loops is a value describing why, never a read. The open itself refuses a symlink,
+ * blocks on nothing and judges type and size on the descriptor (see safe-read.ts), so there is no
+ * check-then-use gap on the file.
  */
-async function readRegular(path: string, limit: number): Promise<ReadResult> {
+async function readInside(path: string, limit: number, realRoot: string): Promise<InsideRead> {
+  let real: string;
   try {
-    const info = await lstat(path);
-    if (!info.isFile()) {
-      return {
-        ok: false,
-        reason: info.isSymbolicLink() ? 'is a symbolic link' : 'is not a regular file',
-      };
-    }
-    if (info.size > limit) {
-      return { ok: false, reason: 'is too large to read', tooLarge: { size: info.size } };
-    }
-    return { ok: true, bytes: await readFile(path) };
+    real = await realpath(path);
   } catch (error) {
     return {
       ok: false,
-      reason: `could not be read (${(error as NodeJS.ErrnoException).code ?? 'error'})`,
+      reason: `could not be resolved (${(error as NodeJS.ErrnoException).code ?? 'error'})`,
     };
   }
+  if (!isInside(realRoot, real)) {
+    return { ok: false, reason: 'resolves outside the output directory' };
+  }
+  const read = await readRegularFile(real, limit);
+  return read.ok ? { ...read, real } : read;
 }
+
+/** Most entries a `details` list carries; `total` says how many there were. */
+const MAX_DETAIL = 100;
+const listDetails = (key: string, list: readonly unknown[]): Record<string, unknown> => ({
+  [key]: list.slice(0, MAX_DETAIL),
+  ...(list.length > MAX_DETAIL ? { total: list.length } : {}),
+});
 
 /** Whether `target` is `root` itself or inside it. */
 function isInside(root: string, target: string): boolean {
@@ -284,7 +287,11 @@ const sha = (bytes: Buffer): string => createHash('sha256').update(bytes).digest
  * (a page in the parent is not this build's to judge, and may be anything), through the bounded regular-file
  * reader, so a FIFO or a `/dev/zero` symlink named like a manifest is skipped, not opened.
  */
-async function manifestsWithIntegrity(dir: string, limit: number): Promise<string[]> {
+async function manifestsWithIntegrity(
+  dir: string,
+  limit: number,
+  realRoot: string,
+): Promise<string[]> {
   let names: string[];
   try {
     names = await readdir(dir);
@@ -296,7 +303,7 @@ async function manifestsWithIntegrity(dir: string, limit: number): Promise<strin
     if (!/manifest.*\.json$/i.test(name)) {
       continue;
     }
-    const read = await readRegular(join(dir, name), limit);
+    const read = await readInside(join(dir, name), limit, realRoot);
     if (
       read.ok &&
       /\bintegrity\b|["'](sha(256|384|512))-[A-Za-z0-9+/=]{20,}/i.test(read.bytes.toString('utf8'))
@@ -309,7 +316,7 @@ async function manifestsWithIntegrity(dir: string, limit: number): Promise<strin
 
 /**
  * Audit the build output in `dirInput`. Never throws for a problem with the directory (that is a finding);
- * never writes; reads maps and bundles in full, but only once each.
+ * never writes; reads each script and map once, bounded by size, through the guarded reader (a duplicate-ID candidate is read a second time to compare contents).
  */
 export async function diagnoseBuildOutput(
   dirInput: string,
@@ -380,7 +387,21 @@ async function diagnose(dirInput: string, options: DoctorOptions): Promise<Docto
   }
 
   const mapSet = new Set(maps);
-  const validated = new Set<string>();
+  // A map reached through two names (a symlinked directory, a case-variant pointer) is the same file: judged once.
+  const seenMaps = new Set<string>();
+  const markSeen = (real: string): boolean => {
+    if (seenMaps.has(real)) {
+      return false;
+    }
+    seenMaps.add(real);
+    return true;
+  };
+  const contentFacts: Array<{
+    file: string;
+    embeddedAll: boolean;
+    message: string;
+    details?: Record<string, unknown>;
+  }> = [];
   const claimedMaps = new Set<string>();
   const stampedIds = new Map<string, Array<{ file: string; path: string }>>();
   let stamped = 0;
@@ -395,11 +416,13 @@ async function diagnose(dirInput: string, options: DoctorOptions): Promise<Docto
   const unreadable: string[] = [];
 
   // Reads happen in bounded batches; analysis stays sequential so findings keep a deterministic order.
-  const reads = new Map<string, ReadResult>();
+  const reads = new Map<string, InsideRead>();
   const readBatch = async (batch: readonly string[]): Promise<void> => {
-    const results = await Promise.all(batch.map((path) => readRegular(path, maxBundleBytes)));
+    const results = await Promise.all(
+      batch.map((path) => readInside(path, maxBundleBytes, realDir)),
+    );
     batch.forEach((path, i) => {
-      reads.set(path, results[i] as ReadResult);
+      reads.set(path, results[i] as InsideRead);
     });
   };
 
@@ -410,7 +433,7 @@ async function diagnose(dirInput: string, options: DoctorOptions): Promise<Docto
     }
     const bundle = bundles[at] as string;
     const name = rel(dir, bundle);
-    const read = reads.get(bundle) as ReadResult;
+    const read = reads.get(bundle) as InsideRead;
     if (!read.ok) {
       unreadable.push(`${name} ${read.reason}`);
       continue;
@@ -478,20 +501,22 @@ async function diagnose(dirInput: string, options: DoctorOptions): Promise<Docto
     if (mapPath !== undefined) {
       claimedMaps.add(mapPath);
       const mapName = rel(dir, mapPath);
-      const mapRead = await readRegular(mapPath, maxMapBytes);
+      const mapRead = await readInside(mapPath, maxMapBytes, realDir);
       if (!mapRead.ok) {
         reportUnreadableMap(mapName, mapRead);
         continue;
       }
       const parsed = parseMap(mapRead.bytes.toString('utf8'));
       if (!parsed.ok) {
-        add({
-          id: 'map.invalid',
-          severity: 'error',
-          file: mapName,
-          message: `${mapName} is ${parsed.why}, so it cannot be uploaded or used to symbolicate.`,
-          fix: 'Check the build is not truncating or post-processing the map; rebuild.',
-        });
+        if (markSeen(mapRead.real)) {
+          add({
+            id: 'map.invalid',
+            severity: 'error',
+            file: mapName,
+            message: `${mapName} is ${parsed.why}, so it cannot be uploaded or used to symbolicate.`,
+            fix: 'Check the build is not truncating or post-processing the map; rebuild.',
+          });
+        }
         continue;
       }
       if (id !== undefined && parsed.debugId === undefined) {
@@ -524,7 +549,7 @@ async function diagnose(dirInput: string, options: DoctorOptions): Promise<Docto
         // Counted once as unstamped above; do not double report below.
         unstamped.delete(name);
       }
-      validateMap(mapPath, mapName, parsed.json);
+      validateMap(mapPath, mapName, parsed.json, mapRead.real);
     }
   }
 
@@ -532,22 +557,24 @@ async function diagnose(dirInput: string, options: DoctorOptions): Promise<Docto
   for (const map of maps) {
     if (!claimedMaps.has(map)) {
       const mapName = rel(dir, map);
-      const mapRead = await readRegular(map, maxMapBytes);
+      const mapRead = await readInside(map, maxMapBytes, realDir);
       if (!mapRead.ok) {
         reportUnreadableMap(mapName, mapRead);
         continue;
       }
       const parsed = parseMap(mapRead.bytes.toString('utf8'));
       if (!parsed.ok) {
-        add({
-          id: 'map.invalid',
-          severity: 'error',
-          file: mapName,
-          message: `${mapName} is ${parsed.why}.`,
-          fix: 'Check the build is not truncating or post-processing the map; rebuild.',
-        });
+        if (markSeen(mapRead.real)) {
+          add({
+            id: 'map.invalid',
+            severity: 'error',
+            file: mapName,
+            message: `${mapName} is ${parsed.why}.`,
+            fix: 'Check the build is not truncating or post-processing the map; rebuild.',
+          });
+        }
       } else {
-        validateMap(map, mapName, parsed.json);
+        validateMap(map, mapName, parsed.json, mapRead.real);
       }
     }
   }
@@ -573,11 +600,15 @@ async function diagnose(dirInput: string, options: DoctorOptions): Promise<Docto
     }
   }
 
-  function validateMap(mapPath: string, mapName: string, json: Record<string, unknown>): void {
-    if (validated.has(mapPath)) {
+  function validateMap(
+    mapPath: string,
+    mapName: string,
+    json: Record<string, unknown>,
+    real: string,
+  ): void {
+    if (!markSeen(real)) {
       return; // a map shared by several bundles is validated once
     }
-    validated.add(mapPath);
     if (json.version !== 3) {
       add({
         id: 'map.invalid',
@@ -602,10 +633,9 @@ async function diagnose(dirInput: string, options: DoctorOptions): Promise<Docto
     const content = Array.isArray(json.sourcesContent) ? (json.sourcesContent as unknown[]) : [];
     const missing = sources.filter((_, i) => typeof content[i] !== 'string').map(String);
     if (missing.length === 0) {
-      findings.push({
-        id: 'map.sources-content',
-        severity: 'info',
+      contentFacts.push({
         file: mapName,
+        embeddedAll: true,
         message: `${mapName} embeds sourcesContent for all ${sources.length} sources.`,
       });
       return;
@@ -626,10 +656,9 @@ async function diagnose(dirInput: string, options: DoctorOptions): Promise<Docto
         details: { unresolved: unresolved.length, total: sources.length },
       });
     } else {
-      findings.push({
-        id: 'map.sources-content',
-        severity: 'info',
+      contentFacts.push({
         file: mapName,
+        embeddedAll: false,
         message: `${mapName} does not embed sourcesContent for ${missing.length} sources, but they are resolvable on disk.`,
         details: { embedded: sources.length - missing.length, total: sources.length },
       });
@@ -637,6 +666,30 @@ async function diagnose(dirInput: string, options: DoctorOptions): Promise<Docto
   }
 
   // --- aggregate findings -------------------------------------------------------------------------
+  // One note per map is useful for a handful of maps and noise for thousands (a 20k-bundle build was 3.6 MB of JSON).
+  if (contentFacts.length <= MAX_LISTED * 2) {
+    for (const fact of contentFacts) {
+      findings.push({
+        id: 'map.sources-content',
+        severity: 'info',
+        file: fact.file,
+        message: fact.message,
+        ...(fact.details !== undefined ? { details: fact.details } : {}),
+      });
+    }
+  } else {
+    const embedded = contentFacts.filter((f) => f.embeddedAll).length;
+    findings.push({
+      id: 'map.sources-content',
+      severity: 'info',
+      message: `${contentFacts.length} maps carry no sourcesContent problem: ${embedded} embed it for all sources, ${contentFacts.length - embedded} do not but their sources are resolvable on disk.`,
+      details: {
+        maps: contentFacts.length,
+        embedded,
+        resolvableOnDisk: contentFacts.length - embedded,
+      },
+    });
+  }
   const withoutMap = new Set(unstampedWithoutMap);
   if (unreadable.length > 0) {
     add({
@@ -644,7 +697,7 @@ async function diagnose(dirInput: string, options: DoctorOptions): Promise<Docto
       severity: 'error',
       message: `${unreadable.length} script(s) could not be read (${unreadable.slice(0, MAX_LISTED).join('; ')}${unreadable.length > MAX_LISTED ? '; …' : ''}); they were not checked.`,
       fix: 'Make them regular files under the size limit, or exclude them from the output directory.',
-      details: { files: unreadable },
+      details: listDetails('files', unreadable),
     });
   }
   for (const name of unstamped) {
@@ -664,7 +717,7 @@ async function diagnose(dirInput: string, options: DoctorOptions): Promise<Docto
       severity: 'warning',
       message: `${unstampedWithoutMap.length} bundle(s) are not stamped and have no map on disk (${unstampedWithoutMap.slice(0, MAX_LISTED).join(', ')}${unstampedWithoutMap.length > MAX_LISTED ? ', …' : ''}); they will not symbolicate.`,
       fix: 'Emit source maps and stamp the build; ignore for vendor files you do not want symbolicated.',
-      details: { files: unstampedWithoutMap },
+      details: listDetails('files', unstampedWithoutMap),
     });
   }
   if (noRegistration.length > 0) {
@@ -673,7 +726,7 @@ async function diagnose(dirInput: string, options: DoctorOptions): Promise<Docto
       severity: 'error',
       message: `${noRegistration.length} bundle(s) have a debugId comment but no ${REGISTRATION} registration (${noRegistration.slice(0, MAX_LISTED).join(', ')}); the runtime cannot report the id with a crash.`,
       fix: 'Re-stamp with `bugsee-cli sourcemaps inject` (it appends the registration); a hand-added comment is not enough.',
-      details: { files: noRegistration },
+      details: listDetails('files', noRegistration),
     });
   }
   if (stamped > 0 && unstamped.size > 0) {
@@ -691,7 +744,7 @@ async function diagnose(dirInput: string, options: DoctorOptions): Promise<Docto
     }
     const hashes = new Set<string>();
     for (const entry of entries) {
-      const read = await readRegular(entry.path, maxBundleBytes);
+      const read = await readInside(entry.path, maxBundleBytes, realDir);
       hashes.add(read.ok ? sha(read.bytes) : `unreadable:${entry.path}`);
     }
     if (hashes.size > 1) {
@@ -713,7 +766,7 @@ async function diagnose(dirInput: string, options: DoctorOptions): Promise<Docto
       severity: removedOnPurpose ? 'info' : 'warning',
       message: `${dangling.length} bundle(s) point at a source map that is not on disk (${dangling.slice(0, MAX_LISTED).join(', ')}${dangling.length > MAX_LISTED ? ', …' : ''}); browsers request it and get a 404${removedOnPurpose ? ' (harmless for symbolication: the maps were removed and the bundles are stamped)' : ''}.`,
       fix: 'Emit hidden source maps (sourcemap: "hidden") so no pointer is written, or keep the maps until deploy.',
-      details: { pointers: dangling },
+      details: listDetails('pointers', dangling),
     });
   }
   if (outsideDir.length > 0) {
@@ -722,7 +775,7 @@ async function diagnose(dirInput: string, options: DoctorOptions): Promise<Docto
       severity: 'warning',
       message: `${outsideDir.length} bundle(s) point at a source map outside ${dir} (${outsideDir.slice(0, MAX_LISTED).join(', ')}${outsideDir.length > MAX_LISTED ? ', …' : ''}); it was not read and cannot be paired.`,
       fix: 'Emit the map inside the output directory, or check the sourceMappingURL.',
-      details: { pointers: outsideDir },
+      details: listDetails('pointers', outsideDir),
     });
   }
   if (hidden.length > 0) {
@@ -730,7 +783,7 @@ async function diagnose(dirInput: string, options: DoctorOptions): Promise<Docto
       id: 'map.hidden',
       severity: 'info',
       message: `${hidden.length} bundle(s) have a map but no sourceMappingURL comment (hidden maps): good for privacy.`,
-      details: { files: hidden },
+      details: listDetails('files', hidden),
     });
   }
   if (inline.size > 0) {
@@ -739,7 +792,7 @@ async function diagnose(dirInput: string, options: DoctorOptions): Promise<Docto
       severity: 'error',
       message: `${inline.size} bundle(s) carry an inline (data:) source map (${[...inline].slice(0, MAX_LISTED).join(', ')}); there is no .map file to upload and the map ships to every visitor.`,
       fix: 'Switch to external hidden maps (Vite `build.sourcemap: "hidden"`, webpack `devtool: "hidden-source-map"`, esbuild `sourcemap: "external"`).',
-      details: { files: [...inline] },
+      details: listDetails('files', [...inline]),
     });
   }
   if (devBundles.length > 0) {
@@ -748,7 +801,7 @@ async function diagnose(dirInput: string, options: DoctorOptions): Promise<Docto
       severity: 'warning',
       message: `${devBundles.length} bundle(s) look like a development build (webpack eval-style sourceURL markers: ${devBundles.slice(0, MAX_LISTED).join(', ')}); eval maps are not uploadable and bundles are unminified.`,
       fix: 'Build in production mode (mode: "production", NODE_ENV=production) before uploading.',
-      details: { files: devBundles },
+      details: listDetails('files', devBundles),
     });
   }
   if (maps.length > 0) {
@@ -762,21 +815,33 @@ async function diagnose(dirInput: string, options: DoctorOptions): Promise<Docto
   }
 
   // --- SRI ------------------------------------------------------------------------------------------
-  const pinned = await findSriProtectedScripts(dir);
+  const sriScan = await findSriProtectedScriptsDetailed(dir);
+  const pinned = sriScan.scripts;
+  if (sriScan.skippedPages.length > 0) {
+    const names = sriScan.skippedPages.map((page) => rel(dir, page.html));
+    add({
+      id: 'sri.html-skipped',
+      severity: 'warning',
+      message: `${names.length} page(s) are larger than ${MAX_HTML_BYTES / 1024 / 1024} MiB and were not scanned for integrity pins (${names.slice(0, MAX_LISTED).join(', ')}${names.length > MAX_LISTED ? ', …' : ''}); a script they pin would not be noticed.`,
+      fix: 'A real page is a few KB; check that this is not a data file named .html. Stamping is unaffected.',
+      details: listDetails('files', names),
+    });
+  }
   if (pinned.length > 0) {
     const unstampedPinned: typeof pinned = [];
     const mismatches: typeof pinned = [];
+    const pinsUnread: string[] = [];
     for (const p of pinned) {
-      // The same guards as every other read: not through a symlinked directory that leads out, and only a
-      // regular file of bounded size (a FIFO or `/dev/zero` is never opened). The bytes read here are also
-      // what the integrity check judges, so nothing is read twice.
-      const real = await realpath(p.script).catch(() => undefined);
-      if (real === undefined || !isInside(realDir, real)) {
-        continue;
-      }
-      const read = await readRegular(p.script, maxBundleBytes);
+      // The same guarded reader as every other read (symlinks resolved only if they stay inside the directory,
+      // regular files of bounded size only). The bytes read here are also what the integrity check judges.
+      const read = await readInside(p.script, maxBundleBytes, realDir);
       if (!read.ok) {
-        continue; // a pin to a file that is not there is stale, not something stamping would break
+        // A pin to a file that is not there is stale, not something stamping would break; anything else (it
+        // leads outside, is a FIFO, is too large) is a pin we could not judge, and that is said.
+        if (!read.reason.includes('(ENOENT)')) {
+          pinsUnread.push(`${rel(dir, p.script)} ${read.reason}`);
+        }
+        continue;
       }
       if (!passesIntegrity(p.integrity, read.bytes)) {
         mismatches.push(p);
@@ -784,6 +849,15 @@ async function diagnose(dirInput: string, options: DoctorOptions): Promise<Docto
       if (readDebugId(read.bytes.toString('utf8')) === undefined) {
         unstampedPinned.push(p);
       }
+    }
+    if (pinsUnread.length > 0) {
+      add({
+        id: 'sri.pin-unreadable',
+        severity: 'warning',
+        message: `${pinsUnread.length} script(s) pinned by an integrity hash could not be checked (${pinsUnread.slice(0, MAX_LISTED).join('; ')}${pinsUnread.length > MAX_LISTED ? '; …' : ''}).`,
+        fix: 'Make the pinned scripts regular files inside the output directory.',
+        details: listDetails('scripts', pinsUnread),
+      });
     }
     if (unstampedPinned.length > 0) {
       add({
@@ -807,7 +881,7 @@ async function diagnose(dirInput: string, options: DoctorOptions): Promise<Docto
       });
     }
   }
-  const manifests = await manifestsWithIntegrity(dir, maxMapBytes);
+  const manifests = await manifestsWithIntegrity(dir, maxMapBytes, realDir);
   if (manifests.length > 0) {
     const names = manifests.map((p) => rel(dir, p));
     add({
