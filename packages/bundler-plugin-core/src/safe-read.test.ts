@@ -1,15 +1,32 @@
+import { constants as bufferConstants } from 'node:buffer';
 import { spawnSync } from 'node:child_process';
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { readRegularFile } from './safe-read';
+import { READ_CEILING, readRegularFile } from './safe-read';
 
 let dir: string;
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'bugsee-safe-read-'));
 });
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+describe('readRegularFile ceiling (the largest string Node can build)', () => {
+  it('a limit above the ceiling is clamped to it: a bigger file is "too large", not a later decode failure', async () => {
+    writeFileSync(join(dir, 'a'), 'hello');
+    // an injected small ceiling stands in for buffer.constants.MAX_STRING_LENGTH (a 512 MiB file cannot be made here)
+    expect(await readRegularFile(join(dir, 'a'), Number.POSITIVE_INFINITY, 4)).toEqual({
+      ok: false,
+      reason: 'is too large to read',
+      tooLarge: { size: 5 },
+    });
+    expect((await readRegularFile(join(dir, 'a'), 1000, 5)).ok).toBe(true); // equal to the ceiling reads
+    expect((await readRegularFile(join(dir, 'a'), 4, 1000)).ok).toBe(false); // the caller's lower limit still applies
+    expect((await readRegularFile(join(dir, 'a'), Number.POSITIVE_INFINITY)).ok).toBe(true);
+    expect(READ_CEILING).toBe(bufferConstants.MAX_STRING_LENGTH); // the default really is the string limit
+  });
+});
 
 describe('readRegularFile', () => {
   it('reads a regular file, including an empty one', async () => {

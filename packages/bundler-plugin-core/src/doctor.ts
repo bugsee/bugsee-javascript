@@ -901,7 +901,7 @@ async function diagnose(dirInput: string, options: DoctorOptions): Promise<Docto
         severity: 'warning',
         file: mapName,
         message: `${mapName} is ${(read.tooLarge.size / 1024 / 1024).toFixed(1)} MiB (limit checked: ${(maxMapBytes / 1024 / 1024).toFixed(0)} MiB), so it was not read or validated; the upload may be slow or rejected.`,
-        fix: 'Split the bundle, strip sourcesContent (`stripSourcesContent`) or exclude vendor chunks; raise --max-map-mb to validate it.',
+        fix: 'Split the bundle, strip sourcesContent (`stripSourcesContent`) or exclude vendor chunks; raise --max-map-mb to validate it (the ceiling is about 512 MiB, the largest string Node can hold).',
         details: { bytes: read.tooLarge.size, limit: maxMapBytes },
       });
     } else {

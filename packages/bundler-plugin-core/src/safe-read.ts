@@ -4,6 +4,7 @@
 // device (`/dev/zero` never ends), a symlink out of the tree, or a file that is swapped between a check and the
 // read. So the file is OPENED first (without following a symlink in the last component, and without blocking on a
 // FIFO), and every judgement (regular file? how big?) is made on the open descriptor, not on the path.
+import { constants as bufferConstants } from 'node:buffer';
 import { constants } from 'node:fs';
 import { open } from 'node:fs/promises';
 
@@ -23,7 +24,16 @@ const OPEN_FLAGS = constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants
  * symbolic link"), never blocks on a FIFO, never reads a device, and never reads more than the size the open
  * descriptor reported. A failure is a value, not a throw.
  */
-export async function readRegularFile(path: string, limit: number): Promise<ReadResult> {
+/** The most bytes ever read: callers decode to a string, and V8 cannot build one longer than this (~512 MiB). */
+export const READ_CEILING: number = bufferConstants.MAX_STRING_LENGTH;
+
+export async function readRegularFile(
+  path: string,
+  limit: number,
+  /** The most bytes ever read: callers decode to a string, and V8 cannot build one longer than this. */
+  ceiling: number = READ_CEILING,
+): Promise<ReadResult> {
+  limit = Math.min(limit, ceiling);
   let handle: Awaited<ReturnType<typeof open>>;
   try {
     handle = await open(path, OPEN_FLAGS);
