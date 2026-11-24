@@ -238,3 +238,27 @@ describe('a page predicate skips pages before they are read', () => {
     expect(again.skippedPages).toEqual([]);
   });
 });
+
+describe('symlinked directories in the page walk', () => {
+  it('inside: followed once (loops and aliases too); outside: listed as unreadable; dangling and file links ignored', async () => {
+    const dir = await fixture();
+    const outside = await fixture();
+    const page = '<script src="a.js" integrity="sha384-x"></script>';
+    await writeFile(join(dir, 'index.html'), page);
+    await mkdir(join(dir, 'node_modules')); // never walked by name: only a link reaches pages in here
+    await mkdir(join(dir, 'node_modules', 'x'));
+    await writeFile(join(dir, 'node_modules', 'x', 'p.html'), page.replace('a.js', '../b.js'));
+    await symlink(join(dir, 'node_modules', 'x'), join(dir, 'viaLink'));
+    await symlink(join(dir, 'node_modules', 'x'), join(dir, 'viaLink2')); // an alias: walked once
+    await symlink(dir, join(dir, 'self')); // a loop back to the root
+    await writeFile(join(outside, 'o.html'), page);
+    await symlink(outside, join(dir, 'leaves'));
+    await symlink(join(outside, 'nowhere'), join(dir, 'dangling'));
+    await symlink(join(dir, 'index.html'), join(dir, 'filelink'));
+    const scan = await findSriProtectedScriptsDetailed(dir, MAX_HTML_BYTES, false);
+    expect(scan.unreadableDirs).toEqual([join(dir, 'leaves')]);
+    expect(scan.scripts.map((s) => s.html).sort()).toEqual(
+      [join(dir, 'index.html'), join(dir, 'viaLink', 'p.html')].sort(),
+    );
+  });
+});

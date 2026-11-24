@@ -525,7 +525,7 @@ describe('symlinks never lead outside the output directory (round 3)', () => {
     expect(find(report, 'stamp.map-id-mismatch')).toBeDefined();
   });
 
-  it('a symlinked directory is never descended into by the walk', async () => {
+  it('a symlinked directory that leaves the output directory is never descended into by the walk', async () => {
     const outside = join(root, 'outside');
     mkdirSync(outside);
     writeFileSync(join(outside, 'o.js'), 'x');
@@ -1549,5 +1549,89 @@ describe('boundedMemo', () => {
     });
     await Promise.all([memo('x'), memo('x'), memo('x')]);
     expect(runs).toBe(1);
+  });
+});
+
+describe('symlinked directories are followed inside the output directory, reported when they leave it (round 14)', () => {
+  const unstampedChunk = (dir: string): void => {
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'chunk.js'), 'unstamped');
+  };
+
+  it('a link to a directory INSIDE the output is walked: its scripts are audited (once), under the link name', async () => {
+    put('app.js', `a${stamp(ID_A)}`);
+    // the target lives where the plain walk never goes (node_modules), so only FOLLOWING the link can find it
+    unstampedChunk(join(dist, 'node_modules', 'real-legacy'));
+    symlinkSync(join(dist, 'node_modules', 'real-legacy'), join(dist, 'legacy'));
+    const report = await run();
+    expect(ids(report)).toContain('stamp.missing-debug-id');
+    expect(report.summary.bundles).toBe(2); // app.js and ONE chunk.js
+    expect(doctorExitCode(report, true)).toBeGreaterThanOrEqual(1);
+  });
+
+  it('a link to a directory OUTSIDE is output.dir-unreadable (exit 2), which --exclude can clear', async () => {
+    put('app.js', `a${stamp(ID_A)}`);
+    unstampedChunk(join(root, 'legacy-out'));
+    symlinkSync(join(root, 'legacy-out'), join(dist, 'legacy'));
+    const report = await run();
+    expect(find(report, 'output.dir-unreadable')).toMatchObject({
+      severity: 'error',
+      details: { directories: ['legacy'] },
+    });
+    expect(doctorExitCode(report, false)).toBe(2);
+    expect(ids(await run({ exclude: ['legacy/**'] }))).not.toContain('output.dir-unreadable');
+  });
+
+  it('a link that loops back to an ancestor (or to the root) is not walked twice and is not an error', async () => {
+    put('app.js', `a${stamp(ID_A)}`);
+    put('sub/x.js', `a${stamp(ID_B)}`);
+    symlinkSync(dist, join(dist, 'sub', 'up'));
+    symlinkSync('.', join(dist, 'self'));
+    const report = await run();
+    expect(report.summary.bundles).toBe(2);
+    expect(ids(report)).not.toContain('output.dir-unreadable');
+  });
+
+  it('a dangling link, and a link to a FILE, are ignored; node_modules and .git links are never followed', async () => {
+    put('app.js', `a${stamp(ID_A)}`);
+    symlinkSync(join(root, 'nowhere'), join(dist, 'dangling'));
+    symlinkSync(join(dist, 'app.js'), join(dist, 'filelink'));
+    unstampedChunk(join(root, 'ext'));
+    symlinkSync(join(root, 'ext'), join(dist, 'node_modules'));
+    symlinkSync(join(root, 'ext'), join(dist, '.git'));
+    const report = await run();
+    expect(ids(report)).not.toContain('output.dir-unreadable');
+    expect(report.summary.bundles).toBe(1);
+  });
+
+  it('pages under a followed link are scanned for SRI pins; under an outside link they are reported', async () => {
+    const sri = (bytes: string): string =>
+      `sha384-${createHash('sha384').update(bytes).digest('base64')}`;
+    put('app.js', `console.log(1);${stamp(ID_A)}`);
+    const page = `<script src="../app.js" integrity="${sri('older bytes')}"></script>`;
+    put('node_modules/x/p.html', page); // only reachable through the link
+    symlinkSync(join(dist, 'node_modules', 'x'), join(dist, 'pages'));
+    expect(ids(await run())).toContain('sri.mismatch');
+    mkdirSync(join(root, 'ext-pages'));
+    writeFileSync(join(root, 'ext-pages', 'p.html'), page);
+    symlinkSync(join(root, 'ext-pages'), join(dist, 'external'));
+    expect(find(await run(), 'output.dir-unreadable')?.details).toEqual({
+      directories: ['external'],
+    });
+  });
+
+  it('a followed link inside a fenced project directory still obeys the fence by name', async () => {
+    put('package.json', '{"name":"p"}');
+    put('app.js', `a${stamp(ID_A)}`);
+    unstampedChunk(join(dist, 'real'));
+    symlinkSync(join(dist, 'real'), join(dist, 'tests'));
+    const here = process.cwd();
+    process.chdir(dist);
+    try {
+      const report = await run();
+      expect(find(report, 'output.walk-fenced')?.details).toEqual({ directories: ['tests'] });
+    } finally {
+      process.chdir(here);
+    }
   });
 });

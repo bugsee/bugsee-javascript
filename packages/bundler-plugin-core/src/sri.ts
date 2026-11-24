@@ -16,7 +16,7 @@
 // every dynamic import.
 import { createHash } from 'node:crypto';
 import type { Dirent } from 'node:fs';
-import { readdir, readFile, realpath } from 'node:fs/promises';
+import { readdir, readFile, realpath, stat } from 'node:fs/promises';
 import { isAbsolute, join, normalize, resolve, sep } from 'node:path';
 import { readRegularFile } from './safe-read';
 
@@ -124,14 +124,23 @@ const resolveLocalScript = (outDir: string, htmlDir: string, src: string): strin
   return normalize(full).startsWith(rooted) ? full : undefined;
 };
 
+interface HtmlWalk {
+  fenced: boolean;
+  /** Symlinked pages found (read through their real path, see the scan). */
+  links: Set<string>;
+  unreadableDirs: string[];
+  realRoot: string;
+  /** Real directories already walked: a link to one is not walked twice (loops, aliases). */
+  visited: Set<string>;
+}
+
 const walkHtml = async (
   dir: string,
-  fenced: boolean,
-  links: Set<string>,
-  unreadableDirs: string[],
+  real: string,
+  walk: HtmlWalk,
   depth = 0,
 ): Promise<string[]> => {
-  if (fenced && depth > MAX_DEPTH) {
+  if (walk.fenced && depth > MAX_DEPTH) {
     return [];
   }
   let entries: Dirent[];
@@ -140,27 +149,52 @@ const walkHtml = async (
   } catch {
     // Handed back so the doctor can say the pages in it were NOT scanned (a missing output directory is the CLI's
     // error to raise: it reports it properly, and throwing here would replace that with a worse one).
-    unreadableDirs.push(dir);
+    walk.unreadableDirs.push(dir);
     return [];
   }
   const found: string[] = [];
   for (const entry of entries) {
     const full = join(dir, entry.name);
-    if (entry.isDirectory()) {
+    const pageName = /\.x?html?$/i.test(entry.name);
+    const link = entry.isSymbolicLink() && !pageName;
+    if (entry.isDirectory() || link) {
       // Unfenced (an output directory the doctor audits in full) still never enters node_modules or .git.
-      const skip = fenced
+      const skip = walk.fenced
         ? NEVER_WALK.has(entry.name) || entry.name.startsWith('.')
         : entry.name === 'node_modules' || entry.name === '.git';
       if (skip) {
         continue;
       }
-      for (const page of await walkHtml(full, fenced, links, unreadableDirs, depth + 1)) {
-        found.push(page);
+      let child = join(real, entry.name);
+      if (link) {
+        // Followed only if it is a directory that stays inside the output directory; one that leaves it is a
+        // directory whose pages were NOT scanned.
+        const target = await realpath(full).catch(() => undefined);
+        if (
+          target === undefined ||
+          !(await stat(target).then(
+            (info) => info.isDirectory(),
+            () => false,
+          ))
+        ) {
+          continue;
+        }
+        if (!(target === walk.realRoot || target.startsWith(walk.realRoot + sep))) {
+          walk.unreadableDirs.push(full);
+          continue;
+        }
+        child = target;
       }
-    } else if ((entry.isFile() || entry.isSymbolicLink()) && /\.x?html?$/i.test(entry.name)) {
+      if (!walk.visited.has(child)) {
+        walk.visited.add(child);
+        for (const page of await walkHtml(full, child, walk, depth + 1)) {
+          found.push(page);
+        }
+      }
+    } else if ((entry.isFile() || entry.isSymbolicLink()) && pageName) {
       found.push(full);
       if (entry.isSymbolicLink()) {
-        links.add(full);
+        walk.links.add(full);
       }
     }
   }
@@ -206,10 +240,16 @@ export async function findSriProtectedScriptsDetailed(
   // absolute resolved script path against a relative root made every `src="main.js"` look like it
   // was outside the output directory, so the guard was silently inert for exactly those builds.
   const outDir = resolve(outDirInput);
-  const links = new Set<string>();
-  const unreadableDirs: string[] = [];
-  const pages = await walkHtml(outDir, fenced, links, unreadableDirs);
   const realOutDir = await realpath(outDir).catch(() => outDir);
+  const walk: HtmlWalk = {
+    fenced,
+    links: new Set<string>(),
+    unreadableDirs: [],
+    realRoot: realOutDir,
+    visited: new Set<string>([realOutDir]),
+  };
+  const pages = await walkHtml(outDir, realOutDir, walk);
+  const { links, unreadableDirs } = walk;
   const seen = new Set<string>();
   const found: SriProtectedScript[] = [];
   const skippedPages: SriScan['skippedPages'] = [];

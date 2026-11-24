@@ -8,7 +8,7 @@ import { createHash } from 'node:crypto';
 import type { Dirent } from 'node:fs';
 import { existsSync } from 'node:fs';
 import { readdir, realpath, stat } from 'node:fs/promises';
-import nodePath, { dirname, join, relative, resolve } from 'node:path';
+import nodePath, { dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { findAppIdentity } from './app-identity';
 import { readDebugId } from './debug-ids';
@@ -180,7 +180,12 @@ export async function walkDetailed(
   const found: string[] = [];
   const skipped: string[] = [];
   const unreadable: string[] = [];
-  const pending: Array<{ dir: string; depth: number }> = [{ dir: root, depth: 0 }];
+  // Real directories already queued: a symlink to one (a loop, an alias) must not be walked, or counted, twice.
+  const realRoot = await realpath(root).catch(() => root);
+  const visited = new Set<string>([realRoot]);
+  const pending: Array<{ dir: string; depth: number; real: string }> = [
+    { dir: root, depth: 0, real: realRoot },
+  ];
   for (let next = pending.pop(); next !== undefined; next = pending.pop()) {
     if (fenced && next.depth > MAX_WALK_DEPTH) {
       skipped.push(rel(root, next.dir));
@@ -196,7 +201,8 @@ export async function walkDetailed(
     }
     for (const entry of entries) {
       const full = join(next.dir, entry.name);
-      if (entry.isDirectory()) {
+      const link = entry.isSymbolicLink() && !BUNDLE.test(entry.name) && !MAP.test(entry.name);
+      if (entry.isDirectory() || link) {
         if (entry.name === 'node_modules' || entry.name === '.git') {
           continue;
         }
@@ -204,7 +210,30 @@ export async function walkDetailed(
           skipped.push(rel(root, full));
           continue;
         }
-        pending.push({ dir: full, depth: next.depth + 1 });
+        let real = join(next.real, entry.name);
+        if (link) {
+          // A symlinked directory is followed only if it stays inside the output directory; one that leaves it is a
+          // directory whose scripts were NOT seen (a link to a file, or a dangling one, has nothing to audit).
+          const target = await realpath(full).catch(() => undefined);
+          if (
+            target === undefined ||
+            !(await stat(target).then(
+              (info) => info.isDirectory(),
+              () => false,
+            ))
+          ) {
+            continue;
+          }
+          if (!(target === realRoot || target.startsWith(realRoot + sep))) {
+            unreadable.push(rel(root, full));
+            continue;
+          }
+          real = target;
+        }
+        if (!visited.has(real)) {
+          visited.add(real);
+          pending.push({ dir: full, depth: next.depth + 1, real });
+        }
       } else if (BUNDLE.test(entry.name) || MAP.test(entry.name)) {
         found.push(full);
       }
@@ -1139,7 +1168,7 @@ async function diagnose(dirInput: string, options: DoctorOptions): Promise<Docto
     add({
       id: 'output.dir-unreadable',
       severity: 'error',
-      message: `${unreadableDirs.length} director${unreadableDirs.length === 1 ? 'y' : 'ies'} could not be listed, so nothing in ${unreadableDirs.length === 1 ? 'it was' : 'them was'} checked (${unreadableDirs.slice(0, MAX_LISTED).join(', ')}${unreadableDirs.length > MAX_LISTED ? ', …' : ''}).`,
+      message: `${unreadableDirs.length} director${unreadableDirs.length === 1 ? 'y' : 'ies'} could not be listed (unreadable, or a symlink that leaves the output directory), so nothing in ${unreadableDirs.length === 1 ? 'it was' : 'them was'} checked (${unreadableDirs.slice(0, MAX_LISTED).join(', ')}${unreadableDirs.length > MAX_LISTED ? ', …' : ''}).`,
       fix: 'Make the directories readable by the user running the doctor (a build run as root in a container, then checked as another user, is the usual cause) and run it again.',
       details: listDetails('directories', unreadableDirs),
     });
