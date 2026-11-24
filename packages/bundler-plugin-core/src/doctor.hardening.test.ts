@@ -972,3 +972,29 @@ describe('the SRI page walk follows the doctor fence (round 8)', () => {
     }
   });
 });
+
+describe('a pointer with a ?query (webpack / Rspack [name].js?[contenthash]) (round 9)', () => {
+  it('pairs the map the query-less path names, and does not call the pointer dangling', async () => {
+    put('main.js', `a\n//# sourceMappingURL=main.js.map?3872346a403b27a7${stamp(ID_A)}`);
+    put('main.js.map', mapJson({ debugId: ID_B })); // a different id: proves the map was PAIRED and read
+    const report = await run();
+    expect(ids(report)).not.toContain('map.pointer-dangling');
+    expect(ids(report)).toContain('stamp.map-id-mismatch');
+    expect(ids(report)).not.toContain('map.hidden');
+  });
+
+  it('a query on a pointer to a map that is not there is still dangling, reported as written', async () => {
+    put('main.js', `a\n//# sourceMappingURL=gone.js.map?abc${stamp(ID_A)}`);
+    expect(find(await run(), 'map.pointer-dangling')?.details).toEqual({
+      pointers: ['main.js -> gone.js.map?abc'],
+    });
+  });
+
+  it('an excluded map named with a query is neither read nor dangling', async () => {
+    put('main.js', `a\n//# sourceMappingURL=maps/main.js.map?x${stamp(ID_A)}`);
+    put('maps/main.js.map', mapJson({ debugId: ID_B }));
+    const report = await run({ exclude: ['maps/**'] });
+    expect(ids(report)).not.toContain('map.pointer-dangling');
+    expect(ids(report)).not.toContain('stamp.map-id-mismatch');
+  });
+});

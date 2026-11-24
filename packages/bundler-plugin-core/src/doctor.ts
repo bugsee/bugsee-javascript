@@ -16,7 +16,7 @@ import { loadBuildPluginEnv, mergeBuildPluginEnv } from './env-file';
 import type { EnvRecord } from './run-cli';
 import { type ReadResult, readRegularFile } from './safe-read';
 import { findSriProtectedScriptsDetailed, MAX_HTML_BYTES, passesIntegrity } from './sri';
-import { isProjectRootOrAbove, MAX_WALK_DEPTH, NEVER_WALK } from './stamp-files';
+import { cutAtQuery, isProjectRootOrAbove, MAX_WALK_DEPTH, NEVER_WALK } from './stamp-files';
 import { lastSourceMappingUrl, localPointerTarget } from './verify-stamp';
 
 /** Bumped on any incompatible change to `DoctorReport`; the Rust command emits the same number. */
@@ -579,7 +579,11 @@ async function diagnose(dirInput: string, options: DoctorOptions): Promise<Docto
       } else {
         // The pairing rule the stamp itself uses (verify-stamp.ts): a LOCAL pointer, resolved from the
         // bundle's directory; remote / root-absolute / malformed pointers pair nothing.
-        const target = localPointerTarget(bundle, code, nodePath);
+        const raw = localPointerTarget(bundle, code, nodePath);
+        // webpack / Rspack write `main.js?[hash]` to disk as `main.js` and keep the query in the pointer
+        // (`main.js.map?[hash]`): a server drops the query when it maps the URL to a file, so does the doctor
+        // (a file named with a `?` is not a `.map` file, so it could not have been paired anyway).
+        const target = raw === undefined ? undefined : cutAtQuery(raw);
         if (target !== undefined) {
           if (!isInside(dir, target)) {
             // Never read it: a pointer can name `/dev/zero`, a FIFO or someone else's file.
