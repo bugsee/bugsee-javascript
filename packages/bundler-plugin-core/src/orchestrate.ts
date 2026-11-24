@@ -423,17 +423,23 @@ export async function uploadSourcemaps(
       const { issues, restored, failed } = await verifyAndRestore(snapshot);
       // ENFORCE the claim the pinned-bundle exception rests on: inject leaves an already-stamped bundle's
       // bytes alone. If it did not, the pinned bytes changed: put them (and the map) back, and say so.
+      let pinnedFailure: Error | undefined;
       for (const pair of pinnedAndStamped) {
         if (!(await sameAsSnapshot(snapshot, pair.bundle))) {
           const undone = await restorePaths(snapshot, [pair.bundle, pair.map]);
-          reportContinuing(
-            new Error(
-              `bugsee-cli changed ${pair.bundle}, which Subresource Integrity pins and which was already stamped; its original bytes were restored` +
-                (undone.length > 0
-                  ? ` (could not restore: ${undone.map((u) => u.path).join(', ')})`
-                  : ''),
-            ),
+          const failure = new Error(
+            `bugsee-cli changed ${pair.bundle}, which Subresource Integrity pins and which was already stamped; its original bytes were restored` +
+              (undone.length > 0
+                ? ` (could not restore: ${undone.map((u) => u.path).join(', ')})`
+                : ''),
           );
+          if (undone.length > 0 && options.failOnError === true) {
+            // The pinned bytes are still changed: the browser would refuse the script. Strict, like any
+            // other file that could not be restored.
+            pinnedFailure ??= failure;
+          } else {
+            reportContinuing(failure);
+          }
         }
       }
       for (const error of pairErrors) {
@@ -448,10 +454,17 @@ export async function uploadSourcemaps(
         }
         reportContinuing(failure);
       }
-      return undefined;
+      return pinnedFailure;
     } finally {
-      // A failed spill removal is a diagnostic: it must not replace the (possibly strict) result being returned.
-      await snapshot.dispose().catch(reportContinuing);
+      // A failed spill removal is a diagnostic: it must not replace the (possibly strict) result being returned,
+      // not even through a reporter that throws while saying so.
+      await snapshot.dispose().catch((error: unknown) => {
+        try {
+          reportContinuing(error);
+        } catch {
+          // the handler threw: the result of the catch-up stands
+        }
+      });
     }
   };
 

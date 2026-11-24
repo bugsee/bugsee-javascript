@@ -312,10 +312,10 @@ id. (The hand-rolled SRI step pins only the entry chunks in `index.html`, never 
   is the map its ORIGINAL pointer named; a map is not restored when its bundle could not be (reported as incomplete).
 - **On-disk re-check.** A bundle the stamp named that cannot be read is reported. After webpack's RealContentHashPlugin
   renames `[contenthash]` assets, the re-check is given the FINAL script names from the compilation (the names the
-  stamp reported are stale). A changed map is also held to an unchanged, already-stamped bundle's id.
+  stamp reported are stale). A changed map is also held to an unchanged, already-stamped bundle's id, and a changed map that LOST its id beside such a bundle is an issue (valid JSON alone is not enough). A rewritten file that cannot be read for a reason other than `ENOENT` is reported as an incomplete verification (and restored), never treated as deleted; the restore writes through a unique, exclusively created temp file, so concurrent restores in one directory never share one.
 - **Catch-up.** Pairs are found by the sibling name AND by the own bundles' `sourceMappingURL` (a moved
   `maps/w.js.map`). The claim that inject leaves an already-stamped, SRI-pinned bundle alone is ENFORCED: if its bytes
-  changed they are restored (with its map) and reported. Two bundles claiming one map refuse the in-build stamp.
+  changed they are restored (with its map) and reported; under `failOnError` a pinned bundle that could NOT be restored is a strict failure (the browser would refuse it) and no map is uploaded. Two bundles claiming one map refuse the in-build stamp.
 - **Concurrent outputs.** A second output with its own `ownFiles` for the same directory waits for the in-flight
   upload and then runs itself, so its maps are not mistaken for foreign ones. Outputs announce their names at
   `generateBundle` (before any of them writes; a new build forgets outputs that never wrote), and each run leaves
@@ -341,7 +341,8 @@ already written and finished in this build (its names stay known to later output
 `deleteMaps: false` its maps left on disk are not uploaded a second time) (an unmapped output that comes LAST must not fail because its mapped
 sibling got there first). An output whose own map exists but is unkeyed still fails. **Only an output that will
 write is a sibling:** `bundle.generate()` (`isWrite === false`) is never announced, so a generate-only mapped output
-cannot make a later unmapped write pass silently. **Nested directories:** an output written into `dist/b` while
+cannot make a later unmapped write pass silently, and it is not stamped at all (it never reaches `writeBundle`, so no CLI is spawned and
+`failOnError` cannot fail a build that writes nothing). **Nested directories:** an output written into `dist/b` while
 another writes `dist` is a sibling of the parent run under its relative path (`b/x.js.map`), because the parent's
 directory walk covers it; the nested run never sees the parent's files. **Directory identity** uses the canonical
 on-disk spelling (`realpath.native`), so `dist` and `DIST` are one directory on a case-insensitive filesystem.
@@ -424,7 +425,8 @@ was uploaded and the upload was confirmed: an unkeyed or unreadable one is never
 merely saw is (a keyed map under `test/` or a dot-directory is uploaded AND deleted). The stylesheet and
 declaration maps are deleted only if something was uploaded. A map that cannot be read (anything but ENOENT) is
 not "gone": it is neither uploaded nor deleted and is reported with the unkeyed ones. A dry run still passes the directory (nothing was stamped; `--dry-run` only warns). Rspack development
-builds that are not uploaded (`uploadInDevelopment` unset) are no longer stamped either. Covered by real builds
+builds that are not uploaded (`uploadInDevelopment` unset) are no longer stamped either (webpack's `afterEmit` upload has no development gate, so its in-build stamp stays on in every mode). A map rewritten beside an unchanged, already-stamped
+bundle is held to that bundle's debug-ID (and restored if it differs) on the post-emit path. Covered by real builds
 (`plugin.in-build.real-build.test.ts`: Vite 7/8 with a `publicDir` vendor script, Rollup with a stale one, and `[name].map` custom map
 names on Rollup, Vite 7/8 and Rspack; real CLI, no dry run, `failOnError` on and off). Not run for real: webpack
 itself (Rspack shares its SourceMapDevToolPlugin filename path).

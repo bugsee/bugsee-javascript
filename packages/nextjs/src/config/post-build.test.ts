@@ -1,10 +1,13 @@
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import type { BuildFiles } from './build-files';
 import type { BugseeNextContext } from './context';
 import { runPostBuild } from './post-build';
+
+// Native absolute paths: `runPostBuild` resolves and joins with the host's path API (win32: `C:\\app\\.next`).
+const p = (path: string): string => resolve(path);
 
 const files = (name: string): BuildFiles => ({
   scripts: [`/d/${name}.js`],
@@ -32,11 +35,12 @@ function context(
   };
 }
 
-const metadata = { projectDir: '/app', distDir: '/app/.next' };
+const metadata = { projectDir: p('/app'), distDir: p('/app/.next') };
 
 function deps(map: Record<string, BuildFiles>, sri = false) {
   return {
-    upload: vi.fn(async () => undefined),
+    // the browser run registered the build (see `registerBuild` below)
+    upload: vi.fn(async () => ({ build: { registered: true } }) as never),
     collect: vi.fn(async (dir: string) => map[dir] ?? none),
     exists: vi.fn(async () => sri),
   };
@@ -53,7 +57,7 @@ describe('runPostBuild', () => {
   it('uploads the browser output, then the server output, each over its own explicit files', async () => {
     const client = files('client');
     const server = files('server');
-    const d = deps({ '/app/.next/static': client, '/app/.next/server': server });
+    const d = deps({ [p('/app/.next/static')]: client, [p('/app/.next/server')]: server });
     await runPostBuild(context(), metadata, d);
     expect(d.upload).toHaveBeenCalledTimes(2);
     type Call = [
@@ -62,10 +66,10 @@ describe('runPostBuild', () => {
       { files: BuildFiles; preStamped?: boolean; bundler: unknown },
     ];
     const [first, second] = (d.upload as ReturnType<typeof vi.fn>).mock.calls as [Call, Call];
-    expect(first[1]).toBe('/app/.next/static');
+    expect(first[1]).toBe(p('/app/.next/static'));
     expect(first[2].files).toBe(client);
     expect(first[0]).toMatchObject({ deleteMaps: true, registerBuild: 'release' });
-    expect(second[1]).toBe('/app/.next/server');
+    expect(second[1]).toBe(p('/app/.next/server'));
     expect(second[2].files).toBe(server);
     // Server output: the server deletion policy, and the build is registered once (by the browser run).
     expect(second[0]).toMatchObject({ deleteMaps: false, registerBuild: false });
@@ -74,14 +78,36 @@ describe('runPostBuild', () => {
     expect(first[2].bundler).toEqual({ isProduction: true, configuration: 'production' });
   });
 
+  it('keeps the registration for the server run when the browser run did NOT register the build', async () => {
+    for (const browserResult of [
+      { build: { registered: false, reason: 'failed' } },
+      { build: undefined },
+      undefined,
+    ]) {
+      const d = deps({
+        [p('/app/.next/static')]: files('client'),
+        [p('/app/.next/server')]: files('server'),
+      });
+      d.upload = vi.fn(async (_r: unknown, dir: string) =>
+        dir === p('/app/.next/static') ? browserResult : undefined,
+      ) as never;
+      await runPostBuild(context(), metadata, d);
+      const [, second] = (d.upload as ReturnType<typeof vi.fn>).mock.calls as [
+        [unknown],
+        [Record<string, unknown>],
+      ];
+      expect(second[0]).toMatchObject({ registerBuild: 'release' });
+    }
+  });
+
   it('resolves a relative distDir against the project directory', async () => {
-    const d = deps({ '/app/.next/static': files('c') });
-    await runPostBuild(context(), { projectDir: '/app', distDir: '.next' }, d);
-    expect(d.collect).toHaveBeenCalledWith('/app/.next/static');
+    const d = deps({ [p('/app/.next/static')]: files('c') });
+    await runPostBuild(context(), { projectDir: p('/app'), distDir: '.next' }, d);
+    expect(d.collect).toHaveBeenCalledWith(p('/app/.next/static'));
   });
 
   it('honours deleteServerMaps', async () => {
-    const d = deps({ '/app/.next/server': files('s') });
+    const d = deps({ [p('/app/.next/server')]: files('s') });
     await runPostBuild(context({}, { deleteServerMaps: true }), metadata, d);
     const [resolved] = (d.upload as ReturnType<typeof vi.fn>).mock.calls[0] as [
       Record<string, unknown>,
@@ -90,15 +116,15 @@ describe('runPostBuild', () => {
   });
 
   it('skips the server output entirely when server maps are off', async () => {
-    const d = deps({ '/app/.next/static': files('c'), '/app/.next/server': files('s') });
+    const d = deps({ [p('/app/.next/static')]: files('c'), [p('/app/.next/server')]: files('s') });
     await runPostBuild(context({}, { serverSourceMaps: false }), metadata, d);
-    expect(d.collect).not.toHaveBeenCalledWith('/app/.next/server');
+    expect(d.collect).not.toHaveBeenCalledWith(p('/app/.next/server'));
     expect(d.upload).toHaveBeenCalledTimes(1);
   });
 
   it('says so, and uploads nothing for the browser, when it emitted no maps', async () => {
     const ctx = context();
-    const d = deps({ '/app/.next/server': files('s') });
+    const d = deps({ [p('/app/.next/server')]: files('s') });
     await runPostBuild(ctx, metadata, d);
     expect(ctx.say).toHaveBeenCalledWith(expect.stringContaining('productionBrowserSourceMaps'));
     expect(d.upload).toHaveBeenCalledTimes(1);
@@ -107,8 +133,8 @@ describe('runPostBuild', () => {
   it('says how many bundles were left unstamped because they share a map', async () => {
     const ctx = context();
     const d = deps({
-      '/app/.next/static': { ...files('c'), shared: ['/d/x.js'] },
-      '/app/.next/server': { ...files('s'), shared: ['/d/y.js', '/d/z.js'] },
+      [p('/app/.next/static')]: { ...files('c'), shared: ['/d/x.js'] },
+      [p('/app/.next/server')]: { ...files('s'), shared: ['/d/y.js', '/d/z.js'] },
     });
     await runPostBuild(ctx, metadata, d);
     expect(ctx.say).toHaveBeenCalledWith(
@@ -119,23 +145,23 @@ describe('runPostBuild', () => {
 
   it('only says the browser emitted no maps when maps were expected', async () => {
     const off = context({}, { browserMaps: false });
-    await runPostBuild(off, metadata, deps({ '/app/.next/server': files('s') }));
+    await runPostBuild(off, metadata, deps({ [p('/app/.next/server')]: files('s') }));
     expect(off.say).not.toHaveBeenCalled();
     const expected = context({}, { browserMaps: true });
-    await runPostBuild(expected, metadata, deps({ '/app/.next/server': files('s') }));
+    await runPostBuild(expected, metadata, deps({ [p('/app/.next/server')]: files('s') }));
     expect(expected.say).toHaveBeenCalledWith(expect.stringContaining('emitted no source maps'));
   });
 
   it('says the shared map itself stays (and is public) when it is in .next/static', async () => {
     const ctx = context();
-    const d = deps({ '/app/.next/static': { ...files('c'), shared: ['/d/x.js'] } });
+    const d = deps({ [p('/app/.next/static')]: { ...files('c'), shared: ['/d/x.js'] } });
     await runPostBuild(ctx, metadata, d);
     expect(ctx.say).toHaveBeenCalledWith(expect.stringContaining('neither uploaded nor deleted'));
     expect(ctx.say).toHaveBeenCalledWith(expect.stringContaining('publicly served'));
   });
 
   it('registers the build from the server run when the browser had nothing to upload', async () => {
-    const d = deps({ '/app/.next/server': files('s') });
+    const d = deps({ [p('/app/.next/server')]: files('s') });
     await runPostBuild(context(), metadata, d);
     const [resolved] = (d.upload as ReturnType<typeof vi.fn>).mock.calls[0] as [
       Record<string, unknown>,
@@ -145,15 +171,20 @@ describe('runPostBuild', () => {
 
   it('stays quiet about shared maps when there are none', async () => {
     const ctx = context();
-    await runPostBuild(ctx, metadata, deps({ '/app/.next/static': files('c') }));
+    await runPostBuild(ctx, metadata, deps({ [p('/app/.next/static')]: files('c') }));
     expect(ctx.say).not.toHaveBeenCalled();
   });
 
   it('leaves an SRI build exactly as Next wrote it, and says why', async () => {
     const ctx = context();
-    const d = deps({ '/app/.next/static': files('c'), '/app/.next/server': files('s') }, true);
+    const d = deps(
+      { [p('/app/.next/static')]: files('c'), [p('/app/.next/server')]: files('s') },
+      true,
+    );
     await runPostBuild(ctx, metadata, d);
-    expect(d.exists).toHaveBeenCalledWith('/app/.next/server/subresource-integrity-manifest.json');
+    expect(d.exists).toHaveBeenCalledWith(
+      p('/app/.next/server/subresource-integrity-manifest.json'),
+    );
     expect(d.collect).not.toHaveBeenCalled();
     expect(d.upload).not.toHaveBeenCalled();
     expect(ctx.say).toHaveBeenCalledWith(expect.stringContaining('Subresource Integrity'));
@@ -161,7 +192,7 @@ describe('runPostBuild', () => {
 
   it('leaves the build alone, without looking at the disk, when the config says SRI', async () => {
     const ctx = context({}, { sri: true });
-    const d = deps({ '/app/.next/static': files('c') });
+    const d = deps({ [p('/app/.next/static')]: files('c') });
     await runPostBuild(ctx, metadata, d);
     expect(d.exists).not.toHaveBeenCalled();
     expect(d.upload).not.toHaveBeenCalled();
@@ -200,7 +231,10 @@ describe('runPostBuild: containment', () => {
 
   it('a failure in the upload is contained the same way', async () => {
     const onError = vi.fn();
-    const d = { ...deps({ '/app/.next/static': files('c') }), upload: vi.fn(async () => boom()) };
+    const d = {
+      ...deps({ [p('/app/.next/static')]: files('c') }),
+      upload: vi.fn(async () => boom()),
+    };
     await expect(runPostBuild(context({ onError }), metadata, d)).resolves.toBeUndefined();
     expect(onError).toHaveBeenCalledTimes(1);
   });
@@ -244,7 +278,7 @@ describe('runPostBuild: containment', () => {
       const remove = vi.fn(async (_path: string): Promise<void> => undefined);
       const d = {
         upload: vi.fn(upload) as never,
-        collect: vi.fn(async (dir: string) => (dir === '/app/.next/static' ? client : none)),
+        collect: vi.fn(async (dir: string) => (dir === p('/app/.next/static') ? client : none)),
         exists: vi.fn(async () => false),
         remove,
       };
@@ -277,7 +311,7 @@ describe('runPostBuild: containment', () => {
 
       const lenient = setup(async () => undefined, { onError: vi.fn() });
       lenient.d.collect = vi.fn(async (dir: string) => {
-        if (dir === '/app/.next/server') throw new Error('EACCES');
+        if (dir === p('/app/.next/server')) throw new Error('EACCES');
         return client;
       });
       await runPostBuild(lenient.ctx, metadata, lenient.d);
