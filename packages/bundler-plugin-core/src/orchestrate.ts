@@ -280,7 +280,6 @@ export async function uploadSourcemaps(
   const dryFlag = dryRun ? ['--dry-run'] : [];
   // `inject` refuses a hashed build unless told the hashes are re-written afterwards, which resealSri does.
   const resealing = options.resealSri === true;
-  const allowSriFlag = resealing ? ['--allow-sri'] : [];
   const cliOptions: RunBugseeCliOptions = { token: appToken, endpoint };
   const onError = options.onError ?? defaultUploadErrorHandler;
 
@@ -588,6 +587,10 @@ export async function uploadSourcemaps(
             sealDirs.filter((dir) => resolve(dir) !== resolve(outDir)),
           )) ||
           (await (options.hasServiceWorker ?? hasServiceWorkerManifest)(sealDirs)));
+      // `--allow-sri` switches off the CLI's own refusal of a hashed build, so it is passed only when the pins were
+      // found here and will be re-written. A pin this scanner cannot resolve (a scheme-less //host, a root-relative path
+      // under --base-href/--deploy-url) is then still caught by the CLI.
+      const allowSriFlag = resealing && (pinned.length > 0 || needsReseal) ? ['--allow-sri'] : [];
       const digests = needsReseal
         ? await (options.snapshotDigests ?? snapshotScriptDigests)([outDir])
         : undefined;

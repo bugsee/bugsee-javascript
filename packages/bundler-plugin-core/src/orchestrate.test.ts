@@ -992,6 +992,53 @@ describe('uploadSourcemaps with resealSri', () => {
     ]);
   });
 
+  // The CLI's own SRI refusal is the safety net for pins OUR scanner cannot resolve (a scheme-less //host, a root-relative
+  // path under --base-href/--deploy-url): --allow-sri is passed only when a re-seal will actually happen.
+  it('leaves the CLI refusal ON when resealSri is set but nothing pins a hash and no manifest exists', async () => {
+    const { run, calls } = fakeRun();
+    await uploadSourcemaps({
+      ...sealed({ findSri: async () => [], hasServiceWorker: async () => false }),
+      run,
+    });
+    expect(calls[0]?.args).toEqual(['sourcemaps', 'inject', '/build/dist']);
+  });
+
+  it('leaves it on for every batch of a file run too', async () => {
+    const { run, calls } = fakeRun();
+    await uploadSourcemaps({
+      ...sealed({
+        findSri: async () => [],
+        hasServiceWorker: async () => false,
+        files: { scripts: ['/build/dist/main.js'], maps: ['/build/dist/main.js.map'] },
+      }),
+      run,
+    });
+    expect(calls[0]?.args).not.toContain('--allow-sri');
+  });
+
+  it('passes it when only a service worker manifest needs the re-seal', async () => {
+    const { run, calls } = fakeRun();
+    await uploadSourcemaps({
+      ...sealed({ findSri: async () => [], hasServiceWorker: async () => true }),
+      run,
+    });
+    expect(calls[0]?.args).toContain('--allow-sri');
+  });
+
+  it('passes it when a server module holds a digest', async () => {
+    const { run, calls } = fakeRun();
+    await uploadSourcemaps({
+      ...sealed({
+        findSri: async () => [],
+        hasServiceWorker: async () => false,
+        resealDirs: ['/build/dist', '/build/server'],
+        hasDigestTokens: async () => true,
+      }),
+      run,
+    });
+    expect(calls[0]?.args).toContain('--allow-sri');
+  });
+
   it('adds no flag at all when resealSri is off (the refusal path is unchanged)', async () => {
     const { run, calls } = fakeRun();
     await uploadSourcemaps({
