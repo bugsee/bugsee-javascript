@@ -404,7 +404,7 @@ describe.skipIf(process.getuid?.() === 0)('an unreadable output directory', () =
     chmodSync(join(dist, 'vendor'), 0o000);
     chmodSync(join(dist, 'assets'), 0o000);
     try {
-      for (const pattern of ['vendor/**', 'vendor/', 'vendor', '**']) {
+      for (const pattern of ['vendor/**', 'vendor/', '**/vendor/**', '**']) {
         const report = await run({ exclude: [pattern] });
         const left = find(report, 'output.dir-unreadable')?.details?.directories;
         expect(left, pattern).toEqual(pattern === '**' ? undefined : ['assets']);
@@ -418,6 +418,11 @@ describe.skipIf(process.getuid?.() === 0)('an unreadable output directory', () =
             (f.details?.directories as string[] | undefined)?.includes('vendor'),
         ),
       ).toBe(true);
+      // a glob that would NOT hide the directory's files if it could be listed must not hide the directory either
+      for (const pattern of ['vendor', 'vendor*', 'vendor/*', '*', 'assets/*']) {
+        const kept = find(await run({ exclude: [pattern] }), 'output.dir-unreadable')?.details;
+        expect(kept, pattern).toEqual({ directories: ['assets', 'vendor'] });
+      }
       expect(find(await run({ exclude: ['nope/**'] }), 'output.dir-unreadable')?.details).toEqual({
         directories: ['assets', 'vendor'],
       });
@@ -738,6 +743,33 @@ describe('big outputs stay readable (round 4)', () => {
     });
     expect(report.summary.bundles).toBe(1);
   });
+
+  it('--exclude applies to HTML pages too: an oversized or unreadable excluded page is not reported, and its pattern is matched', async () => {
+    put('a.js', `a${stamp(ID_A)}`);
+    truncateSync(put('huge.html', ''), 8 * 1024 * 1024 + 1);
+    truncateSync(put('keep/huge2.html', ''), 8 * 1024 * 1024 + 1);
+    const report = await run({ exclude: ['huge.html'] });
+    expect(find(report, 'sri.html-skipped')?.details).toEqual({ files: ['keep/huge2.html'] });
+    expect(ids(report)).not.toContain('output.exclude-unmatched');
+    expect(ids(await run({ exclude: ['**/*.html'] }))).not.toContain('sri.html-skipped');
+  });
+
+  it.skipIf(process.getuid?.() === 0)(
+    'an unreadable excluded page is not reported either',
+    async () => {
+      put('a.js', `a${stamp(ID_A)}`);
+      const page = put('locked.html', '<p>');
+      chmodSync(page, 0o000);
+      try {
+        expect(ids(await run())).toContain('sri.html-skipped');
+        const report = await run({ exclude: ['locked.html'] });
+        expect(ids(report)).not.toContain('sri.html-skipped');
+        expect(ids(report)).not.toContain('output.exclude-unmatched');
+      } finally {
+        chmodSync(page, 0o600);
+      }
+    },
+  );
 
   it('a page of pathological unterminated tags does not stall the doctor', async () => {
     put('a.js', `a${stamp(ID_A)}`);

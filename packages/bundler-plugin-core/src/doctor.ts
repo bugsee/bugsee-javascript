@@ -1023,8 +1023,10 @@ async function diagnose(dirInput: string, options: DoctorOptions): Promise<Docto
   const allUnreadable = [
     ...new Set([...walked.unreadable, ...sriScan.unreadableDirs.map((d) => rel(dir, d) || '.')]),
   ].sort();
-  // `--exclude vendor/**` (or `vendor`, `vendor/`) names a directory too: probe the directory and its `dir/` form.
-  const excludedDirs = allUnreadable.filter((d) => isExcludedName(d) || isExcludedName(`${d}/`));
+  // `--exclude vendor/**` (or `vendor/`) names a directory too.
+  // Excluded only if a pattern would hide the files INSIDE (probed with a deep path, so `vendor/*` or `vendor*` do not
+  // hide a directory that, if it could be listed, would still be audited): never broader than for a readable one.
+  const excludedDirs = allUnreadable.filter((d) => isExcludedName(`${d}/a/b/c.js`));
   const unreadableDirs = allUnreadable.filter((d) => !excludedDirs.includes(d));
   if (excludedDirs.length > 0) {
     add({
@@ -1045,6 +1047,9 @@ async function diagnose(dirInput: string, options: DoctorOptions): Promise<Docto
     });
   }
   const pinned = sriScan.scripts.filter((pin) => !isExcluded(pin.script));
+  // Pages named by `--exclude` are not the build's to judge either (oversized or unreadable alike).
+  const skippedPages = sriScan.skippedPages.filter((page) => !isExcluded(page.html));
+  const unreadablePages = sriScan.unreadablePages.filter((page) => !isExcluded(page));
   const unmatched = excludeGlobs.filter((_, i) => !matchedPatterns.has(i));
   if (unmatched.length > 0) {
     add({
@@ -1054,8 +1059,8 @@ async function diagnose(dirInput: string, options: DoctorOptions): Promise<Docto
       details: { patterns: unmatched },
     });
   }
-  if (sriScan.skippedPages.length > 0) {
-    const names = sriScan.skippedPages.map((page) => rel(dir, page.html));
+  if (skippedPages.length > 0) {
+    const names = skippedPages.map((page) => rel(dir, page.html));
     add({
       id: 'sri.html-skipped',
       severity: 'warning',
@@ -1064,8 +1069,8 @@ async function diagnose(dirInput: string, options: DoctorOptions): Promise<Docto
       details: listDetails('files', names),
     });
   }
-  if (sriScan.unreadablePages.length > 0) {
-    const names = sriScan.unreadablePages.map((page) => rel(dir, page));
+  if (unreadablePages.length > 0) {
+    const names = unreadablePages.map((page) => rel(dir, page));
     add({
       id: 'sri.html-skipped',
       severity: 'warning',
