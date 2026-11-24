@@ -1446,6 +1446,16 @@ describe('round 13 review findings', () => {
     expect(hasOriginalPosition('AAAA$')).toBe(false); // a bad character spoils the whole segment, wherever it is
   });
 
+  it('hasOriginalPosition answers from the first usable segment without scanning (or splitting) the whole string', () => {
+    const big = `AAAA${',AAAA'.repeat(5_000_000)}`; // ~25 MB: splitting it into 5M strings takes hundreds of ms
+    const started = performance.now();
+    expect(hasOriginalPosition(big)).toBe(true);
+    expect(performance.now() - started).toBeLessThan(100);
+    // and the answer is the same when the usable segment is the last one
+    expect(hasOriginalPosition(`${';'.repeat(1000)}AAA,AAAA`)).toBe(true);
+    expect(hasOriginalPosition(`${'AAA;'.repeat(1000)}AAA`)).toBe(false);
+  });
+
   it('index maps: at least one leaf must carry an original position', async () => {
     const leaf = (mappings: string, line: number) => ({
       offset: { line, column: 0 },

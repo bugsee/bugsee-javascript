@@ -295,24 +295,27 @@ const BASE64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/
  * frame back to your code. A segment with a character outside the base64 alphabet is unusable and does not count.
  */
 export function hasOriginalPosition(mappings: string): boolean {
-  for (const segment of mappings.split(/[;,]/)) {
-    let values = 0;
-    let usable = true;
-    for (const ch of segment) {
-      const digit = BASE64.indexOf(ch);
-      if (digit < 0) {
-        usable = false;
-        break;
+  // One pass, no split: the first usable segment answers, so a healthy map costs a handful of characters.
+  let values = 0;
+  let usable = true;
+  for (let i = 0; i < mappings.length; i++) {
+    const ch = mappings.charAt(i);
+    if (ch === ',' || ch === ';') {
+      if (usable && values >= 4) {
+        return true;
       }
-      if ((digit & 32) === 0) {
-        values++; // no continuation bit: this digit ends a value
-      }
+      values = 0;
+      usable = true;
+      continue;
     }
-    if (usable && values >= 4) {
-      return true;
+    const digit = BASE64.indexOf(ch);
+    if (digit < 0) {
+      usable = false;
+    } else if ((digit & 32) === 0) {
+      values++; // no continuation bit: this digit ends a value
     }
   }
-  return false;
+  return usable && values >= 4;
 }
 
 /**
