@@ -145,6 +145,11 @@ const walkHtml = async (
   if (walk.fenced && depth > MAX_DEPTH) {
     return [];
   }
+  // Marked when WALKED (not when met): a real directory beyond the cap must not stop a shallower link to it.
+  if (walk.visited.has(real)) {
+    return [];
+  }
+  walk.visited.add(real);
   let entries: Dirent[];
   try {
     entries = await readdir(dir, { withFileTypes: true });
@@ -157,9 +162,22 @@ const walkHtml = async (
   const found: string[] = [];
   for (const entry of entries) {
     const full = join(dir, entry.name);
-    const pageName = /\.x?html?$/i.test(entry.name);
-    const link = entry.isSymbolicLink() && !pageName;
-    if (entry.isDirectory() || link) {
+    // What a symlink POINTS AT decides how it is treated (a link named `pages.html` may be a directory): the real
+    // path of the directory it names, or undefined for a link to a file or a dangling one.
+    let dirLink: string | undefined;
+    if (entry.isSymbolicLink()) {
+      const target = await realpath(full).catch(() => undefined);
+      const isDirectory =
+        target !== undefined &&
+        (await stat(target).then(
+          (info) => info.isDirectory(),
+          /* v8 ignore start -- the link vanished between realpath and stat: a race that cannot be reproduced deterministically */
+          () => false,
+          /* v8 ignore stop */
+        ));
+      dirLink = isDirectory ? target : undefined;
+    }
+    if (entry.isDirectory() || dirLink !== undefined) {
       // Unfenced (an output directory the doctor audits in full) still never enters node_modules or .git.
       const skip = walk.fenced
         ? NEVER_WALK.has(entry.name) || entry.name.startsWith('.')
@@ -167,36 +185,18 @@ const walkHtml = async (
       if (skip) {
         continue;
       }
-      const child = join(real, entry.name);
-      if (link) {
-        // Followed only if it is a directory that stays inside the output directory; one that leaves it is a
-        // directory whose pages were NOT scanned.
-        const target = await realpath(full).catch(() => undefined);
-        if (
-          target === undefined ||
-          !(await stat(target).then(
-            (info) => info.isDirectory(),
-            /* v8 ignore start -- the link vanished between realpath and stat: a race that cannot be reproduced deterministically */
-            () => false,
-            /* v8 ignore stop */
-          ))
-        ) {
-          continue;
-        }
-        if (!(target === walk.realRoot || target.startsWith(walk.realRoot + sep))) {
-          walk.unreadableDirs.push(full);
-          continue;
-        }
-        walk.deferred.push({ dir: full, real: target, depth: depth + 1 });
-        continue;
-      }
-      if (!walk.visited.has(child)) {
-        walk.visited.add(child);
-        for (const page of await walkHtml(full, child, walk, depth + 1)) {
+      if (dirLink === undefined) {
+        for (const page of await walkHtml(full, join(real, entry.name), walk, depth + 1)) {
           found.push(page);
         }
+      } else if (dirLink === walk.realRoot || dirLink.startsWith(walk.realRoot + sep)) {
+        // Followed only after every REAL directory was walked (real paths win over aliases).
+        walk.deferred.push({ dir: full, real: dirLink, depth: depth + 1 });
+      } else {
+        // A directory whose pages were NOT scanned: it leaves the output directory.
+        walk.unreadableDirs.push(full);
       }
-    } else if ((entry.isFile() || entry.isSymbolicLink()) && pageName) {
+    } else if (/\.x?html?$/i.test(entry.name) && (entry.isFile() || entry.isSymbolicLink())) {
       found.push(full);
       if (entry.isSymbolicLink()) {
         walk.links.add(full);
@@ -251,18 +251,15 @@ export async function findSriProtectedScriptsDetailed(
     links: new Set<string>(),
     unreadableDirs: [],
     realRoot: realOutDir,
-    visited: new Set<string>([realOutDir]),
+    visited: new Set<string>(),
     deferred: [],
   };
   const pages = await walkHtml(outDir, realOutDir, walk);
   // (`deferred` can grow while it is processed: a followed link's tree may hold more links.)
   for (let i = 0; i < walk.deferred.length; i++) {
     const link = walk.deferred[i] as HtmlWalk['deferred'][number];
-    if (!walk.visited.has(link.real)) {
-      walk.visited.add(link.real);
-      for (const page of await walkHtml(link.dir, link.real, walk, link.depth)) {
-        pages.push(page);
-      }
+    for (const page of await walkHtml(link.dir, link.real, walk, link.depth)) {
+      pages.push(page);
     }
   }
   const { links, unreadableDirs } = walk;

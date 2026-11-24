@@ -295,3 +295,33 @@ describe('depth is counted from the link, in the fenced walk', () => {
     expect(scan.scripts.map((s) => s.html)).toEqual([join(dir, 'l1', 'a', 'near.html')]);
   });
 });
+
+describe('round 16: links named like pages, and the fenced depth cap', () => {
+  it('a link named *.html that points to a DIRECTORY is walked as a directory; one to a file is a page', async () => {
+    const dir = await fixture();
+    await mkdir(join(dir, 'node_modules', 'pages'), { recursive: true });
+    await writeFile(
+      join(dir, 'node_modules', 'pages', 'index.html'),
+      '<script src="x.js" integrity="sha384-x"></script>',
+    );
+    await symlink(join(dir, 'node_modules', 'pages'), join(dir, 'pages.html'));
+    await writeFile(join(dir, 'real.html'), '<script src="y.js" integrity="sha384-y"></script>');
+    await symlink(join(dir, 'real.html'), join(dir, 'alias.html'));
+    const scan = await findSriProtectedScriptsDetailed(dir);
+    expect(scan.scripts.map((s) => s.html).sort()).toEqual(
+      // (alias.html and real.html carry the same pin: one entry, the first page in sorted order)
+      [join(dir, 'alias.html'), join(dir, 'pages.html', 'index.html')].sort(),
+    );
+    expect(scan.unreadablePages).toEqual([]);
+  });
+
+  it('fenced: a real directory over the depth cap does not mark it visited, so a shallower link still covers it', async () => {
+    const dir = await fixture();
+    const deep = join(dir, 'a', 'b', 'c', 'd', 'e', 'f', 'g');
+    await mkdir(deep, { recursive: true });
+    await writeFile(join(deep, 'p.html'), '<script src="x.js" integrity="sha384-x"></script>');
+    await symlink(deep, join(dir, 'shortcut'));
+    const scan = await findSriProtectedScriptsDetailed(dir); // fenced (default)
+    expect(scan.scripts.map((s) => s.html)).toEqual([join(dir, 'shortcut', 'p.html')]);
+  });
+});

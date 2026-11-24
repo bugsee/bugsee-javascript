@@ -33,6 +33,10 @@ export async function readRegularFile(
   /** The most bytes ever read: callers decode to a string, and V8 cannot build one longer than this. */
   ceiling: number = READ_CEILING,
 ): Promise<ReadResult> {
+  if (Number.isNaN(limit) || Number.isNaN(ceiling)) {
+    // `Math.min(NaN, x)` is NaN and `size > NaN` is false: a NaN limit would switch the size check off entirely.
+    return { ok: false, reason: 'has an invalid read limit' };
+  }
   limit = Math.min(limit, ceiling);
   let handle: Awaited<ReturnType<typeof open>>;
   try {

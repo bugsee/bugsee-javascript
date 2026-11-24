@@ -13,7 +13,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join, posix, win32 } from 'node:path';
+import { dirname, join, posix, relative, sep, win32 } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   batchEnd,
@@ -26,6 +26,7 @@ import {
   walk,
   walkDetailed,
 } from './doctor';
+import { READ_CEILING, readRegularFile } from './safe-read';
 import { listOutputMaps } from './stamp-files';
 
 const ID_A = '11111111-1111-4111-8111-111111111111';
@@ -532,7 +533,7 @@ describe('symlinks never lead outside the output directory (round 3)', () => {
     writeFileSync(join(outside, 'o.js'), 'x');
     symlinkSync(outside, join(dist, 'linkdir'));
     put('a.js', `a${stamp(ID_A)}`);
-    expect((await walk(dist)).map((f) => f.slice(dist.length + 1))).toEqual(['a.js']);
+    expect(relFiles(await walk(dist))).toEqual(['a.js']);
   });
 
   it('a symlinked bundle that leads OUTSIDE is reported, not silently invisible (no misleading output.no-js)', async () => {
@@ -1645,13 +1646,17 @@ describe('symlinked directories are followed inside the output directory, report
   });
 });
 
+// paths relative to the output directory, always with `/` (a Windows host returns backslashes)
+const relFiles = (files: string[]): string[] =>
+  files.map((f) => relative(dist, f).split(sep).join('/'));
+
 describe('a REAL directory always wins over a link to it, whatever the names sort like (round 15)', () => {
   for (const linkName of ['latest', 'zlatest']) {
     it(`link "${linkName}" -> v2: files are walked, reported and excludable under the REAL path v2/`, async () => {
       put('v2/chunk.js', 'unstamped');
       put('app.js', `a${stamp(ID_A)}`);
       symlinkSync(join(dist, 'v2'), join(dist, linkName));
-      const files = (await walk(dist)).map((f) => f.slice(dist.length + 1));
+      const files = relFiles(await walk(dist));
       expect(files).toEqual(['app.js', 'v2/chunk.js']);
       const report = await run();
       expect(report.summary.bundles).toBe(2);
@@ -1665,7 +1670,7 @@ describe('a REAL directory always wins over a link to it, whatever the names sor
     put('a/b/c/chunk.js', 'unstamped'); // real, deep
     symlinkSync(join(dist, 'a', 'b', 'c'), join(dist, '0first')); // sorts before "a", the real parent
     symlinkSync(join(dist, 'a', 'b', 'c'), join(dist, 'zlast')); // and one that sorts after
-    const files = (await walk(dist)).map((f) => f.slice(dist.length + 1));
+    const files = relFiles(await walk(dist));
     expect(files).toEqual(['a/b/c/chunk.js']);
   });
 
@@ -1673,6 +1678,134 @@ describe('a REAL directory always wins over a link to it, whatever the names sor
     put('node_modules/real/chunk.js', 'unstamped');
     symlinkSync(join(dist, 'node_modules', 'real'), join(dist, 'a-link'));
     symlinkSync(join(dist, 'node_modules', 'real'), join(dist, 'b-link'));
-    expect((await walk(dist)).map((f) => f.slice(dist.length + 1))).toEqual(['a-link/chunk.js']);
+    expect(relFiles(await walk(dist))).toEqual(['a-link/chunk.js']);
+  });
+});
+
+describe('round 16 review findings', () => {
+  const unstampedChunk = (dir: string): void => {
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'chunk.js'), 'unstamped');
+  };
+
+  it('a link NAMED like a script that points to a directory is followed as a directory', async () => {
+    put('app.js', `a${stamp(ID_A)}`);
+    unstampedChunk(join(dist, 'node_modules', 'assets'));
+    symlinkSync(join(dist, 'node_modules', 'assets'), join(dist, 'assets.js'));
+    symlinkSync(join(dist, 'node_modules', 'assets'), join(dist, 'assets.map'));
+    const report = await run();
+    expect(ids(report)).toContain('stamp.missing-debug-id'); // the chunk inside was audited
+    expect(ids(report)).not.toContain('output.unreadable'); // and assets.js was not read as a bundle
+    expect(report.summary.bundles).toBe(2);
+    expect(relFiles(await walk(dist))).toEqual(['app.js', 'assets.js/chunk.js']);
+  });
+
+  it('a script link to a regular file is still a bundle; a dangling one is still reported', async () => {
+    put('real.js', `a${stamp(ID_A)}`);
+    symlinkSync(join(dist, 'real.js'), join(dist, 'alias.js'));
+    symlinkSync(join(root, 'nowhere.js'), join(dist, 'dangling.js'));
+    const report = await run();
+    expect(find(report, 'output.unreadable')?.details).toEqual({
+      files: ['dangling.js could not be resolved (ENOENT)'],
+    });
+  });
+
+  it('fenced: a real directory beyond the depth cap does not stop a SHALLOWER link to it from being audited', async () => {
+    put('package.json', '{"name":"p"}');
+    put('app.js', `a${stamp(ID_A)}`);
+    unstampedChunk(join(dist, 'a', 'b', 'c', 'd', 'e', 'f', 'g')); // depth 7: over the cap
+    symlinkSync(join(dist, 'a', 'b', 'c', 'd', 'e', 'f', 'g'), join(dist, 'shortcut'));
+    const here = process.cwd();
+    process.chdir(dist);
+    try {
+      const report = await run();
+      expect(ids(report)).toContain('stamp.missing-debug-id');
+      expect(relFiles(await walk(dist))).toEqual(['app.js', 'shortcut/chunk.js']);
+      expect(find(report, 'output.walk-fenced')?.details).toEqual({
+        directories: ['a/b/c/d/e/f/g'],
+      });
+    } finally {
+      process.chdir(here);
+    }
+  });
+
+  it('a directory exclude is not satisfied by a pattern that only matches the probe directory names', async () => {
+    put('a.js', `a${stamp(ID_A)}`);
+    put('vendor/app.js', 'x');
+    chmodSync(join(dist, 'vendor'), 0o000);
+    try {
+      for (const pattern of ['vendor/zz-probe-1/**', 'vendor/zz-1/**', 'vendor/zz-2/zz-3/**']) {
+        const kept = find(await run({ exclude: [pattern] }), 'output.dir-unreadable')?.details;
+        expect(kept, pattern).toEqual({ directories: ['vendor'] });
+      }
+      expect(ids(await run({ exclude: ['vendor/**'] }))).not.toContain('output.dir-unreadable');
+    } finally {
+      chmodSync(join(dist, 'vendor'), 0o700);
+    }
+  });
+
+  it('a mapping whose source index is outside the leaf sources has no original position', async () => {
+    const pairMap = (mappings: string, sources: string[] = ['a.ts']): void => {
+      put('a.js', `a\n//# sourceMappingURL=a.js.map${stamp(ID_A)}`);
+      put(
+        'a.js.map',
+        mapJson({ debugId: ID_A, mappings, sources, sourcesContent: sources.map(() => 'x') }),
+      );
+    };
+    pairMap('ACAA'); // source index 1 of 1: out of range
+    expect(find(await run(), 'map.invalid')?.message).toContain('original');
+    pairMap('AAAA');
+    expect(ids(await run())).not.toContain('map.invalid');
+    pairMap('ACAA', ['a.ts', 'b.ts']); // index 1 of 2
+    expect(ids(await run())).not.toContain('map.invalid');
+    pairMap('ADAA'); // index -1
+    expect(ids(await run())).toContain('map.invalid');
+    pairMap('AAAA,ACAA'); // the SECOND segment is out of range, the first is fine
+    expect(ids(await run())).not.toContain('map.invalid');
+  });
+
+  it('hasOriginalPosition decodes the cumulative source index (deltas) across segments', () => {
+    expect(hasOriginalPosition('ACAA', 1)).toBe(false);
+    expect(hasOriginalPosition('ACAA', 2)).toBe(true);
+    expect(hasOriginalPosition('ACAA')).toBe(true); // no count given: any index
+    expect(hasOriginalPosition('ADAA', 5)).toBe(false); // -1
+    expect(hasOriginalPosition('AAAA,ADAA,AEAA', 2)).toBe(true); // first segment already fine
+    expect(hasOriginalPosition('AEAA', 2)).toBe(false); // +2: index 2 of 2
+    expect(hasOriginalPosition('AEAA', 3)).toBe(true);
+    expect(hasOriginalPosition('AEAA;AFAA', 2)).toBe(true); // +2 then -2: the second segment lands on index 0
+    // an unusable segment (bad character) does not move the running source index
+    expect(hasOriginalPosition('AEA$,AAAA', 2)).toBe(true);
+    // continuation digits: 'gB' is 16, so the source delta below is 16
+    expect(hasOriginalPosition('AgBAA', 17)).toBe(true);
+    expect(hasOriginalPosition('AgBAA', 16)).toBe(false);
+  });
+
+  it('map.too-large reports the limit that was ACTUALLY applied (never above the read ceiling)', async () => {
+    put('a.js', `a\n//# sourceMappingURL=a.js.map${stamp(ID_A)}`);
+    truncateSync(put('a.js.map', ''), READ_CEILING + 1024 * 1024);
+    const report = await run({ maxMapBytes: 2 ** 40 });
+    const finding = find(report, 'map.too-large');
+    expect(finding?.details).toMatchObject({ limit: READ_CEILING });
+    expect(finding?.message).toContain('most Node can hold');
+    const low = find(await run({ maxMapBytes: 1 }), 'map.too-large');
+    expect(low?.details).toMatchObject({ limit: 1 });
+  });
+
+  it('a NaN read limit never disables the ceiling: the reader refuses it, the doctor uses its default', async () => {
+    put('a.js', `a\n//# sourceMappingURL=a.js.map${stamp(ID_A)}`);
+    put('a.js.map', mapJson({ debugId: ID_A }));
+    const file = join(dist, 'a.js.map');
+    expect(await readRegularFile(file, Number.NaN)).toEqual({
+      ok: false,
+      reason: 'has an invalid read limit',
+    });
+    expect(await readRegularFile(file, 100, Number.NaN)).toEqual({
+      ok: false,
+      reason: 'has an invalid read limit',
+    });
+    const report = await run({ maxMapBytes: Number.NaN, maxBundleBytes: Number.NaN });
+    expect(ids(report)).not.toContain('map.too-large');
+    expect(ids(report)).not.toContain('map.unreadable');
+    expect(report.summary).toMatchObject({ bundles: 1, maps: 1, errors: 0 });
   });
 });

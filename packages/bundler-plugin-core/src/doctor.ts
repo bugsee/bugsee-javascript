@@ -14,7 +14,7 @@ import { findAppIdentity } from './app-identity';
 import { readDebugId } from './debug-ids';
 import { loadBuildPluginEnv, mergeBuildPluginEnv } from './env-file';
 import type { EnvRecord } from './run-cli';
-import { type ReadResult, readRegularFile } from './safe-read';
+import { READ_CEILING, type ReadResult, readRegularFile } from './safe-read';
 import { findSriProtectedScriptsDetailed, MAX_HTML_BYTES, passesIntegrity } from './sri';
 import { cutAtQuery, isProjectRootOrAbove, MAX_WALK_DEPTH, NEVER_WALK } from './stamp-files';
 import { lastSourceMappingUrl, localPointerTarget } from './verify-stamp';
@@ -180,9 +180,10 @@ export async function walkDetailed(
   const found: string[] = [];
   const skipped: string[] = [];
   const unreadable: string[] = [];
-  // Real directories already queued: a symlink to one (a loop, an alias) must not be walked, or counted, twice.
+  // Real directories already WALKED (not merely met: one beyond the depth cap is not walked, and a shallower link to it
+  // must still get its turn): a loop or an alias is never walked, or counted, twice.
   const realRoot = await realpath(root).catch(() => root);
-  const visited = new Set<string>([realRoot]);
+  const visited = new Set<string>();
   type Queued = { dir: string; depth: number; real: string };
   const pending: Queued[] = [{ dir: root, depth: 0, real: realRoot }];
   // Links to directories inside the output are followed only AFTER every real directory has been walked, so a real
@@ -199,6 +200,10 @@ export async function walkDetailed(
       skipped.push(rel(root, next.dir));
       return;
     }
+    if (visited.has(next.real)) {
+      return;
+    }
+    visited.add(next.real);
     let entries: Dirent[];
     try {
       entries = await readdir(next.dir, { withFileTypes: true });
@@ -209,8 +214,23 @@ export async function walkDetailed(
     }
     for (const entry of entries) {
       const full = join(next.dir, entry.name);
-      const link = entry.isSymbolicLink() && !BUNDLE.test(entry.name) && !MAP.test(entry.name);
-      if (entry.isDirectory() || link) {
+      // What a symlink POINTS AT decides how it is treated (a link named `assets.js` may be a directory): the real
+      // path of the directory it names, or undefined for a link to a file or a dangling one (those named like a
+      // script or map are listed below and judged by the guarded read).
+      let dirLink: string | undefined;
+      if (entry.isSymbolicLink()) {
+        const target = await realpath(full).catch(() => undefined);
+        const isDirectory =
+          target !== undefined &&
+          (await stat(target).then(
+            (info) => info.isDirectory(),
+            /* v8 ignore start -- the link vanished between realpath and stat: a race that cannot be reproduced deterministically */
+            () => false,
+            /* v8 ignore stop */
+          ));
+        dirLink = isDirectory ? target : undefined;
+      }
+      if (entry.isDirectory() || dirLink !== undefined) {
         if (entry.name === 'node_modules' || entry.name === '.git') {
           continue;
         }
@@ -218,30 +238,13 @@ export async function walkDetailed(
           skipped.push(rel(root, full));
           continue;
         }
-        const real = join(next.real, entry.name);
-        if (link) {
-          // A symlinked directory is followed only if it stays inside the output directory; one that leaves it is a
-          // directory whose scripts were NOT seen (a link to a file, or a dangling one, has nothing to audit).
-          const target = await realpath(full).catch(() => undefined);
-          if (
-            target === undefined ||
-            !(await stat(target).then(
-              (info) => info.isDirectory(),
-              /* v8 ignore start -- the link vanished between realpath and stat: a race that cannot be reproduced deterministically */
-              () => false,
-              /* v8 ignore stop */
-            ))
-          ) {
-            continue;
-          }
-          if (!(target === realRoot || target.startsWith(realRoot + sep))) {
-            unreadable.push(rel(root, full));
-            continue;
-          }
-          deferred.push({ dir: full, depth: next.depth + 1, real: target });
-        } else if (!visited.has(real)) {
-          visited.add(real);
-          pending.push({ dir: full, depth: next.depth + 1, real });
+        if (dirLink === undefined) {
+          pending.push({ dir: full, depth: next.depth + 1, real: join(next.real, entry.name) });
+        } else if (dirLink === realRoot || dirLink.startsWith(realRoot + sep)) {
+          deferred.push({ dir: full, depth: next.depth + 1, real: dirLink });
+        } else {
+          // A directory whose scripts were NOT seen: it leaves the output directory.
+          unreadable.push(rel(root, full));
         }
       } else if (BUNDLE.test(entry.name) || MAP.test(entry.name)) {
         found.push(full);
@@ -251,12 +254,8 @@ export async function walkDetailed(
   await drain();
   // (`deferred` can grow while it is processed: a followed link's tree may hold more links.)
   for (let i = 0; i < deferred.length; i++) {
-    const link = deferred[i] as Queued;
-    if (!visited.has(link.real)) {
-      visited.add(link.real);
-      pending.push(link);
-      await drain();
-    }
+    pending.push(deferred[i] as Queued);
+    await drain();
   }
   return { files: found.sort(), skipped: skipped.sort(), fenced, unreadable: unreadable.sort() };
 }
@@ -309,7 +308,8 @@ export function mapSources(json: Record<string, unknown>): {
       const own = map.sources as unknown[];
       const embedded = Array.isArray(map.sourcesContent) ? (map.sourcesContent as unknown[]) : [];
       const root = typeof map.sourceRoot === 'string' ? map.sourceRoot : '';
-      hasOriginal ||= typeof map.mappings === 'string' && hasOriginalPosition(map.mappings);
+      hasOriginal ||=
+        typeof map.mappings === 'string' && hasOriginalPosition(map.mappings, own.length);
       own.forEach((source, i) => {
         sources.push(source);
         content.push(embedded[i]);
@@ -338,32 +338,60 @@ const MAX_INDEX_DEPTH = 32;
 const BASE64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
 
 /**
- * Whether a `mappings` string has at least one segment that names an ORIGINAL position (four or more VLQ values:
- * generated column, source, line, column). A map made only of generated-position segments (or empty) cannot map any
- * frame back to your code. A segment with a character outside the base64 alphabet is unusable and does not count.
+ * Whether a `mappings` string has at least one segment that names an ORIGINAL position: four or more VLQ values
+ * (generated column, source index, original line, original column) whose source index points at a real entry of
+ * `sourceCount` sources. Source indexes are DELTAS against the previous segment's, so they are accumulated across the
+ * whole string. A map made only of generated-position segments, or empty, or pointing at no source, cannot map a frame
+ * back to your code. A segment with a character outside the base64 alphabet is unusable and does not count.
+ * One pass, no split: the first usable segment answers.
  */
-export function hasOriginalPosition(mappings: string): boolean {
-  // One pass, no split: the first usable segment answers, so a healthy map costs a handful of characters.
+export function hasOriginalPosition(
+  mappings: string,
+  sourceCount: number = Number.POSITIVE_INFINITY,
+): boolean {
+  let source = 0; // the running source index (deltas accumulate over the whole string)
   let values = 0;
   let usable = true;
+  let value = 0; // the VLQ value being decoded
+  let shift = 0;
+  let segmentSource = 0;
+  const finish = (): boolean =>
+    usable && values >= 4 && segmentSource >= 0 && segmentSource < sourceCount;
   for (let i = 0; i < mappings.length; i++) {
     const ch = mappings.charAt(i);
     if (ch === ',' || ch === ';') {
-      if (usable && values >= 4) {
+      if (finish()) {
         return true;
+      }
+      if (usable && values >= 2) {
+        source = segmentSource; // the next segment's delta is against this one
       }
       values = 0;
       usable = true;
+      value = 0;
+      shift = 0;
       continue;
     }
     const digit = BASE64.indexOf(ch);
     if (digit < 0) {
       usable = false;
-    } else if ((digit & 32) === 0) {
-      values++; // no continuation bit: this digit ends a value
+      continue;
     }
+    value += (digit & 31) * 2 ** shift;
+    if ((digit & 32) !== 0) {
+      shift += 5;
+      continue;
+    }
+    // a value ends here: bit 0 is the sign
+    const decoded = value % 2 === 1 ? -(value - 1) / 2 : value / 2;
+    values++;
+    if (values === 2) {
+      segmentSource = source + decoded;
+    }
+    value = 0;
+    shift = 0;
   }
-  return usable && values >= 4;
+  return finish();
 }
 
 /**
@@ -420,14 +448,14 @@ function parseMap(text: string): ParsedMap | { ok: false; why: string } {
 
 /** Paths probed to ask "would these patterns hide everything the doctor could find in this directory". */
 const DIR_PROBES = [
-  'zz-probe-1/zz-probe-2/c.js',
-  'zz-probe-1/zz-probe-2/c.mjs',
-  'zz-probe-1/zz-probe-2/c.cjs',
-  'zz-probe-1/zz-probe-2/c.js.map',
-  'zz-probe-1/zz-probe-2/c.map',
-  'zz-probe-1/zz-probe-2/c.html',
-  'zz-probe-1/zz-probe-2/c.htm',
-  'zz-probe-1/zz-probe-2/c',
+  'c.js',
+  'zz-1/c.mjs',
+  'zz-2/zz-3/c.cjs',
+  'zz-4/c.js.map',
+  'zz-5/zz-6/zz-7/c.map',
+  'c.html',
+  'zz-8/c.htm',
+  'zz-9/zz-10/c',
 ];
 
 /** `scheme://...`: a URL, not a directory name. */
@@ -596,8 +624,12 @@ async function diagnose(dirInput: string, options: DoctorOptions): Promise<Docto
     failed.add(finding.id);
   };
   const env = options.env ?? (process.env as EnvRecord);
-  const maxMapBytes = options.maxMapBytes ?? DEFAULT_MAX_MAP_BYTES;
-  const maxBundleBytes = options.maxBundleBytes ?? DEFAULT_MAX_BUNDLE_BYTES;
+  // A NaN limit would switch the size check off (`size > NaN` is false): it means "not given". The effective limit is
+  // never above what the reader can hold, and that is the one reported.
+  const given = (value: number | undefined, fallback: number): number =>
+    value === undefined || Number.isNaN(value) ? fallback : value;
+  const maxMapBytes = Math.min(given(options.maxMapBytes, DEFAULT_MAX_MAP_BYTES), READ_CEILING);
+  const maxBundleBytes = given(options.maxBundleBytes, DEFAULT_MAX_BUNDLE_BYTES);
   const projectRoot = resolve(options.projectRoot ?? process.cwd());
 
   let isDir = false;
@@ -900,7 +932,7 @@ async function diagnose(dirInput: string, options: DoctorOptions): Promise<Docto
         id: 'map.too-large',
         severity: 'warning',
         file: mapName,
-        message: `${mapName} is ${(read.tooLarge.size / 1024 / 1024).toFixed(1)} MiB (limit checked: ${(maxMapBytes / 1024 / 1024).toFixed(0)} MiB), so it was not read or validated; the upload may be slow or rejected.`,
+        message: `${mapName} is ${(read.tooLarge.size / 1024 / 1024).toFixed(1)} MiB (limit applied: ${(maxMapBytes / 1024 / 1024).toFixed(0)} MiB${maxMapBytes === READ_CEILING ? ', the most Node can hold in one string' : ''}), so it was not read or validated; the upload may be slow or rejected.`,
         fix: 'Split the bundle, strip sourcesContent (`stripSourcesContent`) or exclude vendor chunks; raise --max-map-mb to validate it (the ceiling is about 512 MiB, the largest string Node can hold).',
         details: { bytes: read.tooLarge.size, limit: maxMapBytes },
       });
