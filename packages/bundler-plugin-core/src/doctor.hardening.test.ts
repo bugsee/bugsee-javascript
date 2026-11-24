@@ -658,3 +658,127 @@ describe('big outputs stay readable (round 4)', () => {
     expect(ids(report)).not.toContain('doctor.internal-error');
   });
 });
+
+describe('files the build did not emit (round 6)', () => {
+  const healthy = () => {
+    put('app.js', `a${stamp(ID_A)}`);
+    put('app.js.map', mapJson({ debugId: ID_A }));
+  };
+
+  it('a copied public/ script (with and without a map) is an error until --exclude drops it', async () => {
+    healthy();
+    put('public/pdf.worker.min.mjs', 'w');
+    put('public/pdf.worker.min.mjs.map', mapJson());
+    put('public/sw.js', 's');
+    const before = await run();
+    expect(ids(before)).toContain('stamp.missing-debug-id');
+    expect(ids(before)).toContain('stamp.mixed');
+    const after = await run({ exclude: ['public/**'] });
+    expect(ids(after)).not.toContain('stamp.missing-debug-id');
+    expect(ids(after)).not.toContain('stamp.mixed');
+    expect(after.summary).toMatchObject({ errors: 0, warnings: 0, bundles: 1, maps: 1 });
+    expect(find(after, 'output.excluded')).toMatchObject({
+      severity: 'info',
+      details: {
+        files: ['public/pdf.worker.min.mjs', 'public/pdf.worker.min.mjs.map', 'public/sw.js'],
+      },
+    });
+  });
+
+  it('an exclude that matches nothing says nothing', async () => {
+    healthy();
+    expect(ids(await run({ exclude: ['nope/**'] }))).not.toContain('output.excluded');
+  });
+
+  it('glob semantics: * stays in a directory, ** crosses them, ? is one character, a trailing / is a directory', async () => {
+    healthy();
+    put('a1.js', 'x');
+    put('sub/a2.js', 'x');
+    put('sub/deep/a3.js', 'x');
+    put('vendor/v.js', 'x');
+    put('vendor/xv.js', 'x');
+    const excluded = async (pattern: string): Promise<string[]> =>
+      (find(await run({ exclude: [pattern] }), 'output.excluded')?.details?.files as string[]) ??
+      [];
+    expect(await excluded('a?.js')).toEqual(['a1.js']);
+    expect(await excluded('*.js')).toEqual(['a1.js', 'app.js']);
+    expect(await excluded('**/*.js')).toEqual([
+      'a1.js',
+      'app.js',
+      'sub/a2.js',
+      'sub/deep/a3.js',
+      'vendor/v.js',
+      'vendor/xv.js',
+    ]);
+    expect(await excluded('sub/*.js')).toEqual(['sub/a2.js']);
+    expect(await excluded('sub/**')).toEqual(['sub/a2.js', 'sub/deep/a3.js']);
+    expect(await excluded('vendor/')).toEqual(['vendor/v.js', 'vendor/xv.js']);
+    expect(await excluded('a.js')).toEqual([]); // `.` is a literal dot, not "any character"
+    expect(await excluded('a1+js')).toEqual([]);
+    expect(await excluded('[a]1.js')).toEqual([]); // regex syntax in a glob is literal
+    expect(await excluded('sub?a2.js')).toEqual([]); // `?` is never a slash
+    expect(await excluded('**/v.js')).toEqual(['vendor/v.js']); // `**/` is whole path segments: xv.js is not v.js
+    expect(await excluded('**/a2.js')).toEqual(['sub/a2.js']);
+    expect(await excluded('**/p.js')).toEqual([]);
+  });
+
+  it('excluding every script leaves output.no-js, which cannot be hidden', async () => {
+    put('public/sw.js', 's');
+    const report = await run({ exclude: ['**'] });
+    expect(ids(report)).toContain('output.no-js');
+  });
+
+  it('a long exclusion list is capped, with the total', async () => {
+    healthy();
+    for (let i = 0; i < 120; i++) {
+      put(`public/f${i}.js`, 'x');
+    }
+    const finding = find(await run({ exclude: ['public/**'] }), 'output.excluded');
+    expect((finding?.details?.files as string[]).length).toBe(100);
+    expect(finding?.details?.total).toBe(120);
+  });
+});
+
+describe('the walk fence is reported, and needs a real project directory (round 6)', () => {
+  const inDist = async (options: Parameters<typeof run>[0] = {}): Promise<DoctorReport> => {
+    const here = process.cwd();
+    process.chdir(dist);
+    try {
+      return await run(options);
+    } finally {
+      process.chdir(here);
+    }
+  };
+
+  it('run from inside an output directory WITHOUT a package.json, src/ and dot-directories are audited', async () => {
+    put('a.js', `a${stamp(ID_A)}`);
+    put('src/s.js', 'x');
+    put('.cache/c.js', 'x');
+    put('a/b/c/d/e/f/g/h/deep.js', 'x');
+    const report = await inDist();
+    expect(report.summary.bundles).toBe(4);
+    expect(ids(report)).not.toContain('output.walk-fenced');
+  });
+
+  it('a directory that is the project (has a package.json) is fenced, and the report lists what was skipped', async () => {
+    put('package.json', '{"name":"p"}');
+    put('a.js', `a${stamp(ID_A)}`);
+    put('src/s.js', 'x');
+    put('.cache/c.js', 'x');
+    put('tests/t.js', 'x');
+    put('a/b/c/d/e/f/g/h/deep.js', 'x');
+    const report = await inDist();
+    expect(report.summary.bundles).toBe(1);
+    expect(find(report, 'output.walk-fenced')).toMatchObject({
+      severity: 'info',
+      details: { directories: ['.cache', 'a/b/c/d/e/f/g', 'src', 'tests'] },
+    });
+  });
+
+  it('a project directory that is not the working directory is not fenced', async () => {
+    put('package.json', '{"name":"p"}');
+    put('src/s.js', 'x');
+    put('a.js', `a${stamp(ID_A)}`);
+    expect((await run()).summary.bundles).toBe(2);
+  });
+});

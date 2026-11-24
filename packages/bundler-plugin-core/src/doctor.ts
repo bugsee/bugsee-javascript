@@ -72,6 +72,13 @@ export interface DoctorOptions {
   ignore?: readonly string[];
   /** A script larger than this many bytes is not read (default 512 MiB). */
   maxBundleBytes?: number;
+  /**
+   * Globs (relative to the checked directory, POSIX separators; `*` stays in a directory, `**` crosses them, `?` is
+   * one character, a trailing `/` means the directory) of files the build did NOT emit: a doctor cannot tell a
+   * script copied in (Vite `publicDir`, a copy plugin) from a bundle that lost its stamp, and the plugin never stamps
+   * the former. Matching files are dropped before analysis and listed as `output.excluded`.
+   */
+  exclude?: readonly string[];
 }
 
 const DEFAULT_MAX_MAP_BYTES = 50 * 1024 * 1024;
@@ -89,6 +96,8 @@ export const DOCTOR_CHECK_IDS = [
   'output.dir-missing',
   'output.no-js',
   'output.unreadable',
+  'output.excluded',
+  'output.walk-fenced',
   'stamp.missing-debug-id',
   'stamp.missing-registration',
   'stamp.map-id-mismatch',
@@ -134,18 +143,21 @@ const posix = (path: string): string => path.split('\\').join('/');
 const rel = (dir: string, path: string): string => posix(relative(dir, path));
 
 /**
- * Every script and map under `root`. An output directory is walked in full (Rollup `preserveModules` writes
- * `dist/src/*.js`; a build may emit `dist/test/`), skipping only `node_modules` and `.git`; the fence on
- * `src`/`test`/dot-directories and the depth cap apply ONLY when `root` is the project root or above, where
- * they keep the walk out of the source tree. Iterative, and never spreads a result list (a directory with
- * 100k files must not overflow the call stack).
+ * Every script and map under `root`, and the directories the fence skipped. An output directory is walked in full
+ * (Rollup `preserveModules` writes `dist/src/*.js`; a build may emit `dist/test/`), skipping only `node_modules`
+ * and `.git`; the fence on `src`/`test`/dot-directories and the depth cap apply ONLY when `root` is a project
+ * directory (has a `package.json`) that is, or contains, the working directory, where they keep the walk out of the
+ * source tree. What the fence skipped is returned, never silent. Iterative, and never spreads a result list (a
+ * directory with 100k files must not overflow the call stack).
  */
-export async function walk(root: string): Promise<string[]> {
-  const fenced = await isProjectRootOrAbove(root);
+export async function walkDetailed(root: string): Promise<{ files: string[]; skipped: string[] }> {
+  const fenced = (await isProjectRootOrAbove(root)) && existsSync(join(root, 'package.json'));
   const found: string[] = [];
+  const skipped: string[] = [];
   const pending: Array<{ dir: string; depth: number }> = [{ dir: root, depth: 0 }];
   for (let next = pending.pop(); next !== undefined; next = pending.pop()) {
     if (fenced && next.depth > MAX_WALK_DEPTH) {
+      skipped.push(rel(root, next.dir));
       continue;
     }
     let entries: Dirent[];
@@ -157,19 +169,47 @@ export async function walk(root: string): Promise<string[]> {
     for (const entry of entries) {
       const full = join(next.dir, entry.name);
       if (entry.isDirectory()) {
-        const skip =
-          entry.name === 'node_modules' ||
-          entry.name === '.git' ||
-          (fenced && (NEVER_WALK.has(entry.name) || entry.name.startsWith('.')));
-        if (!skip) {
-          pending.push({ dir: full, depth: next.depth + 1 });
+        if (entry.name === 'node_modules' || entry.name === '.git') {
+          continue;
         }
-      } else if (!entry.isDirectory() && (BUNDLE.test(entry.name) || MAP.test(entry.name))) {
+        if (fenced && (NEVER_WALK.has(entry.name) || entry.name.startsWith('.'))) {
+          skipped.push(rel(root, full));
+          continue;
+        }
+        pending.push({ dir: full, depth: next.depth + 1 });
+      } else if (BUNDLE.test(entry.name) || MAP.test(entry.name)) {
         found.push(full);
       }
     }
   }
-  return found.sort();
+  return { files: found.sort(), skipped: skipped.sort() };
+}
+
+export async function walk(root: string): Promise<string[]> {
+  return (await walkDetailed(root)).files;
+}
+
+/** A glob (see {@link DoctorOptions.exclude}) as an anchored regular expression over a POSIX relative path. */
+export function globToRegExp(glob: string): RegExp {
+  const pattern = glob.endsWith('/') ? `${glob}**` : glob;
+  let source = '';
+  for (let i = 0; i < pattern.length; i++) {
+    const c = pattern.charAt(i);
+    if (c === '*') {
+      if (pattern.charAt(i + 1) === '*') {
+        const slash = pattern.charAt(i + 2) === '/';
+        source += slash ? '(?:.*/)?' : '.*';
+        i += slash ? 2 : 1;
+      } else {
+        source += '[^/]*';
+      }
+    } else if (c === '?') {
+      source += '[^/]';
+    } else {
+      source += c.replace(/[\\^$.|+()[\]{}]/g, '\\$&');
+    }
+  }
+  return new RegExp(`^${source}$`);
 }
 
 interface ParsedMap {
@@ -374,7 +414,17 @@ async function diagnose(dirInput: string, options: DoctorOptions): Promise<Docto
   }
 
   const realDir = await realpath(dir);
-  const files = await walk(dir);
+  const walked = await walkDetailed(dir);
+  const patterns = (options.exclude ?? []).map(globToRegExp);
+  const excluded: string[] = [];
+  const files = walked.files.filter((file) => {
+    const name = rel(dir, file);
+    if (patterns.some((pattern) => pattern.test(name))) {
+      excluded.push(name);
+      return false;
+    }
+    return true;
+  });
   const bundles = files.filter((f) => BUNDLE.test(f));
   const maps = files.filter((f) => MAP.test(f));
   if (bundles.length === 0) {
@@ -383,6 +433,24 @@ async function diagnose(dirInput: string, options: DoctorOptions): Promise<Docto
       severity: 'error',
       message: `No .js/.cjs/.mjs files found under ${dir} (node_modules and .git are not searched).`,
       fix: 'Point the doctor at the bundler output directory, not the project root or a source tree.',
+    });
+  }
+
+  if (excluded.length > 0) {
+    add({
+      id: 'output.excluded',
+      severity: 'info',
+      message: `${excluded.length} file(s) matched --exclude and were not checked (${excluded.slice(0, MAX_LISTED).join(', ')}${excluded.length > MAX_LISTED ? ', …' : ''}).`,
+      details: listDetails('files', excluded),
+    });
+  }
+  if (walked.skipped.length > 0) {
+    add({
+      id: 'output.walk-fenced',
+      severity: 'info',
+      message: `${walked.skipped.length} director${walked.skipped.length === 1 ? 'y was' : 'ies were'} not searched because ${dir} looks like a project directory (${walked.skipped.slice(0, MAX_LISTED).join(', ')}${walked.skipped.length > MAX_LISTED ? ', …' : ''}).`,
+      fix: 'To audit them, run the doctor on the build output directory from the project root (not from inside a directory that has a package.json).',
+      details: listDetails('directories', walked.skipped),
     });
   }
 

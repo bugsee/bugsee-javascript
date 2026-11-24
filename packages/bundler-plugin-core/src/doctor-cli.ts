@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // `bugsee-sourcemaps-doctor` — the command-line face of `diagnoseBuildOutput`.
 //
-//   bugsee-sourcemaps-doctor <dir> [--json] [--strict] [--project-root <dir>] [--max-map-mb <n>] [--no-env]
+//   bugsee-sourcemaps-doctor <dir> [--json] [--strict] [--project-root <dir>] [--max-map-mb <n>] [--no-env] [--exclude <glob>]
 //
 // Exit codes: 0 ok, 1 warnings only with --strict, 2 errors (or a usage error).
 import { realpathSync } from 'node:fs';
@@ -27,6 +27,7 @@ Options:
   --no-env               Skip the token / version / build / NODE_ENV checks.
   --deployed             The directory is (about to be) served: leftover .map files become a warning.
   --ignore <id>          Drop a check ID from the report; repeatable.
+  --exclude <glob>       Do not check files the build did not emit (e.g. 'public/**'); repeatable.
   --                     End of options (a directory may start with a dash after it).
   -h, --help             Show this help.
 
@@ -56,6 +57,7 @@ export async function runDoctorCli(argv: readonly string[], io: DoctorCliIo): Pr
   let deployed = false;
   let onlyPositionals = false;
   const ignore: string[] = [];
+  const exclude: string[] = [];
   let projectRoot: string | undefined;
   let maxMapBytes: number | undefined;
   const usage = (message: string): number => {
@@ -92,13 +94,20 @@ export async function runDoctorCli(argv: readonly string[], io: DoctorCliIo): Pr
       skipEnv = true;
     } else if (arg === '--deployed') {
       deployed = true;
-    } else if (arg === '--project-root' || arg === '--max-map-mb' || arg === '--ignore') {
+    } else if (
+      arg === '--project-root' ||
+      arg === '--max-map-mb' ||
+      arg === '--ignore' ||
+      arg === '--exclude'
+    ) {
       const value = inline ?? argv[++i];
       if (value === undefined || (inline === undefined && value.startsWith('--'))) {
         return usage(`${arg} needs a value`);
       }
       if (arg === '--project-root') {
         projectRoot = value;
+      } else if (arg === '--exclude') {
+        exclude.push(value);
       } else if (arg === '--ignore') {
         if (NON_IGNORABLE_CHECK_IDS.has(value)) {
           io.stderr(
@@ -133,6 +142,7 @@ export async function runDoctorCli(argv: readonly string[], io: DoctorCliIo): Pr
     skipEnv,
     deployed,
     ignore,
+    exclude,
     ...(projectRoot !== undefined ? { projectRoot } : {}),
     ...(maxMapBytes !== undefined ? { maxMapBytes } : {}),
   });

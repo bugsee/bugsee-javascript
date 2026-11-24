@@ -28,6 +28,26 @@ async function cli(argv: string[], env = { BUGSEE_APP_TOKEN: 't', BUGSEE_APP_BUI
   return { code, out, err };
 }
 
+describe('runDoctorCli --exclude', () => {
+  it('drops matching files before analysis; repeatable; needs a value', async () => {
+    writeFileSync(join(dist, 'a.js'), stamped);
+    mkdirSync(join(dist, 'public'));
+    writeFileSync(join(dist, 'public', 'sw.js'), 'x');
+    writeFileSync(join(dist, 'vendor.js'), 'x');
+    expect((await cli([dist, '--no-env', '--json'])).code).toBe(0);
+    const ids = async (args: string[]) =>
+      JSON.parse((await cli([dist, '--no-env', '--json', ...args])).out).findings.map(
+        (f: { id: string }) => f.id,
+      );
+    expect(await ids(['--exclude', 'public/**'])).toContain('output.excluded');
+    expect(await ids(['--exclude', 'public/**'])).toContain('stamp.missing-debug-id'); // vendor.js remains
+    const both = await ids(['--exclude=public/**', '--exclude', 'vendor.js']);
+    expect(both).not.toContain('stamp.missing-debug-id');
+    expect(both).not.toContain('stamp.mixed');
+    expect((await cli([dist, '--exclude'])).code).toBe(2);
+  });
+});
+
 describe('runDoctorCli', () => {
   it('prints the text report and exits 0 for a clean build', async () => {
     writeFileSync(join(dist, 'a.js'), stamped);

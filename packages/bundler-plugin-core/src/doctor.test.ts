@@ -552,11 +552,12 @@ describe('diagnoseBuildOutput', () => {
     expect(report.summary.bundles).toBe(2);
   });
 
-  it('only a directory that is (or contains) the project root is fenced and depth-capped', async () => {
+  it('only a project directory that is (or contains) the working directory is fenced and depth-capped', async () => {
     put('a/b/c/d/e/f/g/h/deep.js', 'x');
     put('a/ok.js', 'x');
     put('src/s.js', 'x');
     put('.cache/c.js', 'x');
+    put('package.json', '{"name":"p"}'); // a directory that IS a project; see doctor.hardening.test.ts
     const here = process.cwd();
     process.chdir(dist);
     try {
