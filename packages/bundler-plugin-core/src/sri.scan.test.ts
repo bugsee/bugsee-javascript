@@ -247,7 +247,7 @@ describe('symlinked directories in the page walk', () => {
     await writeFile(join(dir, 'index.html'), page);
     await mkdir(join(dir, 'node_modules')); // never walked by name: only a link reaches pages in here
     await mkdir(join(dir, 'node_modules', 'x'));
-    await writeFile(join(dir, 'node_modules', 'x', 'p.html'), page.replace('a.js', '../b.js'));
+    await writeFile(join(dir, 'node_modules', 'x', 'p.html'), page.replace('a.js', 'x.js'));
     await symlink(join(dir, 'node_modules', 'x'), join(dir, 'viaLink'));
     await symlink(join(dir, 'node_modules', 'x'), join(dir, 'viaLink2')); // an alias: walked once
     await symlink(dir, join(dir, 'self')); // a loop back to the root
@@ -260,5 +260,38 @@ describe('symlinked directories in the page walk', () => {
     expect(scan.scripts.map((s) => s.html).sort()).toEqual(
       [join(dir, 'index.html'), join(dir, 'viaLink', 'p.html')].sort(),
     );
+  });
+});
+
+describe('the stamp guard resolves pins on REAL build paths (a link never claims a real directory)', () => {
+  for (const linkName of ['latest', 'zlatest']) {
+    it(`link "${linkName}" -> v2 does not change where v2/index.html's pin points`, async () => {
+      const dir = await fixture();
+      await mkdir(join(dir, 'v2'));
+      await writeFile(join(dir, 'v2', 'app.js'), 'x');
+      await writeFile(
+        join(dir, 'v2', 'index.html'),
+        '<script src="app.js" integrity="sha384-x"></script>',
+      );
+      await symlink(join(dir, 'v2'), join(dir, linkName));
+      const pins = await findSriProtectedScripts(dir);
+      expect(pins.map((p) => [p.html, p.script])).toEqual([
+        [join(dir, 'v2', 'index.html'), join(dir, 'v2', 'app.js')],
+      ]);
+    });
+  }
+});
+
+describe('depth is counted from the link, in the fenced walk', () => {
+  it('a page deeper than the cap below a followed link is skipped; the same depth below the root is too', async () => {
+    const dir = await fixture();
+    const deep = join(dir, 'node_modules', 'T', 'a', 'b', 'c', 'd', 'e', 'f');
+    await mkdir(deep, { recursive: true });
+    await writeFile(join(deep, 'p.html'), '<script src="x.js" integrity="sha384-x"></script>');
+    const near = join(dir, 'node_modules', 'T', 'a');
+    await writeFile(join(near, 'near.html'), '<script src="y.js" integrity="sha384-y"></script>');
+    await symlink(join(dir, 'node_modules', 'T'), join(dir, 'l1'));
+    const scan = await findSriProtectedScriptsDetailed(dir); // fenced (default)
+    expect(scan.scripts.map((s) => s.html)).toEqual([join(dir, 'l1', 'a', 'near.html')]);
   });
 });

@@ -1644,3 +1644,35 @@ describe('symlinked directories are followed inside the output directory, report
     }
   });
 });
+
+describe('a REAL directory always wins over a link to it, whatever the names sort like (round 15)', () => {
+  for (const linkName of ['latest', 'zlatest']) {
+    it(`link "${linkName}" -> v2: files are walked, reported and excludable under the REAL path v2/`, async () => {
+      put('v2/chunk.js', 'unstamped');
+      put('app.js', `a${stamp(ID_A)}`);
+      symlinkSync(join(dist, 'v2'), join(dist, linkName));
+      const files = (await walk(dist)).map((f) => f.slice(dist.length + 1));
+      expect(files).toEqual(['app.js', 'v2/chunk.js']);
+      const report = await run();
+      expect(report.summary.bundles).toBe(2);
+      // the exclusion written for the real path works; one written for the alias does not
+      expect(ids(await run({ exclude: ['v2/**'] }))).not.toContain('stamp.missing-debug-id');
+      expect(ids(await run({ exclude: [`${linkName}/**`] }))).toContain('stamp.missing-debug-id');
+    });
+  }
+
+  it('a link reached BEFORE a deeper real directory it points to still loses to it', async () => {
+    put('a/b/c/chunk.js', 'unstamped'); // real, deep
+    symlinkSync(join(dist, 'a', 'b', 'c'), join(dist, '0first')); // sorts before "a", the real parent
+    symlinkSync(join(dist, 'a', 'b', 'c'), join(dist, 'zlast')); // and one that sorts after
+    const files = (await walk(dist)).map((f) => f.slice(dist.length + 1));
+    expect(files).toEqual(['a/b/c/chunk.js']);
+  });
+
+  it('a link to a directory that is NOT reachable as a real directory (skipped by name) is still followed, once', async () => {
+    put('node_modules/real/chunk.js', 'unstamped');
+    symlinkSync(join(dist, 'node_modules', 'real'), join(dist, 'a-link'));
+    symlinkSync(join(dist, 'node_modules', 'real'), join(dist, 'b-link'));
+    expect((await walk(dist)).map((f) => f.slice(dist.length + 1))).toEqual(['a-link/chunk.js']);
+  });
+});

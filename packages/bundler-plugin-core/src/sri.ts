@@ -132,6 +132,8 @@ interface HtmlWalk {
   realRoot: string;
   /** Real directories already walked: a link to one is not walked twice (loops, aliases). */
   visited: Set<string>;
+  /** Links to directories inside the output: followed only after every REAL directory was walked (real paths win). */
+  deferred: Array<{ dir: string; real: string; depth: number }>;
 }
 
 const walkHtml = async (
@@ -165,7 +167,7 @@ const walkHtml = async (
       if (skip) {
         continue;
       }
-      let child = join(real, entry.name);
+      const child = join(real, entry.name);
       if (link) {
         // Followed only if it is a directory that stays inside the output directory; one that leaves it is a
         // directory whose pages were NOT scanned.
@@ -185,7 +187,8 @@ const walkHtml = async (
           walk.unreadableDirs.push(full);
           continue;
         }
-        child = target;
+        walk.deferred.push({ dir: full, real: target, depth: depth + 1 });
+        continue;
       }
       if (!walk.visited.has(child)) {
         walk.visited.add(child);
@@ -249,8 +252,19 @@ export async function findSriProtectedScriptsDetailed(
     unreadableDirs: [],
     realRoot: realOutDir,
     visited: new Set<string>([realOutDir]),
+    deferred: [],
   };
   const pages = await walkHtml(outDir, realOutDir, walk);
+  // (`deferred` can grow while it is processed: a followed link's tree may hold more links.)
+  for (let i = 0; i < walk.deferred.length; i++) {
+    const link = walk.deferred[i] as HtmlWalk['deferred'][number];
+    if (!walk.visited.has(link.real)) {
+      walk.visited.add(link.real);
+      for (const page of await walkHtml(link.dir, link.real, walk, link.depth)) {
+        pages.push(page);
+      }
+    }
+  }
   const { links, unreadableDirs } = walk;
   const seen = new Set<string>();
   const found: SriProtectedScript[] = [];

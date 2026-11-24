@@ -183,13 +183,21 @@ export async function walkDetailed(
   // Real directories already queued: a symlink to one (a loop, an alias) must not be walked, or counted, twice.
   const realRoot = await realpath(root).catch(() => root);
   const visited = new Set<string>([realRoot]);
-  const pending: Array<{ dir: string; depth: number; real: string }> = [
-    { dir: root, depth: 0, real: realRoot },
-  ];
-  for (let next = pending.pop(); next !== undefined; next = pending.pop()) {
+  type Queued = { dir: string; depth: number; real: string };
+  const pending: Queued[] = [{ dir: root, depth: 0, real: realRoot }];
+  // Links to directories inside the output are followed only AFTER every real directory has been walked, so a real
+  // directory always wins over an alias whatever the names sort like: every file is reported (and excluded, and
+  // stamped) under its real path.
+  const deferred: Queued[] = [];
+  const drain = async (): Promise<void> => {
+    for (let next = pending.pop(); next !== undefined; next = pending.pop()) {
+      await visitDir(next);
+    }
+  };
+  const visitDir = async (next: Queued): Promise<void> => {
     if (fenced && next.depth > MAX_WALK_DEPTH) {
       skipped.push(rel(root, next.dir));
-      continue;
+      return;
     }
     let entries: Dirent[];
     try {
@@ -197,7 +205,7 @@ export async function walkDetailed(
     } catch {
       // A directory whose scripts and maps were NOT seen: reported, never a silent pass.
       unreadable.push(rel(root, next.dir) || '.');
-      continue;
+      return;
     }
     for (const entry of entries) {
       const full = join(next.dir, entry.name);
@@ -210,7 +218,7 @@ export async function walkDetailed(
           skipped.push(rel(root, full));
           continue;
         }
-        let real = join(next.real, entry.name);
+        const real = join(next.real, entry.name);
         if (link) {
           // A symlinked directory is followed only if it stays inside the output directory; one that leaves it is a
           // directory whose scripts were NOT seen (a link to a file, or a dangling one, has nothing to audit).
@@ -230,15 +238,24 @@ export async function walkDetailed(
             unreadable.push(rel(root, full));
             continue;
           }
-          real = target;
-        }
-        if (!visited.has(real)) {
+          deferred.push({ dir: full, depth: next.depth + 1, real: target });
+        } else if (!visited.has(real)) {
           visited.add(real);
           pending.push({ dir: full, depth: next.depth + 1, real });
         }
       } else if (BUNDLE.test(entry.name) || MAP.test(entry.name)) {
         found.push(full);
       }
+    }
+  };
+  await drain();
+  // (`deferred` can grow while it is processed: a followed link's tree may hold more links.)
+  for (let i = 0; i < deferred.length; i++) {
+    const link = deferred[i] as Queued;
+    if (!visited.has(link.real)) {
+      visited.add(link.real);
+      pending.push(link);
+      await drain();
     }
   }
   return { files: found.sort(), skipped: skipped.sort(), fenced, unreadable: unreadable.sort() };
