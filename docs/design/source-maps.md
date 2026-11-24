@@ -424,8 +424,8 @@ source and so are deleted with them (as on the post-emit and `files` paths). A s
 was uploaded and the upload was confirmed: an unkeyed or unreadable one is never deleted, and nothing the walk
 merely saw is (a keyed map under `test/` or a dot-directory is uploaded AND deleted). The stylesheet and
 declaration maps are deleted only if something was uploaded. A map that cannot be read (anything but ENOENT) is
-not "gone": it is neither uploaded nor deleted and is reported with the unkeyed ones. A dry run still passes the directory (nothing was stamped; `--dry-run` only warns). Rspack and webpack development
-builds that are not uploaded (`uploadInDevelopment` unset) are no longer stamped either. A map rewritten beside an unchanged, already-stamped
+not "gone": it is neither uploaded nor deleted and is reported with the unkeyed ones. A dry run still passes the directory (nothing was stamped; `--dry-run` only warns). Rspack development
+builds that are not uploaded (`uploadInDevelopment` unset) are no longer stamped either (webpack's `afterEmit` upload has no development gate, so its in-build stamp stays on in every mode). A map rewritten beside an unchanged, already-stamped
 bundle is held to that bundle's debug-ID (and restored if it differs) on the post-emit path. Covered by real builds
 (`plugin.in-build.real-build.test.ts`: Vite 7/8 with a `publicDir` vendor script, Rollup with a stale one, and `[name].map` custom map
 names on Rollup, Vite 7/8 and Rspack; real CLI, no dry run, `failOnError` on and off). Not run for real: webpack

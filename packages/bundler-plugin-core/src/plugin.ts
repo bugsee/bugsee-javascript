@@ -436,7 +436,7 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
     );
     return true;
   };
-  // A webpack-family `mode: 'development'` build that is not uploaded (no `uploadInDevelopment`).
+  // An Rspack `mode: 'development'` build that is not uploaded (no `uploadInDevelopment`).
   const isUnuploadedDevelopment = (compiler: WebpackCompilerLike): boolean =>
     compiler.options.mode === 'development' && !resolved.uploadInDevelopment;
   // `resolved` is assigned right below; `loadFile` only reads it after that (it is `let` for the hook refresh).
@@ -945,10 +945,11 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
         taken,
       );
       injectDefines(compiler, DefinePlugin, identityDefines, taken);
-      // THE SRI FIX on webpack 5: stamp inside the compilation (see tapProcessAssetsStamp). A development
-      // build that is not uploaded is not stamped either (`webpack --watch` / dev-server would otherwise
-      // spawn the CLI on every rebuild); `uploadInDevelopment` opts back in.
-      const preStamped = tapProcessAssetsStamp(compiler, isUnuploadedDevelopment(compiler));
+      // THE SRI FIX on webpack 5: stamp inside the compilation (see tapProcessAssetsStamp), in every mode.
+      // Unlike Rspack, webpack's `afterEmit` upload has no development gate (and `resolve.ts` documents that
+      // webpack is not gated), so skipping the stamp in development would not avoid the CLI: it would only
+      // move it to `afterEmit` (inject on disk, then upload) and lose the SRI protection there.
+      const preStamped = tapProcessAssetsStamp(compiler);
 
       compiler.hooks.afterEmit.tapPromise(name, async (compilation?: AssetNamesLike) => {
         const dir = compiler.options.output?.path;
