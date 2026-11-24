@@ -823,7 +823,7 @@ async function diagnose(dirInput: string, options: DoctorOptions): Promise<Docto
       id: 'sri.html-skipped',
       severity: 'warning',
       message: `${names.length} page(s) are larger than ${MAX_HTML_BYTES / 1024 / 1024} MiB and were not scanned for integrity pins (${names.slice(0, MAX_LISTED).join(', ')}${names.length > MAX_LISTED ? ', …' : ''}); a script they pin would not be noticed.`,
-      fix: 'A real page is a few KB; check that this is not a data file named .html. Stamping is unaffected.',
+      fix: 'A real page is a few KB; check that this is not a data file named .html. Stamping still sees pins in such a page.',
       details: listDetails('files', names),
     });
   }

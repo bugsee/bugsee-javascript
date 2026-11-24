@@ -160,7 +160,9 @@ const walkHtml = async (dir: string, depth = 0): Promise<string[]> => {
  * to report.
  */
 export async function findSriProtectedScripts(outDirInput: string): Promise<SriProtectedScript[]> {
-  return (await findSriProtectedScriptsDetailed(outDirInput)).scripts;
+  // No page cap here: this is the guard stamping relies on, and a pin it cannot see is a script stamping would
+  // break. Only the diagnostic (which must stay bounded on hostile input) passes a cap.
+  return (await findSriProtectedScriptsDetailed(outDirInput, Number.POSITIVE_INFINITY)).scripts;
 }
 
 /** What {@link findSriProtectedScripts} found, and the pages it did not scan because they are larger than {@link MAX_HTML_BYTES}. */
@@ -169,7 +171,10 @@ export interface SriScan {
   skippedPages: Array<{ html: string; size: number }>;
 }
 
-export async function findSriProtectedScriptsDetailed(outDirInput: string): Promise<SriScan> {
+export async function findSriProtectedScriptsDetailed(
+  outDirInput: string,
+  maxHtmlBytes: number = MAX_HTML_BYTES,
+): Promise<SriScan> {
   // Resolved FIRST: a bundler hands us whatever the user configured, and Rollup passes `output.dir`
   // through verbatim (`'dist'`) while `output.file: 'bundle.js'` resolves to `'.'`. Comparing an
   // absolute resolved script path against a relative root made every `src="main.js"` look like it
@@ -180,7 +185,7 @@ export async function findSriProtectedScriptsDetailed(outDirInput: string): Prom
   const found: SriProtectedScript[] = [];
   const skippedPages: SriScan['skippedPages'] = [];
   for (const html of pages.sort()) {
-    const read = await readRegularFile(html, MAX_HTML_BYTES);
+    const read = await readRegularFile(html, maxHtmlBytes);
     if (!read.ok) {
       if (read.tooLarge !== undefined) {
         skippedPages.push({ html, size: read.tooLarge.size });

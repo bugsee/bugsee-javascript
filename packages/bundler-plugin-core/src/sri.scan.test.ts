@@ -132,6 +132,13 @@ describe('page size is bounded', () => {
     ]);
   });
 
+  it('the stamp guard (findSriProtectedScripts) still sees a pin in a page over the doctor cap', async () => {
+    const dir = await fixture();
+    const tag = '<script src="a.js" integrity="sha384-x"></script>';
+    await writeFile(join(dir, 'big.html'), tag + ' '.repeat(MAX_HTML_BYTES + 10));
+    expect((await findSriProtectedScripts(dir)).map((s) => s.script)).toEqual([join(dir, 'a.js')]);
+  });
+
   it('a page of exactly MAX_HTML_BYTES is scanned', async () => {
     const dir = await fixture();
     const tag = '<script src="a.js" integrity="sha384-x"></script>';
