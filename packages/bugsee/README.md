@@ -45,15 +45,14 @@ bugsee.logException(new Error('payment failed'));
 | Where your code runs | Install | Launch from |
 | --- | --- | --- |
 | Browser, Node.js | `@bugsee/bugsee` | `@bugsee/bugsee` |
-| Bun | `@bugsee/bun` | `@bugsee/bun` |
+| Bun | `@bugsee/bugsee` | `@bugsee/bugsee` (resolves to the Bun build) |
 | Electron | `@bugsee/electron` | `@bugsee/electron/main`, `/preload`, `/renderer` |
 | Cloudflare Workers | `@bugsee/cloudflare` | `@bugsee/cloudflare` |
 | Vercel Edge | `@bugsee/vercel-edge` | `@bugsee/vercel-edge` |
 | Web Worker, Service Worker | `@bugsee/webworker` | `@bugsee/webworker` |
-| React, Preact | `@bugsee/bugsee` and `@bugsee/react` | `@bugsee/bugsee` |
-| Vue, Angular, Svelte, Solid | `@bugsee/bugsee` and `@bugsee/vue`, `@bugsee/angular`, `@bugsee/svelte`, `@bugsee/solid` | `@bugsee/bugsee` |
+| React, Preact, Vue, Angular, Svelte, Solid | `@bugsee/react`, `@bugsee/vue`, `@bugsee/angular`, `@bugsee/svelte` or `@bugsee/solid` alone (it includes `@bugsee/bugsee`) | the adapter package |
 | Next.js, Nuxt, Remix, SvelteKit, Astro | `@bugsee/nextjs`, `@bugsee/nuxt`, `@bugsee/remix`, `@bugsee/sveltekit`, `@bugsee/astro` | the adapter package |
-| Express, Fastify, NestJS, Hono, Koa, hapi, Elysia | `@bugsee/bugsee` and `@bugsee/express`, `@bugsee/fastify`, `@bugsee/nestjs`, `@bugsee/hono`, `@bugsee/koa`, `@bugsee/hapi`, `@bugsee/elysia` | `@bugsee/bugsee` |
+| Express, Fastify, NestJS, Hono, Koa, hapi, Elysia | `@bugsee/express`, `@bugsee/fastify`, `@bugsee/nestjs`, `@bugsee/hono`, `@bugsee/koa`, `@bugsee/hapi` or `@bugsee/elysia` alone (it includes `@bugsee/bugsee`; on Bun also install `@bugsee/bugsee`) | the adapter package (on Bun, `launch` from `@bugsee/bugsee/bun`) |
 
 The umbrella also ships explicit subpath entries (`@bugsee/bugsee/node`, `/bun`, `/workerd`, `/edge-light`, `/worker`) for tools that do not honor `exports` conditions.
 

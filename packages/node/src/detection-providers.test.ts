@@ -247,3 +247,51 @@ describe('debug-ids on node crash frames', () => {
     });
   });
 });
+
+describe('a failed module load', () => {
+  const notFound = () => {
+    const error = Object.assign(
+      new Error("Cannot find module '/app/lazy.mjs' imported from /app/main.mjs"),
+      { code: 'ERR_MODULE_NOT_FOUND', url: 'file:///app/lazy.mjs' },
+    );
+    error.stack = `Error [ERR_MODULE_NOT_FOUND]: ${error.message}\n    at finalizeResolution (node:internal/modules/esm/resolve:241:11)`;
+    return error;
+  };
+
+  it('is reported with the failed module as its first frame and in the description (uncaught)', () => {
+    const p = fakeProcess();
+    const requests = started(createUncaughtExceptionProvider(p.proc));
+    p.emit('uncaughtException', notFound());
+    const report = requests[0]?.report as unknown as { description: string; crash: CrashJson };
+    expect(report.crash.exception.frames[0]?.trace).toBe('at import() (/app/lazy.mjs)');
+    expect(report.description).toContain('Failed module: /app/lazy.mjs');
+    expect(report.description).toContain('Imported from: /app/main.mjs');
+    expect(report.description).toContain('finalizeResolution');
+  });
+
+  it('is reported the same way for an unhandled rejection, with no stack at all (bun)', () => {
+    const error = notFound();
+    error.stack = undefined;
+    const p = fakeProcess();
+    const requests = started(createUnhandledRejectionProvider(p.proc));
+    p.emit('unhandledRejection', error);
+    const report = requests[0]?.report as unknown as { description: string; crash: CrashJson };
+    expect(report.crash.exception.frames).toHaveLength(1);
+    expect(report.description).toContain('Code: ERR_MODULE_NOT_FOUND');
+  });
+
+  it('keeps the caller-supplied frame enricher, and still adds the module', () => {
+    const p = fakeProcess();
+    const seen: number[] = [];
+    const requests: ReportingRequest[] = [];
+    createUncaughtExceptionProvider(p.proc, (_error, frames) => {
+      seen.push(frames.length);
+      return frames;
+    }).start(dummyClient, (r) => requests.push(r));
+    p.emit('uncaughtException', notFound());
+    expect(seen).toEqual([1]);
+    expect(
+      (requests[0]?.report as unknown as { crash: CrashJson }).crash.exception.frames,
+    ).toHaveLength(2);
+  });
+});

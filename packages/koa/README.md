@@ -4,16 +4,16 @@ Koa adapter for the Bugsee SDK: per-request context, `http.server` tracing and e
 
 Part of the Bugsee JavaScript SDK (public beta, 0.1.0-beta.x).
 
-Install this package directly in Koa apps, together with the `@bugsee/bugsee` umbrella that provides `launch()`. The umbrella resolves to the Node build automatically.
+Install this package directly in Koa apps, on its own: it depends on `@bugsee/bugsee` and re-exports it, so `launch()` and the adapter API come from this one package. On Bun, also install `@bugsee/bugsee` and import `launch` from `@bugsee/bugsee/bun` (the Bun build, with performance monitoring), while `setup*` still comes from this package.
 
 ## Install
 
 ```sh
-npm install @bugsee/bugsee @bugsee/koa
+npm install @bugsee/koa
 # or
-pnpm add @bugsee/bugsee @bugsee/koa
+pnpm add @bugsee/koa
 # or
-yarn add @bugsee/bugsee @bugsee/koa
+yarn add @bugsee/koa
 ```
 
 Requires Node.js 18 or newer. No peer dependency is declared: the adapter only uses the shape of your `koa` app.
@@ -23,9 +23,8 @@ Requires Node.js 18 or newer. No peer dependency is declared: the adapter only u
 Call `launch()` as early as possible, at the top of your server entry. On a server it returns the client directly. Then pass your app to `setupKoa`.
 
 ```ts
-// server.ts
-import { launch } from "@bugsee/bugsee";
-import { setupKoa } from "@bugsee/koa";
+// server.ts (Node.js)
+import { launch, setupKoa } from "@bugsee/koa";
 import Koa from "koa";
 
 launch("YOUR_APP_TOKEN");
@@ -34,6 +33,14 @@ const app = new Koa();
 setupKoa(app); // register first so it wraps the whole middleware chain
 // ... your middleware and routes ...
 app.listen(3000);
+```
+
+On Bun, import `launch` from the umbrella Bun entry instead (the rest of the file is unchanged):
+
+```ts
+// server.ts (Bun)
+import { launch } from "@bugsee/bugsee/bun";
+import { setupKoa } from "@bugsee/koa";
 ```
 
 ## What it does
@@ -55,7 +62,7 @@ Adapter options, passed as the second argument of `setupKoa`:
 - `user`: `(ctx) => string | undefined`, the end-user identity for reports. Off by default.
 - `shouldReport`: `(err) => boolean`, override which errors are reported.
 
-This package also re-exports everything from `@bugsee/bugsee/node`.
+This package installs `@bugsee/bugsee` for you and re-exports everything from its Node entry, so you do not install or import it separately.
 
 ## Links
 
