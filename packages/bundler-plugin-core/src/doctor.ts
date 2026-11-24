@@ -503,8 +503,7 @@ async function diagnose(dirInput: string, options: DoctorOptions): Promise<Docto
   const excludeGlobs = (options.exclude ?? []).map((glob) => glob.replace(/^(\.\/)+/, ''));
   const patterns = excludeGlobs.map(globToRegExp);
   const matchedPatterns = new Set<number>();
-  const isExcluded = (path: string): boolean => {
-    const name = rel(dir, path);
+  const isExcludedName = (name: string): boolean => {
     let hit = false;
     patterns.forEach((pattern, i) => {
       if (pattern.test(name)) {
@@ -514,6 +513,7 @@ async function diagnose(dirInput: string, options: DoctorOptions): Promise<Docto
     });
     return hit;
   };
+  const isExcluded = (path: string): boolean => isExcludedName(rel(dir, path));
   const excluded: string[] = [];
   const files = walked.files.filter((file) => {
     if (isExcluded(file)) {
@@ -1020,9 +1020,20 @@ async function diagnose(dirInput: string, options: DoctorOptions): Promise<Docto
 
   // --- SRI ------------------------------------------------------------------------------------------
   const sriScan = await findSriProtectedScriptsDetailed(dir, MAX_HTML_BYTES, walked.fenced);
-  const unreadableDirs = [
+  const allUnreadable = [
     ...new Set([...walked.unreadable, ...sriScan.unreadableDirs.map((d) => rel(dir, d) || '.')]),
   ].sort();
+  // `--exclude vendor/**` (or `vendor`, `vendor/`) names a directory too: probe the directory and its `dir/` form.
+  const excludedDirs = allUnreadable.filter((d) => isExcludedName(d) || isExcludedName(`${d}/`));
+  const unreadableDirs = allUnreadable.filter((d) => !excludedDirs.includes(d));
+  if (excludedDirs.length > 0) {
+    add({
+      id: 'output.excluded',
+      severity: 'info',
+      message: `${excludedDirs.length} unreadable director${excludedDirs.length === 1 ? 'y' : 'ies'} matched --exclude and ${excludedDirs.length === 1 ? 'was' : 'were'} not checked (${excludedDirs.slice(0, MAX_LISTED).join(', ')}${excludedDirs.length > MAX_LISTED ? ', …' : ''}).`,
+      details: listDetails('directories', excludedDirs),
+    });
+  }
   if (unreadableDirs.length > 0) {
     // Scripts, maps and pages in them were NOT checked: a pass would be false.
     add({

@@ -397,6 +397,36 @@ describe.skipIf(process.getuid?.() === 0)('an unreadable output directory', () =
     expect(ids(await run())).not.toContain('output.dir-unreadable');
   });
 
+  it('--exclude can name an unreadable directory: it leaves output.dir-unreadable, is listed as excluded, and its pattern is matched', async () => {
+    put('a.js', `a${stamp(ID_A)}`);
+    put('vendor/x.js', 'x');
+    put('assets/y.js', 'y');
+    chmodSync(join(dist, 'vendor'), 0o000);
+    chmodSync(join(dist, 'assets'), 0o000);
+    try {
+      for (const pattern of ['vendor/**', 'vendor/', 'vendor', '**']) {
+        const report = await run({ exclude: [pattern] });
+        const left = find(report, 'output.dir-unreadable')?.details?.directories;
+        expect(left, pattern).toEqual(pattern === '**' ? undefined : ['assets']);
+        expect(ids(report), pattern).not.toContain('output.exclude-unmatched');
+      }
+      const report = await run({ exclude: ['vendor/**'] });
+      expect(
+        report.findings.some(
+          (f) =>
+            f.id === 'output.excluded' &&
+            (f.details?.directories as string[] | undefined)?.includes('vendor'),
+        ),
+      ).toBe(true);
+      expect(find(await run({ exclude: ['nope/**'] }), 'output.dir-unreadable')?.details).toEqual({
+        directories: ['assets', 'vendor'],
+      });
+    } finally {
+      chmodSync(join(dist, 'vendor'), 0o700);
+      chmodSync(join(dist, 'assets'), 0o700);
+    }
+  });
+
   it('several unreadable directories are listed, sorted', async () => {
     put('a.js', `a${stamp(ID_A)}`);
     for (let i = 2; i >= 0; i--) {
