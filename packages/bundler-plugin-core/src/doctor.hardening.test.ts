@@ -22,11 +22,11 @@ import {
   diagnoseBuildOutput,
   doctorExitCode,
   hasOriginalPosition,
-  isFacadeCode,
   sourcePath,
   walk,
   walkDetailed,
 } from './doctor';
+import { isFacadeCode } from './facade';
 import { READ_CEILING, readRegularFile } from './safe-read';
 import { listOutputMaps } from './stamp-files';
 
@@ -1950,6 +1950,121 @@ describe('a facade or empty chunk has an empty map and that is healthy (round 18
     }
   });
 
+  it("isFacadeCode: Rollup's CommonJS export-star loop and interop helpers are facades", () => {
+    const exportStar = `'use strict';
+
+var lodash = require('lodash');
+var util = require('./util.js');
+
+exports.u = util.u;
+Object.keys(lodash).forEach(function (k) {
+  if (k !== 'default' && !Object.prototype.hasOwnProperty.call(exports, k)) Object.defineProperty(exports, k, {
+    enumerable: true,
+    get: function () { return lodash[k]; }
+  });
+});
+`;
+    const interop = `'use strict';
+
+function _interopNamespaceDefault(e) {
+  var n = Object.create(null);
+  if (e) {
+    Object.keys(e).forEach(function (k) {
+      if (k !== 'default') {
+        var d = Object.getOwnPropertyDescriptor(e, k);
+        Object.defineProperty(n, k, d.get ? d : {
+          enumerable: true,
+          get: function () { return e[k]; }
+        });
+      }
+    });
+  }
+  n.default = e;
+  return Object.freeze(n);
+}
+
+function _interopDefault(e) { return e && e.__esModule ? e : { default: e }; }
+
+var lodash = require('lodash');
+var lodash__namespace = /*#__PURE__*/_interopNamespaceDefault(lodash);
+var x = require('x');
+
+exports.lodash = lodash__namespace;
+exports.x = _interopDefault(x);
+`;
+    expect(isFacadeCode(exportStar)).toBe(true);
+    expect(isFacadeCode(interop)).toBe(true);
+    expect(isFacadeCode(`${exportStar}${stamp(ID_A)}`)).toBe(true);
+    // the same blocks with something that DOES something are not
+    expect(
+      isFacadeCode(exportStar.replace('return lodash[k];', 'track(k); return lodash[k];')),
+    ).toBe(false);
+    expect(isFacadeCode(exportStar.replace('Object.keys(lodash)', 'doIt(lodash)'))).toBe(false);
+    expect(isFacadeCode(interop.replace('Object.freeze(n)', 'sideEffect(n)'))).toBe(false);
+    expect(isFacadeCode(interop.replace('function _interopDefault', 'function doThing'))).toBe(
+      false,
+    );
+    expect(isFacadeCode(`${exportStar}\nconsole.log('hi');`)).toBe(false);
+    expect(isFacadeCode('var x = 1;\nexports.x = x;')).toBe(false); // a value of its own
+  });
+
+  it('isFacadeCode: shapes that look like a re-export but are not', () => {
+    const loop = (inner: string, extra = ''): string =>
+      `Object.keys(x).forEach(function (k) { ${inner} }${extra});`;
+    const define =
+      'Object.defineProperty(exports, k, { enumerable: true, get: function () { return x[k]; } });';
+    expect(isFacadeCode(loop(`if (k !== 'default') ${define}`))).toBe(true); // the real shape
+    expect(isFacadeCode("Object['keys'](x);")).toBe(false); // computed callee
+    expect(isFacadeCode('Object[keys](x);')).toBe(false);
+    expect(isFacadeCode('var a = x.y;')).toBe(false); // a reference is not a call
+    expect(isFacadeCode('var a;')).toBe(false);
+    expect(isFacadeCode(loop(define, ', y'))).toBe(false); // an extra forEach argument
+    expect(isFacadeCode('require(x);')).toBe(false); // not a literal specifier
+    expect(isFacadeCode("require('a', 'b');")).toBe(false);
+    expect(isFacadeCode("var m = require('a', 'b');")).toBe(false);
+    expect(
+      isFacadeCode(
+        "Object.defineProperty(exports, 'a', { enumerable: true, value: function () { return x; } });",
+      ),
+    ).toBe(false);
+    expect(isFacadeCode(loop(`if (k) ${define} else { track(k); }`))).toBe(false); // an impure else
+    expect(isFacadeCode(loop(`if (k) ${define} else ${define}`))).toBe(true);
+    expect(isFacadeCode('exports.n += 1;')).toBe(false); // not a plain assignment
+    expect(
+      isFacadeCode(
+        'Object.keys(x).forEach(function ([k]) { Object.defineProperty(exports, k, {}); });',
+      ),
+    ).toBe(false);
+    expect(
+      isFacadeCode(
+        'Object.keys(x).forEach(function (k, i) { Object.defineProperty(exports, k, {}); });',
+      ),
+    ).toBe(true);
+    expect(
+      isFacadeCode('Object.keys(x).forEach(k => Object.defineProperty(exports, k, {}));'),
+    ).toBe(true); // an arrow
+    expect(isFacadeCode('Object.keys(x).forEach(k => track(k));')).toBe(false);
+    expect(isFacadeCode('Object.keys(x).forEach(function (k) { return; });')).toBe(true);
+    expect(isFacadeCode('Object.keys(x).forEach(function (k) { return track(k); });')).toBe(false);
+    expect(isFacadeCode('Object.keys(x).forEach(function (k) { while (k) {} });')).toBe(false); // a loop is code
+    expect(isFacadeCode("var a = require('x'), b = _interopDefault(a);")).toBe(true);
+    expect(isFacadeCode("var a = 1, b = require('x');")).toBe(false);
+    expect(isFacadeCode("var [a] = require('x');")).toBe(false); // destructuring is not a plain binding
+    expect(isFacadeCode("var a = k ? require('x') : require('y');")).toBe(false); // not a plain call
+    expect(isFacadeCode('exports.a = k ? x.a : y.a;')).toBe(true);
+    expect(isFacadeCode("exports.a = !x && typeof y === 'undefined' ? x.a : void 0;")).toBe(true);
+    expect(isFacadeCode('exports.a = x[k];')).toBe(true);
+    expect(isFacadeCode('exports.a = x[track()];')).toBe(false);
+    expect(isFacadeCode('exports.a = {};')).toBe(true);
+    expect(isFacadeCode("exports.a = { b: x.b, 'c': 1 };")).toBe(true);
+    expect(isFacadeCode('exports.a = { ...x };')).toBe(false); // a spread is not a property
+    expect(isFacadeCode('exports.a = x.a++ ;')).toBe(false);
+    expect(isFacadeCode('exports.a = `t`;')).toBe(false);
+    expect(isFacadeCode('exports.a = Object.keys(x);')).toBe(true);
+    expect(isFacadeCode('export default 1;')).toBe(false);
+    expect(isFacadeCode('class A {}')).toBe(false);
+  });
+
   it('isFacadeCode: comments are stripped outside quoted module specifiers only', () => {
     for (const facade of [
       'export { a } from "https://cdn.example/a.js";',
@@ -1960,7 +2075,7 @@ describe('a facade or empty chunk has an empty map and that is healthy (round 18
       expect(isFacadeCode(facade), facade).toBe(true);
     }
     expect(isFacadeCode("var u = 'http://x'; export{a}from'./m.js'")).toBe(false);
-    expect(isFacadeCode("export{a}from'./m.js' /* unterminated")).toBe(true); // an open block comment is a comment
+    expect(isFacadeCode("export{a}from'./m.js' /* unterminated")).toBe(false); // unreadable is not a facade
     expect(isFacadeCode("export{a}from'./m.js; export function f(){}")).toBe(false); // an open string swallows the rest
   });
 
