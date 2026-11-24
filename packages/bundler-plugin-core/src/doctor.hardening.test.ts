@@ -14,7 +14,14 @@ import {
 import { tmpdir } from 'node:os';
 import { dirname, join, win32 } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { batchEnd, type DoctorReport, diagnoseBuildOutput, sourcePath, walk } from './doctor';
+import {
+  batchEnd,
+  type DoctorReport,
+  diagnoseBuildOutput,
+  doctorExitCode,
+  sourcePath,
+  walk,
+} from './doctor';
 import { listOutputMaps } from './stamp-files';
 
 const ID_A = '11111111-1111-4111-8111-111111111111';
@@ -365,8 +372,60 @@ describe.skipIf(process.getuid?.() === 0)('an unreadable output directory', () =
       const report = await run();
       expect(ids(report)).toContain('output.no-js');
       expect(ids(report)).not.toContain('doctor.internal-error');
+      expect(find(report, 'output.dir-unreadable')?.details).toEqual({ directories: ['.'] });
     } finally {
       chmodSync(dist, 0o700);
+    }
+  });
+
+  it('an unreadable SUB-directory is an error naming it, never a silent pass', async () => {
+    put('registerSW.js', `a${stamp(ID_A)}`);
+    put('assets/index.js', 'unstamped');
+    put('assets/deeper/x.js', 'x');
+    chmodSync(join(dist, 'assets'), 0o000);
+    try {
+      const report = await run();
+      expect(find(report, 'output.dir-unreadable')).toMatchObject({
+        severity: 'error',
+        details: { directories: ['assets'] },
+      });
+      expect(report.passed).not.toContain('output.dir-unreadable');
+      expect(doctorExitCode(report, false)).toBe(2);
+    } finally {
+      chmodSync(join(dist, 'assets'), 0o700);
+    }
+    expect(ids(await run())).not.toContain('output.dir-unreadable');
+  });
+
+  it('several unreadable directories are listed, sorted', async () => {
+    put('a.js', `a${stamp(ID_A)}`);
+    for (let i = 2; i >= 0; i--) {
+      put(`d${i}/p.js`, 'x');
+      chmodSync(join(dist, `d${i}`), 0o000);
+    }
+    try {
+      const finding = find(await run(), 'output.dir-unreadable');
+      expect(finding?.details).toEqual({ directories: ['d0', 'd1', 'd2'] });
+    } finally {
+      for (let i = 0; i < 3; i++) {
+        chmodSync(join(dist, `d${i}`), 0o700);
+      }
+    }
+  });
+
+  it('a directory only the HTML page walk enters (src/, which the fenced script walk skips) is reported too', async () => {
+    put('package.json', '{"name":"p"}');
+    put('a.js', `a${stamp(ID_A)}`);
+    put('src/p.html', '<p>');
+    chmodSync(join(dist, 'src'), 0o000);
+    const here = process.cwd();
+    process.chdir(dist);
+    try {
+      const finding = find(await run(), 'output.dir-unreadable');
+      expect(finding?.details).toEqual({ directories: ['src'] });
+    } finally {
+      process.chdir(here);
+      chmodSync(join(dist, 'src'), 0o700);
     }
   });
 });
@@ -1140,18 +1199,24 @@ describe('index (sectioned) source maps (round 10)', () => {
     });
   });
 
-  it('a pathologically deep chain of index maps is bounded, not a stack overflow', async () => {
-    let map: Record<string, unknown> = {
-      version: 3,
-      sources: ['a.ts'],
-      sourcesContent: ['x'],
-      mappings: 'A',
+  it('index maps are followed to a bounded depth (32): a leaf within it is found, one beyond it is not', async () => {
+    const chain = (depth: number): string => {
+      let map: Record<string, unknown> = {
+        version: 3,
+        sources: ['a.ts'],
+        sourcesContent: ['x'],
+        mappings: 'A',
+      };
+      for (let i = 0; i < depth; i++) {
+        map = { version: 3, sections: [{ offset: { line: 0, column: 0 }, map }] };
+      }
+      return JSON.stringify({ ...map, debugId: ID_A });
     };
-    for (let i = 0; i < 5000; i++) {
-      map = { version: 3, sections: [{ offset: { line: 0, column: 0 }, map }] };
-    }
-    pair(JSON.stringify({ ...map, debugId: ID_A }));
+    pair(chain(30));
+    expect(ids(await run())).not.toContain('map.no-sources');
+    pair(chain(40));
     const report = await run();
+    expect(ids(report)).toContain('map.no-sources');
     expect(ids(report)).not.toContain('doctor.internal-error');
   });
 

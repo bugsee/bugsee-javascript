@@ -117,6 +117,7 @@ export const DOCTOR_CHECK_IDS = [
   'output.dir-missing',
   'output.no-js',
   'output.unreadable',
+  'output.dir-unreadable',
   'output.excluded',
   'output.exclude-unmatched',
   'output.walk-fenced',
@@ -174,10 +175,11 @@ const rel = (dir: string, path: string): string => posix(relative(dir, path));
  */
 export async function walkDetailed(
   root: string,
-): Promise<{ files: string[]; skipped: string[]; fenced: boolean }> {
+): Promise<{ files: string[]; skipped: string[]; fenced: boolean; unreadable: string[] }> {
   const fenced = (await isProjectRootOrAbove(root)) && existsSync(join(root, 'package.json'));
   const found: string[] = [];
   const skipped: string[] = [];
+  const unreadable: string[] = [];
   const pending: Array<{ dir: string; depth: number }> = [{ dir: root, depth: 0 }];
   for (let next = pending.pop(); next !== undefined; next = pending.pop()) {
     if (fenced && next.depth > MAX_WALK_DEPTH) {
@@ -188,6 +190,8 @@ export async function walkDetailed(
     try {
       entries = await readdir(next.dir, { withFileTypes: true });
     } catch {
+      // A directory whose scripts and maps were NOT seen: reported, never a silent pass.
+      unreadable.push(rel(root, next.dir) || '.');
       continue;
     }
     for (const entry of entries) {
@@ -206,7 +210,7 @@ export async function walkDetailed(
       }
     }
   }
-  return { files: found.sort(), skipped: skipped.sort(), fenced };
+  return { files: found.sort(), skipped: skipped.sort(), fenced, unreadable: unreadable.sort() };
 }
 
 export async function walk(root: string): Promise<string[]> {
@@ -1016,6 +1020,19 @@ async function diagnose(dirInput: string, options: DoctorOptions): Promise<Docto
 
   // --- SRI ------------------------------------------------------------------------------------------
   const sriScan = await findSriProtectedScriptsDetailed(dir, MAX_HTML_BYTES, walked.fenced);
+  const unreadableDirs = [
+    ...new Set([...walked.unreadable, ...sriScan.unreadableDirs.map((d) => rel(dir, d) || '.')]),
+  ].sort();
+  if (unreadableDirs.length > 0) {
+    // Scripts, maps and pages in them were NOT checked: a pass would be false.
+    add({
+      id: 'output.dir-unreadable',
+      severity: 'error',
+      message: `${unreadableDirs.length} director${unreadableDirs.length === 1 ? 'y' : 'ies'} could not be listed, so nothing in ${unreadableDirs.length === 1 ? 'it was' : 'them was'} checked (${unreadableDirs.slice(0, MAX_LISTED).join(', ')}${unreadableDirs.length > MAX_LISTED ? ', …' : ''}).`,
+      fix: 'Make the directories readable by the user running the doctor (a build run as root in a container, then checked as another user, is the usual cause) and run it again.',
+      details: listDetails('directories', unreadableDirs),
+    });
+  }
   const pinned = sriScan.scripts.filter((pin) => !isExcluded(pin.script));
   const unmatched = excludeGlobs.filter((_, i) => !matchedPatterns.has(i));
   if (unmatched.length > 0) {

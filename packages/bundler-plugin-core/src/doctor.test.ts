@@ -578,7 +578,7 @@ describe('diagnoseBuildOutput', () => {
 
   const describePerm = process.getuid?.() === 0 ? describe.skip : describe;
   describePerm('unreadable paths', () => {
-    it('an unreadable sub-directory contributes nothing; an unreadable parent is harmless', async () => {
+    it('an unreadable sub-directory contributes nothing (and is reported, see doctor.hardening.test.ts); an unreadable parent is harmless', async () => {
       put('a.js', `a${stamp(ID_A)}`);
       mkdirSync(join(dist, 'locked'));
       writeFileSync(join(dist, 'locked', 'x.js'), 'x');

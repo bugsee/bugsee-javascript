@@ -128,6 +128,7 @@ const walkHtml = async (
   dir: string,
   fenced: boolean,
   links: Set<string>,
+  unreadableDirs: string[],
   depth = 0,
 ): Promise<string[]> => {
   if (fenced && depth > MAX_DEPTH) {
@@ -137,8 +138,9 @@ const walkHtml = async (
   try {
     entries = await readdir(dir, { withFileTypes: true });
   } catch {
-    // A missing or unreadable output directory is not this guard's error to raise: the CLI reports
-    // it properly ("path does not exist"), and throwing here would replace that with a worse one.
+    // Handed back so the doctor can say the pages in it were NOT scanned (a missing output directory is the CLI's
+    // error to raise: it reports it properly, and throwing here would replace that with a worse one).
+    unreadableDirs.push(dir);
     return [];
   }
   const found: string[] = [];
@@ -152,7 +154,7 @@ const walkHtml = async (
       if (skip) {
         continue;
       }
-      for (const page of await walkHtml(full, fenced, links, depth + 1)) {
+      for (const page of await walkHtml(full, fenced, links, unreadableDirs, depth + 1)) {
         found.push(page);
       }
     } else if ((entry.isFile() || entry.isSymbolicLink()) && /\.x?html?$/i.test(entry.name)) {
@@ -187,6 +189,8 @@ export interface SriScan {
   skippedPages: Array<{ html: string; size: number }>;
   /** Pages that exist but could not be read (permissions, a race): their pins were NOT checked. */
   unreadablePages: string[];
+  /** Directories that exist but could not be listed: the pages in them were NOT scanned. */
+  unreadableDirs: string[];
 }
 
 export async function findSriProtectedScriptsDetailed(
@@ -201,7 +205,8 @@ export async function findSriProtectedScriptsDetailed(
   // was outside the output directory, so the guard was silently inert for exactly those builds.
   const outDir = resolve(outDirInput);
   const links = new Set<string>();
-  const pages = await walkHtml(outDir, fenced, links);
+  const unreadableDirs: string[] = [];
+  const pages = await walkHtml(outDir, fenced, links, unreadableDirs);
   const realOutDir = await realpath(outDir).catch(() => outDir);
   const seen = new Set<string>();
   const found: SriProtectedScript[] = [];
@@ -252,7 +257,7 @@ export async function findSriProtectedScriptsDetailed(
       found.push({ html, script, integrity: pin });
     }
   }
-  return { scripts: found, skippedPages, unreadablePages };
+  return { scripts: found, skippedPages, unreadablePages, unreadableDirs };
 }
 
 /** SRI's hash algorithms, weakest to strongest — the order the spec compares them in. */
