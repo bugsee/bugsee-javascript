@@ -124,8 +124,8 @@ const resolveLocalScript = (outDir: string, htmlDir: string, src: string): strin
   return normalize(full).startsWith(rooted) ? full : undefined;
 };
 
-const walkHtml = async (dir: string, depth = 0): Promise<string[]> => {
-  if (depth > MAX_DEPTH) {
+const walkHtml = async (dir: string, fenced: boolean, depth = 0): Promise<string[]> => {
+  if (fenced && depth > MAX_DEPTH) {
     return [];
   }
   let entries: Dirent[];
@@ -140,10 +140,14 @@ const walkHtml = async (dir: string, depth = 0): Promise<string[]> => {
   for (const entry of entries) {
     const full = join(dir, entry.name);
     if (entry.isDirectory()) {
-      if (NEVER_WALK.has(entry.name) || entry.name.startsWith('.')) {
+      // Unfenced (an output directory the doctor audits in full) still never enters node_modules or .git.
+      const skip = fenced
+        ? NEVER_WALK.has(entry.name) || entry.name.startsWith('.')
+        : entry.name === 'node_modules' || entry.name === '.git';
+      if (skip) {
         continue;
       }
-      for (const page of await walkHtml(full, depth + 1)) {
+      for (const page of await walkHtml(full, fenced, depth + 1)) {
         found.push(page);
       }
     } else if (entry.isFile() && /\.x?html?$/i.test(entry.name)) {
@@ -180,13 +184,15 @@ export interface SriScan {
 export async function findSriProtectedScriptsDetailed(
   outDirInput: string,
   maxHtmlBytes: number = MAX_HTML_BYTES,
+  /** Skip `test`/dot-directories and stop below depth 6 (the stamp guard's default; the doctor passes its own fence). */
+  fenced = true,
 ): Promise<SriScan> {
   // Resolved FIRST: a bundler hands us whatever the user configured, and Rollup passes `output.dir`
   // through verbatim (`'dist'`) while `output.file: 'bundle.js'` resolves to `'.'`. Comparing an
   // absolute resolved script path against a relative root made every `src="main.js"` look like it
   // was outside the output directory, so the guard was silently inert for exactly those builds.
   const outDir = resolve(outDirInput);
-  const pages = await walkHtml(outDir);
+  const pages = await walkHtml(outDir, fenced);
   const seen = new Set<string>();
   const found: SriProtectedScript[] = [];
   const skippedPages: SriScan['skippedPages'] = [];

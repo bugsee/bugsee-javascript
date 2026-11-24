@@ -926,3 +926,49 @@ describe('batchEnd bounds the bytes read at once', () => {
     expect(batchEnd([1, 1], 1, 16, 100)).toBe(2);
   });
 });
+
+describe('the SRI page walk follows the doctor fence (round 8)', () => {
+  const sri = (bytes: string): string =>
+    `sha384-${createHash('sha384').update(bytes).digest('base64')}`;
+  const pin = (): void => {
+    put('app.js', `console.log(1);${stamp(ID_A)}`);
+  };
+
+  it('an output directory is scanned for pages in test/, dot-directories and deep paths too', async () => {
+    pin();
+    put(
+      'tests/index.html',
+      '<script src="../app.js" integrity="' + sri('older bytes') + '"></script>',
+    );
+    expect(ids(await run())).toContain('sri.mismatch');
+    rmSync(join(dist, 'tests'), { recursive: true });
+    put('.well/p.html', '<script src="../app.js" integrity="' + sri('older bytes') + '"></script>');
+    expect(ids(await run())).toContain('sri.mismatch');
+    rmSync(join(dist, '.well'), { recursive: true });
+    put(
+      'a/b/c/d/e/f/g/h/p.html',
+      '<script src="../../../../../../../../app.js" integrity="' +
+        sri('older bytes') +
+        '"></script>',
+    );
+    expect(ids(await run())).toContain('sri.mismatch');
+  });
+
+  it('a fenced project directory keeps the fence for pages too, and the walk-fenced finding says what was skipped', async () => {
+    put('package.json', '{"name":"p"}');
+    pin();
+    put(
+      'tests/index.html',
+      '<script src="../app.js" integrity="' + sri('older bytes') + '"></script>',
+    );
+    const here = process.cwd();
+    process.chdir(dist);
+    try {
+      const report = await run();
+      expect(ids(report)).not.toContain('sri.mismatch');
+      expect(find(report, 'output.walk-fenced')?.details).toEqual({ directories: ['tests'] });
+    } finally {
+      process.chdir(here);
+    }
+  });
+});

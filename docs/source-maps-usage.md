@@ -226,13 +226,13 @@ stub the SDK reads. This is exactly what the plugins automate; the CLI is the sa
 When a production crash does not de-minify, run the doctor against the build output you actually deployed (or are about to). It is offline: it reads the files and makes no network call. The token is only looked up (never printed) so the report can say where it comes from; a missing token is a warning, not an error.
 
 ```bash
-npx bugsee-sourcemaps-doctor dist              # readable report, fix hint per finding
-npx bugsee-sourcemaps-doctor dist --json       # for CI (schemaVersion 1)
-npx bugsee-sourcemaps-doctor dist --strict     # warnings fail the step too (exit 1)
-npx bugsee-sourcemaps-doctor dist --deployed   # the directory is served: leftover .map files warn
+npx --package=@bugsee/bundler-plugin-core bugsee-sourcemaps-doctor dist              # readable report, fix hint per finding
+npx --package=@bugsee/bundler-plugin-core bugsee-sourcemaps-doctor dist --json       # for CI (schemaVersion 1)
+npx --package=@bugsee/bundler-plugin-core bugsee-sourcemaps-doctor dist --strict     # warnings fail the step too (exit 1)
+npx --package=@bugsee/bundler-plugin-core bugsee-sourcemaps-doctor dist --deployed   # the directory is served: leftover .map files warn
 ```
 
-The `bugsee-sourcemaps-doctor` binary ships in `@bugsee/bundler-plugin-core`, not in a package of that name: in a project that has it installed (every Bugsee build plugin depends on it) `npx bugsee-sourcemaps-doctor` runs it; otherwise use `npx --package=@bugsee/bundler-plugin-core bugsee-sourcemaps-doctor dist`.
+The binary ships in `@bugsee/bundler-plugin-core`, so always name the package as above (a bare `npx bugsee-sourcemaps-doctor` is only safe when it is already linked into `node_modules/.bin`, which pnpm and Yarn do for direct dependencies only; otherwise npx asks the public registry for an unrelated name).
 
 `--strict` passes straight after a default plugin run (maps removed after upload, bundles stamped) when the directory holds only what the build emitted. Scripts copied in (Vite `publicDir`, a copy plugin) are never stamped by the plugin and are indistinguishable from a bundle that lost its stamp: exclude them by path, relative to the checked directory (Vite copies `public/` to the ROOT of the output, so `--exclude sw.js --exclude 'pdf.worker.min.mjs*'`; repeatable; listed as `output.excluded`, and a pattern that matches nothing is reported as `output.exclude-unmatched`). `--exclude` only removes files from the audit, not from what you deploy. A directory that is a project (has a `package.json`) and is the working directory is walked fenced (no `src`, `test`, dot-directories, depth > 6), and the skipped directories are listed as `output.walk-fenced`. Other options: `--ignore <id>` (repeatable; hard failures such as `output.no-js` cannot be ignored), `--project-root`, `--max-map-mb`, `--no-env`, `--`.
 

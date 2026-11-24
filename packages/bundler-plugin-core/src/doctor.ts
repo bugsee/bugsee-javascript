@@ -172,7 +172,9 @@ const rel = (dir: string, path: string): string => posix(relative(dir, path));
  * source tree. What the fence skipped is returned, never silent. Iterative, and never spreads a result list (a
  * directory with 100k files must not overflow the call stack).
  */
-export async function walkDetailed(root: string): Promise<{ files: string[]; skipped: string[] }> {
+export async function walkDetailed(
+  root: string,
+): Promise<{ files: string[]; skipped: string[]; fenced: boolean }> {
   const fenced = (await isProjectRootOrAbove(root)) && existsSync(join(root, 'package.json'));
   const found: string[] = [];
   const skipped: string[] = [];
@@ -204,7 +206,7 @@ export async function walkDetailed(root: string): Promise<{ files: string[]; ski
       }
     }
   }
-  return { files: found.sort(), skipped: skipped.sort() };
+  return { files: found.sort(), skipped: skipped.sort(), fenced };
 }
 
 export async function walk(root: string): Promise<string[]> {
@@ -959,7 +961,7 @@ async function diagnose(dirInput: string, options: DoctorOptions): Promise<Docto
   }
 
   // --- SRI ------------------------------------------------------------------------------------------
-  const sriScan = await findSriProtectedScriptsDetailed(dir);
+  const sriScan = await findSriProtectedScriptsDetailed(dir, MAX_HTML_BYTES, walked.fenced);
   const pinned = sriScan.scripts.filter((pin) => !isExcluded(pin.script));
   if (sriScan.skippedPages.length > 0) {
     const names = sriScan.skippedPages.map((page) => rel(dir, page.html));

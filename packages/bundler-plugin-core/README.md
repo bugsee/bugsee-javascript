@@ -25,12 +25,12 @@ npm install --save-dev @bugsee/vite-plugin
 An offline check of a build output directory: why would a crash from this build not symbolicate? No network call; a token is not required (a missing one is only a warning).
 
 ```bash
-npx bugsee-sourcemaps-doctor dist            # human report
-npx bugsee-sourcemaps-doctor dist --json     # machine-readable report (schemaVersion 1)
-npx bugsee-sourcemaps-doctor dist --strict   # exit 1 on warnings too
+npx --package=@bugsee/bundler-plugin-core bugsee-sourcemaps-doctor dist            # human report
+npx --package=@bugsee/bundler-plugin-core bugsee-sourcemaps-doctor dist --json     # machine-readable report (schemaVersion 1)
+npx --package=@bugsee/bundler-plugin-core bugsee-sourcemaps-doctor dist --strict   # exit 1 on warnings too
 ```
 
-The `bugsee-sourcemaps-doctor` binary ships in `@bugsee/bundler-plugin-core`, not in a package of that name: in a project that has it installed (every Bugsee build plugin depends on it) `npx bugsee-sourcemaps-doctor` runs it; otherwise use `npx --package=@bugsee/bundler-plugin-core bugsee-sourcemaps-doctor dist`.
+The binary ships in `@bugsee/bundler-plugin-core`, not in a package of its own name, so always name the package (a bare `npx bugsee-sourcemaps-doctor` asks the public registry for an unrelated, unclaimed name unless it happens to be linked into `node_modules/.bin`; pnpm and Yarn link only the bins of direct dependencies). With the package as a direct dependency, `pnpm exec bugsee-sourcemaps-doctor dist` works too.
 
 Exit codes: 0 ok, 1 warnings only (with `--strict`), 2 errors. Options: `--project-root <dir>` (where `.env.bugsee-build-plugin` and `package.json` are looked up; default the working directory), `--max-map-mb <n>`, `--no-env` (skip the token / version / build / `NODE_ENV` checks), `--deployed` (the directory is, or is about to be, served: leftover `.map` files become a warning instead of a note), `--exclude <glob>` (files the build did not emit, e.g. `sw.js` or `pdf.worker.min.mjs*` for scripts copied from Vite's `publicDir` (it lands at the ROOT of the output) or by a copy plugin, relative to the checked directory, a leading `./` is fine; a pattern that matches nothing is reported as `output.exclude-unmatched`: the plugin never stamps those and a doctor cannot tell them from a bundle that lost its stamp; repeatable; `*` stays in a directory, `**` crosses them; matches are listed as `output.excluded`), `--ignore <id>` (drop a check ID; repeatable; `output.dir-missing`, `output.no-js` and `doctor.internal-error` cannot be ignored), `--` (end of options); `--key=value` works for options that take a value, and `--strict=false`-style values on flags are refused. Before the upload (hidden maps still on disk, the plugin will delete them) and after it (maps removed), `--strict` passes on a healthy build; add `--deployed` only when checking the directory you serve. Straight after a default plugin run `--strict` passes for a build whose output directory holds only what the build emitted (add `--exclude` for copied-in scripts): leftover maps are a note unless `--deployed`, and a pointer to maps removed on purpose from a fully stamped build is a note.
 

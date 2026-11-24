@@ -158,3 +158,24 @@ describe('page size is bounded', () => {
     expect(scan.scripts).toHaveLength(1);
   });
 });
+
+describe('the page walk fence is optional', () => {
+  it('fenced (the default) skips test/ and dot-directories; unfenced scans them, still never node_modules', async () => {
+    const dir = await fixture();
+    const page = '<script src="/a.js" integrity="sha384-x"></script>';
+    for (const sub of ['tests', '.well', 'node_modules', 'ok']) {
+      await mkdir(join(dir, sub));
+      await writeFile(join(dir, sub, 'p.html'), page.replace('/a.js', `../${sub}.js`));
+    }
+    const fenced = await findSriProtectedScriptsDetailed(dir);
+    expect(fenced.scripts.map((s) => s.html)).toEqual([join(dir, 'ok', 'p.html')]);
+    const open = await findSriProtectedScriptsDetailed(dir, MAX_HTML_BYTES, false);
+    expect(open.scripts.map((s) => s.html).sort()).toEqual(
+      [
+        join(dir, '.well', 'p.html'),
+        join(dir, 'ok', 'p.html'),
+        join(dir, 'tests', 'p.html'),
+      ].sort(),
+    );
+  });
+});
