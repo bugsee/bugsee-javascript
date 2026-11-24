@@ -33,7 +33,7 @@ Bugsee can also pick them up at build time. The Bugsee Vite and webpack plugins 
 }
 ```
 
-Generate those two lines in CI from your own version and commit id (a small script that writes `angular.json`, or `ng build --configuration` with a configuration-specific `define`). The same two constants work for any bundler that supports `define` (esbuild, Rollup, Vite, webpack `DefinePlugin`). Without any of these the report shows `0.0.0` and the SDK warns once in the console.
+Generate those two lines in CI from your own version and commit id (a small script that writes `angular.json`, or `ng build --configuration` with a configuration-specific `define`). The same two constants work for any bundler that can substitute globals: esbuild and Vite take `define`, webpack uses `DefinePlugin`, and Rollup has no `define` option, so use a replacement plugin such as `@rollup/plugin-replace` (`replace({ preventAssignment: true, values: { __BUGSEE_APP_VERSION__: JSON.stringify('2.4.1'), __BUGSEE_APP_BUILD__: JSON.stringify('381') } })`). Without any of these the report shows `0.0.0` and the SDK warns once in the console.
 
 If no version can be found, Bugsee logs a single warning to the console and reports the version as `0.0.0` and the build as `0`. A page can also declare them in its HTML:
 

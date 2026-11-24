@@ -293,7 +293,7 @@ export const RELAUNCH_KEPT_OPTIONS: readonly string[] = [
   'appId',
   'appVersion',
   'appBuild',
-  'bindings', // edge env bindings (version/build source): dropped on relaunch, the version would fall back to 0.0.0
+  // `bindings` (the edge env, the version/build source) is NOT listed: it is retained as an identity-only copy, see below
   'appIdentitySource',
   'platformType',
   'sdkVersion',
@@ -304,6 +304,33 @@ export const RELAUNCH_KEPT_OPTIONS: readonly string[] = [
   'partitionCaptureByTenant',
   'maxTenantPartitions',
 ];
+
+/**
+ * The host's `bindings` (Cloudflare's whole per-deployment `env`: secrets, KV/DO/R2 handles, vars) reduced to the only
+ * keys the SDK reads for the app identity, so a relaunch keeps its version without the carrier (a process-global) holding
+ * every binding. `CF_VERSION_METADATA` is narrowed to its `tag` and `id`.
+ */
+const identityOnlyBindings = (bindings: unknown): Record<string, unknown> | undefined => {
+  if (typeof bindings !== 'object' || bindings === null) {
+    return undefined;
+  }
+  const source = bindings as Record<string, unknown>;
+  const kept: Record<string, unknown> = {};
+  for (const key of ['BUGSEE_APP_VERSION', 'BUGSEE_APP_BUILD']) {
+    if (source[key] !== undefined) {
+      kept[key] = source[key];
+    }
+  }
+  const metadata = source.CF_VERSION_METADATA;
+  if (typeof metadata === 'object' && metadata !== null) {
+    const { tag, id } = metadata as { tag?: unknown; id?: unknown };
+    kept.CF_VERSION_METADATA = {
+      ...(tag !== undefined && { tag }),
+      ...(id !== undefined && { id }),
+    };
+  }
+  return kept;
+};
 
 /** Remember the token and the integration seams of a launch that built a client, for `relaunch()`. */
 export function setCarrierLastLaunch(
@@ -318,6 +345,10 @@ export function setCarrierLastLaunch(
       if (value !== undefined) {
         retained[key] = value;
       }
+    }
+    const bindings = identityOnlyBindings((options as Record<string, unknown>).bindings);
+    if (bindings !== undefined) {
+      retained.bindings = bindings;
     }
   }
   getCarrier(globalObj).lastLaunch = { appToken, options: retained };
