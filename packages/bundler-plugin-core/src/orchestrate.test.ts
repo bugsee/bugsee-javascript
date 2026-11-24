@@ -20,6 +20,12 @@ function fakeRun() {
   return { run, calls };
 }
 
+/** Every candidate map counts as keyed: for tests about WHICH paths are deleted, with fake paths. */
+const allKeyed = async (maps: readonly string[]) => ({
+  deletable: [...maps],
+  kept: [] as string[],
+});
+
 const base = {
   outDir: '/build/dist',
   appToken: 'tok',
@@ -218,6 +224,7 @@ describe('uploadSourcemaps', () => {
       ...base,
       run: runOrdered,
       deleteMapFiles,
+      partitionMaps: allKeyed,
       listMapFiles: async () => ['/build/dist/app.js.map'],
     });
     // Only the maps that existed when the upload started (the snapshot) may be deleted.
@@ -323,7 +330,10 @@ describe('deletes only the maps that existed when the upload started', () => {
   });
 
   it('a map another build writes while the upload is in flight survives', async () => {
-    await writeFile(join(dir, 'first.js.map'), '{}');
+    await writeFile(
+      join(dir, 'first.js.map'),
+      '{"debugId":"b039c7fb-d958-5fe6-b76f-136179e9a728"}',
+    );
     const run = vi.fn(async (args: string[]): Promise<SpawnResult> => {
       if (args[0] === 'debug-files') {
         // The upload is in flight: a second build into the same directory writes its map now.
@@ -632,6 +642,8 @@ describe('uploadSourcemaps — already stamped in the build', () => {
       findSri,
       verifySri: async () => [],
       deleteMapFiles: async () => [],
+      listUploadMaps: async () => ['/build/dist/main.js.map'],
+      partitionMaps: allKeyed,
     });
 
     // A pinned build is exactly what this path exists to support — refusing it would undo the fix.
@@ -664,6 +676,8 @@ describe('uploadSourcemaps — already stamped in the build', () => {
         { html: '/build/dist/index.html', script: '/build/dist/main.js', integrity: 'sha384-X' },
       ],
       deleteMapFiles: async () => [],
+      listUploadMaps: async () => ['/build/dist/main.js.map'],
+      partitionMaps: allKeyed,
     });
 
     expect(onError).toHaveBeenCalledOnce();
@@ -787,6 +801,7 @@ describe("a run over the build's own files", () => {
       files: { scripts, maps },
       run,
       deleteMapFiles,
+      partitionMaps: allKeyed,
       listMapFiles: list,
     });
     expect(calls[0]?.args).toEqual(['sourcemaps', 'inject', ...scripts, ...maps]);
@@ -807,6 +822,7 @@ describe("a run over the build's own files", () => {
       files: { scripts, maps, stylesheetMaps: css },
       run,
       deleteMapFiles,
+      partitionMaps: allKeyed,
     });
     expect(calls.flatMap((c) => c.args)).not.toContain('/b/a.css.map');
     expect(deleteMapFiles).toHaveBeenCalledWith('/b', [...maps, ...css]);
