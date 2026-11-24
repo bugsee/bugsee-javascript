@@ -293,7 +293,7 @@ export const RELAUNCH_KEPT_OPTIONS: readonly string[] = [
   'appId',
   'appVersion',
   'appBuild',
-  // `bindings` (the edge env, the version/build source) is NOT listed: it is retained as an identity-only copy, see below
+  'bindings', // edge env (version/build source): kept on relaunch, as an identity-only copy (see identityOnlyBindings), else the version falls back to 0.0.0
   'appIdentitySource',
   'platformType',
   'sdkVersion',
@@ -341,14 +341,11 @@ export function setCarrierLastLaunch(
   const retained: Record<string, unknown> = {};
   if (typeof options === 'object' && options !== null) {
     for (const key of RELAUNCH_KEPT_OPTIONS) {
-      const value = (options as Record<string, unknown>)[key];
+      const raw = (options as Record<string, unknown>)[key];
+      const value = key === 'bindings' ? identityOnlyBindings(raw) : raw;
       if (value !== undefined) {
         retained[key] = value;
       }
-    }
-    const bindings = identityOnlyBindings((options as Record<string, unknown>).bindings);
-    if (bindings !== undefined) {
-      retained.bindings = bindings;
     }
   }
   getCarrier(globalObj).lastLaunch = { appToken, options: retained };
