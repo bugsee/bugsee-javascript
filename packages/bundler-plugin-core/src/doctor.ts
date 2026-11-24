@@ -178,7 +178,8 @@ export async function walkDetailed(
 ): Promise<{ files: string[]; skipped: string[]; fenced: boolean; unreadable: string[] }> {
   const fenced = (await isProjectRootOrAbove(root)) && existsSync(join(root, 'package.json'));
   const found: string[] = [];
-  const skipped: string[] = [];
+  // Directories the fence kept out, with their REAL path: one that a link then walked is dropped from the report.
+  const skippedEntries: Array<{ name: string; real: string }> = [];
   const unreadable: string[] = [];
   // Real directories already WALKED (not merely met: one beyond the depth cap is not walked, and a shallower link to it
   // must still get its turn): a loop or an alias is never walked, or counted, twice.
@@ -197,7 +198,7 @@ export async function walkDetailed(
   };
   const visitDir = async (next: Queued): Promise<void> => {
     if (fenced && next.depth > MAX_WALK_DEPTH) {
-      skipped.push(rel(root, next.dir));
+      skippedEntries.push({ name: rel(root, next.dir), real: next.real });
       return;
     }
     if (visited.has(next.real)) {
@@ -235,7 +236,10 @@ export async function walkDetailed(
           continue;
         }
         if (fenced && (NEVER_WALK.has(entry.name) || entry.name.startsWith('.'))) {
-          skipped.push(rel(root, full));
+          skippedEntries.push({
+            name: rel(root, full),
+            real: dirLink ?? join(next.real, entry.name),
+          });
           continue;
         }
         if (dirLink === undefined) {
@@ -257,6 +261,10 @@ export async function walkDetailed(
     pending.push(deferred[i] as Queued);
     await drain();
   }
+  // What the fence kept out and NOTHING walked (a link may have covered a directory the real walk could not reach).
+  const skipped = skippedEntries
+    .filter((entry) => !visited.has(entry.real))
+    .map((entry) => entry.name);
   return { files: found.sort(), skipped: skipped.sort(), fenced, unreadable: unreadable.sort() };
 }
 

@@ -1450,6 +1450,7 @@ describe('round 13 review findings', () => {
 
   it('hasOriginalPosition answers from the first usable segment without scanning (or splitting) the whole string', () => {
     const big = `AAAA${',AAAA'.repeat(5_000_000)}`; // ~25 MB: splitting it into 5M strings takes hundreds of ms
+    big.charAt(big.length - 1); // V8 builds the string lazily: flatten it first, so only the scan is timed
     const started = performance.now();
     expect(hasOriginalPosition(big)).toBe(true);
     expect(performance.now() - started).toBeLessThan(100);
@@ -1633,8 +1634,8 @@ describe('symlinked directories are followed inside the output directory, report
   it('a followed link inside a fenced project directory still obeys the fence by name', async () => {
     put('package.json', '{"name":"p"}');
     put('app.js', `a${stamp(ID_A)}`);
-    unstampedChunk(join(dist, 'real'));
-    symlinkSync(join(dist, 'real'), join(dist, 'tests'));
+    unstampedChunk(join(dist, 'node_modules', 'real')); // not walked by anything else
+    symlinkSync(join(dist, 'node_modules', 'real'), join(dist, 'tests'));
     const here = process.cwd();
     process.chdir(dist);
     try {
@@ -1721,9 +1722,8 @@ describe('round 16 review findings', () => {
       const report = await run();
       expect(ids(report)).toContain('stamp.missing-debug-id');
       expect(relFiles(await walk(dist))).toEqual(['app.js', 'shortcut/chunk.js']);
-      expect(find(report, 'output.walk-fenced')?.details).toEqual({
-        directories: ['a/b/c/d/e/f/g'],
-      });
+      // the link walked it: it is no longer "not searched"
+      expect(find(report, 'output.walk-fenced')).toBeUndefined();
     } finally {
       process.chdir(here);
     }
@@ -1807,5 +1807,54 @@ describe('round 16 review findings', () => {
     expect(ids(report)).not.toContain('map.too-large');
     expect(ids(report)).not.toContain('map.unreadable');
     expect(report.summary).toMatchObject({ bundles: 1, maps: 1, errors: 0 });
+  });
+});
+
+describe('output.walk-fenced lists only what was really not walked (round 17)', () => {
+  const inDist = async <T>(fn: () => Promise<T>): Promise<T> => {
+    const here = process.cwd();
+    process.chdir(dist);
+    try {
+      return await fn();
+    } finally {
+      process.chdir(here);
+    }
+  };
+  const fencedWalk = (): Promise<{ files: string[]; skipped: string[] }> => walkDetailed(dist);
+
+  it('an alias (beyond the depth cap) of a directory that WAS walked is not listed', async () => {
+    put('package.json', '{"name":"p"}');
+    put('v2/app.js', `a${stamp(ID_A)}`);
+    mkdirSync(join(dist, 'a/b/c/d/e/f'), { recursive: true });
+    symlinkSync(join(dist, 'v2'), join(dist, 'a/b/c/d/e/f/latest'));
+    const walked = await inDist(fencedWalk);
+    expect(relFiles(walked.files)).toEqual(['v2/app.js']);
+    expect(walked.skipped).toEqual([]);
+  });
+
+  it('a deep real directory that a shallower link then walks is not listed either', async () => {
+    put('package.json', '{"name":"p"}');
+    put('a/b/c/d/e/f/g/app.js', `a${stamp(ID_A)}`);
+    symlinkSync(join(dist, 'a/b/c/d/e/f/g'), join(dist, 'x'));
+    const walked = await inDist(fencedWalk);
+    expect(relFiles(walked.files)).toEqual(['x/app.js']);
+    expect(walked.skipped).toEqual([]);
+  });
+
+  it('a directory nothing walked is still listed (depth cap and fenced names)', async () => {
+    put('package.json', '{"name":"p"}');
+    put('a/b/c/d/e/f/g/app.js', 'x');
+    put('tests/t.js', 'x');
+    const walked = await inDist(fencedWalk);
+    expect(walked.skipped).toEqual(['a/b/c/d/e/f/g', 'tests']);
+  });
+
+  it('a fenced-name directory that a link DOES walk is not listed', async () => {
+    put('package.json', '{"name":"p"}');
+    put('tests/t.js', 'x');
+    symlinkSync(join(dist, 'tests'), join(dist, 'viewer'));
+    const walked = await inDist(fencedWalk);
+    expect(relFiles(walked.files)).toEqual(['viewer/t.js']);
+    expect(walked.skipped).toEqual([]);
   });
 });
