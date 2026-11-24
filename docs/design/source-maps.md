@@ -341,7 +341,8 @@ already written and finished in this build (its names stay known to later output
 `deleteMaps: false` its maps left on disk are not uploaded a second time) (an unmapped output that comes LAST must not fail because its mapped
 sibling got there first). An output whose own map exists but is unkeyed still fails. **Only an output that will
 write is a sibling:** `bundle.generate()` (`isWrite === false`) is never announced, so a generate-only mapped output
-cannot make a later unmapped write pass silently. **Nested directories:** an output written into `dist/b` while
+cannot make a later unmapped write pass silently, and it is not stamped at all (it never reaches `writeBundle`, so no CLI is spawned and
+`failOnError` cannot fail a build that writes nothing). **Nested directories:** an output written into `dist/b` while
 another writes `dist` is a sibling of the parent run under its relative path (`b/x.js.map`), because the parent's
 directory walk covers it; the nested run never sees the parent's files. **Directory identity** uses the canonical
 on-disk spelling (`realpath.native`), so `dist` and `DIST` are one directory on a case-insensitive filesystem.
@@ -423,8 +424,9 @@ source and so are deleted with them (as on the post-emit and `files` paths). A s
 was uploaded and the upload was confirmed: an unkeyed or unreadable one is never deleted, and nothing the walk
 merely saw is (a keyed map under `test/` or a dot-directory is uploaded AND deleted). The stylesheet and
 declaration maps are deleted only if something was uploaded. A map that cannot be read (anything but ENOENT) is
-not "gone": it is neither uploaded nor deleted and is reported with the unkeyed ones. A dry run still passes the directory (nothing was stamped; `--dry-run` only warns). Rspack development
-builds that are not uploaded (`uploadInDevelopment` unset) are no longer stamped either. Covered by real builds
+not "gone": it is neither uploaded nor deleted and is reported with the unkeyed ones. A dry run still passes the directory (nothing was stamped; `--dry-run` only warns). Rspack and webpack development
+builds that are not uploaded (`uploadInDevelopment` unset) are no longer stamped either. A map rewritten beside an unchanged, already-stamped
+bundle is held to that bundle's debug-ID (and restored if it differs) on the post-emit path. Covered by real builds
 (`plugin.in-build.real-build.test.ts`: Vite 7/8 with a `publicDir` vendor script, Rollup with a stale one, and `[name].map` custom map
 names on Rollup, Vite 7/8 and Rspack; real CLI, no dry run, `failOnError` on and off). Not run for real: webpack
 itself (Rspack shares its SourceMapDevToolPlugin filename path).

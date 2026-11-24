@@ -381,14 +381,25 @@ export async function verifyAndRestore(
   }
   for (const file of changed) {
     if (file.endsWith('.map') && !paired.has(file)) {
-      issues.push(
-        ...verifyStamp(
-          new Map([[file, await original(file)]]),
-          new Map([[file, (await read(file)) as Buffer]]),
-          options.parse,
-          path,
-        ),
-      );
+      const before = new Map([[file, await original(file)]]);
+      const now = new Map([[file, (await read(file)) as Buffer]]);
+      // A map rewritten beside an UNCHANGED bundle (one stamped earlier, which inject left alone) must still
+      // agree with that bundle's id: hand the bundle to the verifier, as the paired path does. (A CHANGED bundle that
+      // names this map would have paired it above, so every bundle reaching the check here is unchanged.)
+      for (const name of entries.keys()) {
+        if (!/\.[cm]?js$/i.test(name)) {
+          continue;
+        }
+        const bytes = await read(name);
+        if (bytes === undefined) {
+          continue;
+        }
+        if (resolveMapName(name, bytes.toString('utf8'), (n) => entries.has(n), path) === file) {
+          before.set(name, bytes);
+          now.set(name, bytes);
+        }
+      }
+      issues.push(...verifyStamp(before, now, options.parse, path));
     }
   }
 

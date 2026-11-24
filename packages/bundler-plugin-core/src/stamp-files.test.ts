@@ -113,6 +113,74 @@ describe('snapshot + verifyAndRestore', () => {
     await snap.dispose();
   });
 
+  describe('a changed map beside an UNCHANGED, already-stamped bundle is held to that bundle id', () => {
+    const OTHER = '11111111-2222-5333-8444-555555555555';
+    const stamped = `a();\n//# sourceMappingURL=a.js.map\n${STAMP}`;
+    const mapWith = (id: string) =>
+      JSON.stringify({ version: 3, sources: [], mappings: '', debugId: id });
+
+    it('fails and restores a map whose debugId differs from the bundle, leaving the bundle alone', async () => {
+      await writeFile(join(dir, 'a.js'), stamped);
+      await writeFile(join(dir, 'a.js.map'), plainMap);
+      const snap = await snapshotStampFiles({ dir });
+      await writeFile(join(dir, 'a.js.map'), mapWith(OTHER)); // rewritten, valid JSON, WRONG id
+      const { issues, restored, failed } = await verifyAndRestore(snap);
+      expect(issues.map((i) => i.name)).toEqual([join(dir, 'a.js.map')]);
+      expect(issues[0]?.reason).toContain(`${OTHER} does not match`);
+      expect(restored).toEqual([join(dir, 'a.js.map')]);
+      expect(failed).toEqual([]);
+      expect(await readFile(join(dir, 'a.js.map'), 'utf8')).toBe(plainMap);
+      expect(await readFile(join(dir, 'a.js'), 'utf8')).toBe(stamped);
+      await snap.dispose();
+    });
+
+    it('resolves the bundle through a custom-named map pointer too', async () => {
+      await mkdir(join(dir, 'maps'));
+      const code = `a();\n//# sourceMappingURL=maps/a.map\n${STAMP}`;
+      await writeFile(join(dir, 'a.js'), code);
+      await writeFile(join(dir, 'maps', 'a.map'), plainMap);
+      const snap = await snapshotStampFiles({ dir });
+      await writeFile(join(dir, 'maps', 'a.map'), mapWith(OTHER));
+      const { issues, restored } = await verifyAndRestore(snap);
+      expect(issues).toHaveLength(1);
+      expect(restored).toEqual([join(dir, 'maps', 'a.map')]);
+      await snap.dispose();
+    });
+
+    it('falls back to the <bundle>.map sibling when the pointer names a file that is not there', async () => {
+      const code = `a();\n//# sourceMappingURL=missing.map\n${STAMP}`;
+      await writeFile(join(dir, 'a.js'), code);
+      await writeFile(join(dir, 'a.js.map'), plainMap);
+      const snap = await snapshotStampFiles({ dir });
+      await writeFile(join(dir, 'a.js.map'), mapWith(OTHER));
+      const { issues, restored } = await verifyAndRestore(snap);
+      expect(issues).toHaveLength(1);
+      expect(restored).toEqual([join(dir, 'a.js.map')]);
+      await snap.dispose();
+    });
+
+    it('accepts a map that carries the bundle id', async () => {
+      await writeFile(join(dir, 'a.js'), stamped);
+      await writeFile(join(dir, 'a.js.map'), plainMap);
+      const snap = await snapshotStampFiles({ dir });
+      await writeFile(join(dir, 'a.js.map'), mapWith(ID));
+      expect(await verifyAndRestore(snap)).toEqual({ issues: [], restored: [], failed: [] });
+      await snap.dispose();
+    });
+
+    it('ignores a bundle that points at a different map, and one deleted meanwhile', async () => {
+      await writeFile(join(dir, 'a.js'), stamped); // points at a.js.map
+      await writeFile(join(dir, 'gone.js'), `g();\n//# sourceMappingURL=a.js.map\n${STAMP}`);
+      await writeFile(join(dir, 'a.js.map'), plainMap);
+      await writeFile(join(dir, 'b.js.map'), plainMap);
+      const snap = await snapshotStampFiles({ dir });
+      await rm(join(dir, 'gone.js'));
+      await writeFile(join(dir, 'b.js.map'), mapWith(OTHER)); // no bundle names b.js.map: only JSON-checked
+      expect(await verifyAndRestore(snap)).toEqual({ issues: [], restored: [], failed: [] });
+      await snap.dispose();
+    });
+  });
+
   it('a changed map with no changed bundle is held to being JSON, and is restored when it is not', async () => {
     await writeFile(join(dir, 'x.js.map'), plainMap);
     const snap = await snapshotStampFiles({ dir });

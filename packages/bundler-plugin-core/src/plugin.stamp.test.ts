@@ -1013,6 +1013,25 @@ describe('outputs announce their names at generateBundle, so the first write alr
       expect(siblingsOf(0)).toEqual([]);
     });
 
+    it(`${kind}: a generate()-only output (isWrite false) is not stamped at all: no CLI, no staging, no failOnError throw`, async () => {
+      stampSpy.mockReset();
+      stampSpy.mockImplementation(async () => {
+        throw new Error('bugsee-cli is missing');
+      });
+      const strict = makePlugin({ appToken: 'tok', failOnError: true, onNotice: () => undefined })[
+        kind
+      ] as unknown as ReturnType<typeof hooksOf2>;
+      await expect(
+        strict.generateBundle.handler({ dir: '/out' }, bundleOf('g'), false),
+      ).resolves.toBeUndefined();
+      expect(stampSpy).not.toHaveBeenCalled();
+      // the same output that WILL write is stamped, and its failure surfaces under failOnError
+      await expect(
+        strict.generateBundle.handler({ dir: '/out' }, bundleOf('g'), true),
+      ).rejects.toThrow(/bugsee-cli is missing/);
+      expect(stampSpy).toHaveBeenCalledOnce();
+    });
+
     it(`${kind}: an output written into a NESTED directory is a sibling under its relative path`, async () => {
       uploadSpy.mockClear();
       const h = hooksOf2(kind);

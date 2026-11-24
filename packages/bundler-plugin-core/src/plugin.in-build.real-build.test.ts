@@ -1370,6 +1370,38 @@ describeReal('a generate()-only output is not a sibling', () => {
   });
 });
 
+describeReal('a generate()-only output is not stamped', () => {
+  it('bundle.generate() with a missing CLI does not spawn it or fail under failOnError, while write() still fails', async () => {
+    const app = makeApp('rollup-generate-nocli', { lazy: false });
+    const saved = process.env.BUGSEE_CLI_PATH;
+    process.env.BUGSEE_CLI_PATH = join(app.dir, 'no-such-bugsee-cli');
+    const bundle = await rollup({
+      input: join(app.dir, 'index.js'),
+      plugins: [bugseeRollupPlugin({ ...pluginOptions(), failOnError: true })],
+    });
+    try {
+      const generated = await bundle.generate({
+        dir: app.out,
+        format: 'iife',
+        name: 'g',
+        sourcemap: true,
+      });
+      expect(generated.output.length).toBeGreaterThan(0);
+      // the same build that WRITES is stamped, so the missing CLI is a hard failure there
+      await expect(
+        bundle.write({ dir: app.out, format: 'iife', name: 'w', sourcemap: true }),
+      ).rejects.toThrow();
+    } finally {
+      if (saved === undefined) {
+        delete process.env.BUGSEE_CLI_PATH;
+      } else {
+        process.env.BUGSEE_CLI_PATH = saved;
+      }
+      await bundle.close();
+    }
+  });
+});
+
 describeReal('an output into a nested directory of another output', () => {
   it('the parent output neither uploads nor reports the nested output maps as foreign', async () => {
     const app = makeApp('rollup-nested-dirs', { lazy: false });
