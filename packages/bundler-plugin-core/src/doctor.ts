@@ -343,6 +343,36 @@ export function mapSources(json: Record<string, unknown>): {
 /** Nested index maps are followed this deep (a real one is 1-2 levels); a hostile chain must not overflow the stack. */
 const MAX_INDEX_DEPTH = 32;
 
+const MODULE_SPECIFIER = String.raw`\s*(?:'[^'\n]*'|"[^"\n]*")`;
+/** One `import ...` or `export ... from ...` / `export { ... }` statement, at the start of the text. */
+const FACADE_STATEMENT = new RegExp(
+  String.raw`^\s*(?:import\s*(?:(?:[\w$]+\s*,?\s*)?(?:\*\s*as\s+[\w$]+|\{[^}]*\})?\s*from)?${MODULE_SPECIFIER}|export\s*(?:\*\s*(?:as\s+[\w$]+\s*)?from${MODULE_SPECIFIER}|\{[^}]*\}\s*(?:from${MODULE_SPECIFIER})?))\s*;?`,
+);
+
+/**
+ * Whether a bundle holds no code of its own: only `import`s, re-exports and comments, plus the Bugsee registration
+ * (found by its marker, on its own line: the stamp appends it). That is a facade or empty chunk, whose empty map is
+ * correct. Anything else (a function, a call, a declaration) is real code, and an empty map for it is a stripped one.
+ * Conservative on purpose: whatever it cannot read as a facade is not one.
+ */
+export function isFacadeCode(code: string): boolean {
+  let rest = code
+    .split('\n')
+    .filter((line) => !line.includes(REGISTRATION))
+    .join('\n')
+    .replace(/\/\*[\s\S]*?\*\//g, ' ')
+    .replace(/\/\/[^\n]*/g, ' ')
+    .trim();
+  while (rest !== '') {
+    const statement = FACADE_STATEMENT.exec(rest);
+    if (statement === null) {
+      return false;
+    }
+    rest = rest.slice(statement[0].length).trim();
+  }
+  return true;
+}
+
 /**
  * Whether a map holds any GENERATED segment at all (a `mappings` with something besides separators, in the map or in
  * any section). Rollup writes `sources: []`, `mappings: ""` for a facade or empty chunk: there is nothing to map, so
@@ -924,7 +954,7 @@ async function diagnose(dirInput: string, options: DoctorOptions): Promise<Docto
         // Counted once as unstamped above; do not double report below.
         unstamped.delete(name);
       }
-      validateMap(mapPath, mapName, parsed.json, mapRead.real);
+      validateMap(mapPath, mapName, parsed.json, mapRead.real, code);
     }
   }
 
@@ -980,6 +1010,8 @@ async function diagnose(dirInput: string, options: DoctorOptions): Promise<Docto
     mapName: string,
     json: Record<string, unknown>,
     real: string,
+    /** The bundle that claims this map, when there is one: an empty map is only right for a facade chunk. */
+    bundleCode?: string,
   ): void {
     const first = markSeen(real); // content and structure are the same for every name of one file
     const base = `${real}\0${dirname(mapPath)}`;
@@ -1007,7 +1039,7 @@ async function diagnose(dirInput: string, options: DoctorOptions): Promise<Docto
       return;
     }
     const { sources, content, roots, hasOriginal } = mapSources(json);
-    if (sources.length === 0 && !hasGeneratedSegments(json)) {
+    if (sources.length === 0 && !hasGeneratedSegments(json) && isFacadeCode(bundleCode ?? '')) {
       // A facade / empty chunk (Rollup: `sources: []`, `mappings: ""`): nothing generated, nothing to symbolicate.
       if (first) {
         add({

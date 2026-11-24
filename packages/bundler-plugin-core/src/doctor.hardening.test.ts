@@ -22,6 +22,7 @@ import {
   diagnoseBuildOutput,
   doctorExitCode,
   hasOriginalPosition,
+  isFacadeCode,
   sourcePath,
   walk,
   walkDetailed,
@@ -1214,7 +1215,9 @@ describe('index (sectioned) source maps (round 10)', () => {
   it('an index map whose sections carry no sources is still map.no-sources', async () => {
     pair(index([section([]), { offset: { line: 1, column: 0 }, url: 'x.map' }], { debugId: ID_A }));
     expect(ids(await run())).toContain('map.no-sources');
-    pair(index([], { debugId: ID_A })); // no sections at all: nothing generated, see the facade-chunk tests below
+    pair(index([], { debugId: ID_A })); // no sections at all: nothing generated; the bundle `a` is real code: error
+    expect(find(await run(), 'map.no-sources')?.severity).toBe('error');
+    put('a.js', `export{a}from'./m.js';${stamp(ID_A)}`); // as a facade it is fine
     expect(find(await run(), 'map.no-sources')?.severity).toBe('info');
   });
 
@@ -1887,6 +1890,45 @@ describe('a facade or empty chunk has an empty map and that is healthy (round 18
     expect(doctorExitCode(report, true)).toBe(0);
   });
 
+  it('a chunk with REAL code and an empty map is still an error (a placeholder map, not a facade)', async () => {
+    put(
+      'main.js',
+      `export function boom(){throw new Error('x')}\nconsole.log(1);\n//# sourceMappingURL=main.js.map${stamp(ID_A)}`,
+    );
+    put('main.js.map', rollupEmpty({ debugId: ID_A, mappings: ';;;;;;' }));
+    const report = await run();
+    expect(find(report, 'map.no-sources')?.severity).toBe('error');
+    expect(doctorExitCode(report, false)).toBe(2);
+  });
+
+  it('isFacadeCode: only imports, re-exports and comments (and the Bugsee registration) are a facade', () => {
+    for (const facade of [
+      '',
+      '  \n// nothing here\n/* or here */',
+      "export{a}from'./main.js';",
+      'export { a, b as c } from "./main.js";\n',
+      "export * from './x.js'; export * as ns from './y.js'",
+      "import './side-effect.js';",
+      "import{a}from'./main.js';export{a};",
+      "import a, { b } from './m.js'\nimport * as c from './c.js'\nexport { a, b, c }",
+      `export{a}from'./main.js';\n//# sourceMappingURL=a.js.map${stamp(ID_A)}`,
+    ]) {
+      expect(isFacadeCode(facade), JSON.stringify(facade)).toBe(true);
+    }
+    for (const code of [
+      'export function f(){}',
+      'export const a = 1;',
+      "export { a } from './m.js'; console.log(1)",
+      "import { a } from './m.js'; a();",
+      'var x = 1; export { x }',
+      'export default function(){}',
+      "export { a } from './m.js' + 'x'",
+      'console.log(1)',
+    ]) {
+      expect(isFacadeCode(code), JSON.stringify(code)).toBe(false);
+    }
+  });
+
   it('only separators in mappings (";;;" or ",;") is still empty', async () => {
     for (const mappings of [';;;', ',;,', ';']) {
       pairOne(rollupEmpty({ debugId: ID_A, mappings }));
@@ -1918,6 +1960,16 @@ describe('a facade or empty chunk has an empty map and that is healthy (round 18
     }
     pairOne(JSON.stringify({ ...deep, debugId: ID_A }));
     expect(find(await run(), 'map.no-sources')?.severity).toBe('error'); // beyond the cap: cannot tell, so not waved through
+  });
+
+  it('an empty map that no bundle claims (there is no code to check) is a note', async () => {
+    put('a.js', `a${stamp(ID_A)}`);
+    put('a.js.map', mapJson({ debugId: ID_A }));
+    put('orphan.css.map', rollupEmpty());
+    expect(find(await run(), 'map.no-sources')).toMatchObject({
+      severity: 'info',
+      file: 'orphan.css.map',
+    });
   });
 
   it('an empty map reached through aliases in different directories is noted once', async () => {

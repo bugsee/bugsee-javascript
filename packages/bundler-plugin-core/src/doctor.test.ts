@@ -313,7 +313,7 @@ describe('diagnoseBuildOutput', () => {
   it('map.no-sources: missing or empty `sources`', async () => {
     put('a.js', `a${stamp(ID_A)}`);
     put('a.js.map', mapJson({ debugId: ID_A, sources: [] }));
-    put('b.js', `b${stamp(ID_B)}`);
+    put('b.js', `export{b}from'./m.js';${stamp(ID_B)}`); // a facade: no code of its own
     put('b.js.map', JSON.stringify({ version: 3, debugId: ID_B, mappings: '' }));
     const report = await run();
     const found = report.findings.filter((f) => f.id === 'map.no-sources');
