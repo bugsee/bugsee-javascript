@@ -1059,6 +1059,20 @@ describe('index (sectioned) source maps (round 10)', () => {
     expect(find(report, 'map.sources-content')?.message).toContain('all 1 sources');
   });
 
+  it("each section's sources are resolved with the section's own sourceRoot", async () => {
+    put('src/a.ts', 'x');
+    const withRoot = {
+      offset: { line: 0, column: 0 },
+      map: { version: 3, sourceRoot: 'src/', sources: ['a.ts'], names: [], mappings: 'AAAA' },
+    };
+    pair(index([withRoot], { debugId: ID_A }));
+    expect(ids(await run())).not.toContain('map.sources-unresolvable');
+    put('src/a.ts', 'x');
+    const wrongRoot = { ...withRoot, map: { ...withRoot.map, sourceRoot: 'nope/' } };
+    pair(index([wrongRoot], { debugId: ID_A }));
+    expect(ids(await run())).toContain('map.sources-unresolvable');
+  });
+
   it('top-level sources win over sections', async () => {
     pair(
       index([section(['z.ts'], ['z'])], {
@@ -1068,5 +1082,21 @@ describe('index (sectioned) source maps (round 10)', () => {
       }),
     );
     expect(find(await run(), 'map.sources-content')?.message).toContain('all 1 sources');
+  });
+});
+
+describe('a ? in the checked directory path (round 11)', () => {
+  it('the pointer is judged on its own query, not on a ? anywhere in the absolute path', async () => {
+    const weird = join(root, 'we?ird');
+    mkdirSync(weird);
+    const out = join(weird, 'dist');
+    mkdirSync(out);
+    writeFileSync(join(out, 'a.js'), `a\n//# sourceMappingURL=a.js.map${stamp(ID_A)}`);
+    writeFileSync(join(out, 'a.js.map'), mapJson({ debugId: ID_A }));
+    const report = await diagnoseBuildOutput(out, { projectRoot: root, skipEnv: true });
+    expect(ids(report)).not.toContain('map.pointer-outside-dir');
+    expect(ids(report)).not.toContain('map.pointer-dangling');
+    expect(ids(report)).not.toContain('map.hidden'); // the pointer paired a.js.map
+    expect(report.summary.errors + report.summary.warnings).toBe(0);
   });
 });

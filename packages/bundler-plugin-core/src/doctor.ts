@@ -244,15 +244,19 @@ export function globToRegExp(glob: string): RegExp {
 export function mapSources(json: Record<string, unknown>): {
   sources: unknown[];
   content: unknown[];
+  roots: string[];
 } {
   if (Array.isArray(json.sources) && json.sources.length > 0) {
+    const root = typeof json.sourceRoot === 'string' ? json.sourceRoot : '';
     return {
       sources: json.sources as unknown[],
       content: Array.isArray(json.sourcesContent) ? (json.sourcesContent as unknown[]) : [],
+      roots: (json.sources as unknown[]).map(() => root),
     };
   }
   const sources: unknown[] = [];
   const content: unknown[] = [];
+  const roots: string[] = [];
   for (const section of Array.isArray(json.sections) ? (json.sections as unknown[]) : []) {
     const map = (section as { map?: Record<string, unknown> } | null)?.map;
     if (typeof map !== 'object' || map === null || !Array.isArray(map.sources)) {
@@ -260,12 +264,15 @@ export function mapSources(json: Record<string, unknown>): {
     }
     const own = map.sources as unknown[];
     const embedded = Array.isArray(map.sourcesContent) ? (map.sourcesContent as unknown[]) : [];
+    // A section is a full map: its sources are relative to ITS sourceRoot.
+    const root = typeof map.sourceRoot === 'string' ? map.sourceRoot : '';
     own.forEach((source, i) => {
       sources.push(source);
       content.push(embedded[i]);
+      roots.push(root);
     });
   }
-  return { sources, content };
+  return { sources, content, roots };
 }
 
 interface ParsedMap {
@@ -615,7 +622,11 @@ async function diagnose(dirInput: string, options: DoctorOptions): Promise<Docto
         // webpack / Rspack write `main.js?[hash]` to disk as `main.js` and keep the query in the pointer
         // (`main.js.map?[hash]`): a server drops the query when it maps the URL to a file, so does the doctor
         // (a file named with a `?` is not a `.map` file, so it could not have been paired anyway).
-        const target = raw === undefined ? undefined : cutAtQuery(raw);
+        const bundleDir = nodePath.dirname(bundle);
+        const target =
+          raw === undefined
+            ? undefined
+            : nodePath.join(bundleDir, cutAtQuery(nodePath.relative(bundleDir, raw)));
         if (target !== undefined) {
           if (!isInside(dir, target)) {
             // Never read it: a pointer can name `/dev/zero`, a FIFO or someone else's file.
@@ -792,7 +803,7 @@ async function diagnose(dirInput: string, options: DoctorOptions): Promise<Docto
       });
       return;
     }
-    const { sources, content } = mapSources(json);
+    const { sources, content, roots } = mapSources(json);
     if (sources.length === 0) {
       add({
         id: 'map.no-sources',
@@ -803,7 +814,8 @@ async function diagnose(dirInput: string, options: DoctorOptions): Promise<Docto
       });
       return;
     }
-    const missing = sources.filter((_, i) => typeof content[i] !== 'string').map(String);
+    const missingAt = sources.flatMap((_, i) => (typeof content[i] !== 'string' ? [i] : []));
+    const missing = missingAt.map((i) => String(sources[i]));
     if (missing.length === 0) {
       contentFacts.push({
         file: mapName,
@@ -812,11 +824,10 @@ async function diagnose(dirInput: string, options: DoctorOptions): Promise<Docto
       });
       return;
     }
-    const sourceRoot = typeof json.sourceRoot === 'string' ? json.sourceRoot : '';
     const mapDir = dirname(mapPath);
-    const unresolved = missing.filter((source) => {
-      const path = sourcePath(mapDir, sourceRoot, source, projectRoot);
-      return path !== undefined && !existsSync(path);
+    const unresolved = missingAt.flatMap((i) => {
+      const path = sourcePath(mapDir, roots[i] as string, String(sources[i]), projectRoot);
+      return path !== undefined && !existsSync(path) ? [String(sources[i])] : [];
     });
     if (unresolved.length > 0) {
       add({
