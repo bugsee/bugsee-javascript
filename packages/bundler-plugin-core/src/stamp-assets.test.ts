@@ -732,7 +732,7 @@ describe('stampAssets — two bundles that claim the same map', () => {
       mapOf: () => 'shared.map',
     };
     await expect(stampAssets(store, { run })).rejects.toThrow(
-      /shared\.map.*a\.js.*b\.js|shared\.map/,
+      'the map shared.map is claimed by more than one bundle (a.js and b.js), so it cannot be stamped',
     );
     expect(run).not.toHaveBeenCalled();
   });
@@ -743,9 +743,12 @@ describe("stampAssets — a map that is another bundle's own sibling is claimed 
     const run = vi.fn(async () => ({ code: 0, stdout: '', stderr: '' }));
     const store = {
       ...memoryStore({ 'a.js': 'a\n', 'a.js.map': '{}', 'b.js': 'b\n' }),
-      mapOf: (name: string) => (name === 'a.js' ? 'a.js.map' : 'a.js.map'),
+      // both bundles name a.js.map: it is a.js's own sibling, and b.js claims it too
+      mapOf: () => 'a.js.map',
     };
-    await expect(stampAssets(store, { run })).rejects.toThrow(/a\.js\.map.*claimed/);
+    await expect(stampAssets(store, { run })).rejects.toThrow(
+      'the map a.js.map is claimed by more than one bundle (a.js and b.js), so it cannot be stamped',
+    );
     expect(run).not.toHaveBeenCalled();
   });
 });

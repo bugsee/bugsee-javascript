@@ -37,7 +37,11 @@ import { findIntegrityMismatches } from './sri';
 
 let server: Server;
 let endpoint: string;
-const requests: Array<{ url: string }> = [];
+const requests: Array<{ url: string; body: string }> = [];
+/** The debug-id a stamped bundle on disk carries. */
+const debugIdOf = (file: string): string =>
+  /\/\/# debugId=([0-9a-f-]{36})/.exec(readFileSync(file, 'utf8'))?.[1] ?? '';
+
 let root: string;
 
 const cli = resolveBugseeCli();
@@ -59,9 +63,12 @@ beforeAll(async () => {
   root = mkdtempSync(join(tmpdir(), 'bugsee-in-build-'));
   // Every request is answered "already uploaded", so the upload succeeds without a backend.
   server = createServer((req, res) => {
-    requests.push({ url: req.url ?? '' });
-    req.resume();
+    const entry = { url: req.url ?? '', body: '' };
+    requests.push(entry);
+    const chunks: Buffer[] = [];
+    req.on('data', (c: Buffer) => chunks.push(c));
     req.on('end', () => {
+      entry.body = Buffer.concat(chunks).toString('latin1');
       res.setHeader('content-type', 'application/json');
       res.end(
         JSON.stringify({ ok: false, error: { type: 'DuplicateSymbolsFoundError', code: 16004 } }),
@@ -1222,9 +1229,12 @@ describeReal('several Rollup outputs written concurrently into one directory', (
     const files = readdirSync(app.out);
     expect(files.filter((f) => f.endsWith('.map'))).toEqual([]);
     expect(files.filter((f) => f.endsWith('.js')).sort()).toEqual(names.map((n) => `${n}.js`));
-    // one CLI upload call per output: a request per map, so at most the number of outputs
-    expect(requests.length - before).toBeLessThanOrEqual(names.length);
-    expect(requests.length - before).toBeGreaterThanOrEqual(1);
+    // every output's map was uploaded exactly once (by debug-id), not merely "some upload happened"
+    for (const n of names) {
+      const id = debugIdOf(join(app.out, `${n}.js`));
+      expect(id).not.toBe('');
+      expect(requests.slice(before).filter((r) => r.body.includes(id))).toHaveLength(1);
+    }
   });
 });
 
@@ -1283,14 +1293,18 @@ describeReal('one directory spelled several ways', () => {
     expect(errors.map(String)).toEqual([]);
     expect(notices.filter((m) => m.includes('not produced by this build'))).toEqual([]);
     expect((readdirSync(app.out) as string[]).filter((f) => f.endsWith('.map'))).toEqual([]);
-    expect(requests.length - before).toBeLessThanOrEqual(spellings.length);
-    expect(requests.length - before).toBeGreaterThanOrEqual(1);
+    for (let i = 0; i < spellings.length; i++) {
+      const id = debugIdOf(join(app.out, `s${i}.js`));
+      expect(id).not.toBe('');
+      expect(requests.slice(before).filter((r) => r.body.includes(id))).toHaveLength(1);
+    }
   });
 });
 
 describeReal('a mapped and an unmapped output into one directory under failOnError', () => {
   it('the unmapped output has nothing to do and does not fail the build', async () => {
     const app = makeApp('rollup-mapped-unmapped', { lazy: false });
+    const before = requests.length;
     const errors: unknown[] = [];
     const bundle = await rollup({
       input: join(app.dir, 'index.js'),
@@ -1321,6 +1335,11 @@ describeReal('a mapped and an unmapped output into one directory under failOnErr
     await bundle.close();
     expect(errors.map(String)).toEqual([]);
     expect((readdirSync(app.out) as string[]).filter((f) => f.endsWith('.map'))).toEqual([]);
+    // the mapped output really uploaded its map, once; the unmapped one uploaded nothing
+    const id = debugIdOf(join(app.out, 'm.js'));
+    expect(id).not.toBe('');
+    expect(requests.slice(before)).toHaveLength(1);
+    expect(requests.slice(before)[0]?.body.includes(id)).toBe(true);
   });
 });
 
@@ -1348,6 +1367,38 @@ describeReal('a generate()-only output is not a sibling', () => {
       }),
     ).rejects.toThrow(/no source maps with a debug-ID were found/);
     await bundle.close();
+  });
+});
+
+describeReal('a generate()-only output is not stamped', () => {
+  it('bundle.generate() with a missing CLI does not spawn it or fail under failOnError, while write() still fails', async () => {
+    const app = makeApp('rollup-generate-nocli', { lazy: false });
+    const saved = process.env.BUGSEE_CLI_PATH;
+    process.env.BUGSEE_CLI_PATH = join(app.dir, 'no-such-bugsee-cli');
+    const bundle = await rollup({
+      input: join(app.dir, 'index.js'),
+      plugins: [bugseeRollupPlugin({ ...pluginOptions(), failOnError: true })],
+    });
+    try {
+      const generated = await bundle.generate({
+        dir: app.out,
+        format: 'iife',
+        name: 'g',
+        sourcemap: true,
+      });
+      expect(generated.output.length).toBeGreaterThan(0);
+      // the same build that WRITES is stamped, so the missing CLI is a hard failure there
+      await expect(
+        bundle.write({ dir: app.out, format: 'iife', name: 'w', sourcemap: true }),
+      ).rejects.toThrow();
+    } finally {
+      if (saved === undefined) {
+        delete process.env.BUGSEE_CLI_PATH;
+      } else {
+        process.env.BUGSEE_CLI_PATH = saved;
+      }
+      await bundle.close();
+    }
   });
 });
 
@@ -1415,5 +1466,42 @@ describeReal('a mapped output that FINISHED before an unmapped one, under failOn
       sourcemap: false,
     });
     await bundle.close();
+  });
+});
+
+describeReal('a finished sibling whose maps stay on disk (deleteMaps: false)', () => {
+  it('a later output does not upload them again or call them foreign', async () => {
+    const app = makeApp('rollup-finished-sibling', { lazy: false });
+    const before = requests.length;
+    const notices: string[] = [];
+    const bundle = await rollup({
+      input: join(app.dir, 'index.js'),
+      plugins: [
+        bugseeRollupPlugin({
+          ...pluginOptions(),
+          deleteMaps: false,
+          onNotice: (m: string) => notices.push(m),
+        }),
+      ],
+    });
+    await bundle.write({
+      dir: app.out,
+      entryFileNames: 'm.js',
+      format: 'iife',
+      name: 'm',
+      sourcemap: true,
+    });
+    await bundle.write({
+      dir: app.out,
+      entryFileNames: 'u.js',
+      format: 'iife',
+      name: 'u',
+      sourcemap: false,
+    });
+    await bundle.close();
+    expect(notices.filter((m) => m.includes('not produced by this build'))).toEqual([]);
+    expect(requests.slice(before)).toHaveLength(1);
+    expect(requests.slice(before)[0]?.body.includes(debugIdOf(join(app.out, 'm.js')))).toBe(true);
+    expect(readdirSync(app.out)).toContain('m.js.map'); // deleteMaps: false
   });
 });

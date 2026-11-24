@@ -242,6 +242,23 @@ describe('the output hooks actually drive the upload', () => {
       expect(stampSpy).toHaveBeenCalledOnce();
     });
 
+    it('stamps in every mode, development included, and uploads after emit as already stamped', async () => {
+      // webpack has no development gate on its afterEmit upload (unlike Rspack), so skipping the in-build
+      // stamp there would only move the CLI to afterEmit and lose the SRI protection.
+      for (const mode of ['development', 'production', 'none', undefined]) {
+        stampSpy.mockClear();
+        uploadSpy.mockClear();
+        const w = webpack5Compiler(mode === undefined ? {} : { mode });
+        apply({ appToken: 'tok' }, w.compiler);
+        await w.compile();
+        expect(w.processAssets).toHaveLength(1);
+        expect(stampSpy).toHaveBeenCalledOnce();
+        await w.taps[0]?.fn();
+        expect(uploadSpy).toHaveBeenCalledOnce();
+        expect((uploadSpy.mock.calls[0]?.[2] as { preStamped?: boolean }).preStamped).toBe(true);
+      }
+    });
+
     it('then uploads WITHOUT re-injecting after emit', async () => {
       const w = webpack5Compiler({ mode: 'production' });
       apply({ appToken: 'tok' }, w.compiler);

@@ -436,6 +436,9 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
     );
     return true;
   };
+  // An Rspack `mode: 'development'` build that is not uploaded (no `uploadInDevelopment`).
+  const isUnuploadedDevelopment = (compiler: WebpackCompilerLike): boolean =>
+    compiler.options.mode === 'development' && !resolved.uploadInDevelopment;
   // `resolved` is assigned right below; `loadFile` only reads it after that (it is `let` for the hook refresh).
   let resolved = resolvePluginOptions(options, process.env);
   let env = mergeBuildPluginEnv(process.env, loadFile(undefined));
@@ -580,24 +583,24 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
   const announced = new Map<string, Map<object, string[]>>();
   // Directories an output WITH maps has already written in this build: an unmapped output that comes after it
   // (its sibling already finished and left the registry) still has nothing to do. Cleared with a new build.
-  const mappedDirs = new Set<string>();
+  const finishedNames = new Map<string, string[]>();
   const stampBundle = async (
     output: OutputLike,
     bundle: RollupBundleLike,
     isWrite?: boolean,
   ): Promise<void> => {
+    // `bundle.generate()` / Vite `build({ write: false })` (isWrite === false) never reaches writeBundle, so
+    // nothing consumes a stamp: spawning the CLI (and, under failOnError, throwing) would be pure cost for a
+    // build that writes nothing. It is not announced either: as a stale sibling it would hide maps that
+    // belong to nobody.
     const outDir = resolveOutputDir(output);
-    if (outDir === undefined || !resolved.enabled) {
+    if (isWrite === false || outDir === undefined || !resolved.enabled) {
       return;
     }
     const key = dirKey(outDir);
-    // Only an output that WILL write is a sibling: `bundle.generate()` (isWrite === false) never writes, so
-    // its announcement would hide, as a stale sibling, maps that belong to nobody.
-    if (isWrite !== false) {
-      const group = announced.get(key) ?? new Map<object, string[]>();
-      group.set(output, Object.keys(bundle));
-      announced.set(key, group);
-    }
+    const group = announced.get(key) ?? new Map<object, string[]>();
+    group.set(output, Object.keys(bundle));
+    announced.set(key, group);
     stampedOutputs.set(output, { preStamped: false });
     const unstampable = rollupUnstampableMaps(bundle);
     if (unstampable.length > 0) {
@@ -637,9 +640,17 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
       // A name THIS output emitted is never a sibling's: a leftover announcement from `bundle.generate()` (which
       // never writes) has the same names and must not hide this output's own maps.
       const mine = new Set(Object.keys(bundle ?? {}));
-      const siblingsHaveMaps = [...mappedDirs].some((dir) => relativeUnder(key, dir) !== undefined);
-      if ([...mine].some((name) => name.endsWith('.map'))) {
-        mappedDirs.add(key);
+      // Outputs that already wrote in this build: their names stay known (with `deleteMaps: false` their maps
+      // are still on disk, and a later output must not take them for foreign and upload them again).
+      const finished = [...finishedNames].flatMap(([dir, names]) => {
+        const prefix = relativeUnder(key, dir);
+        return prefix === undefined
+          ? []
+          : names.filter((n) => !mine.has(n)).map((n) => (prefix === '' ? n : `${prefix}/${n}`));
+      });
+      const siblingsHaveMaps = finished.some((name) => name.endsWith('.map'));
+      if (bundle !== undefined) {
+        finishedNames.set(key, [...(finishedNames.get(key) ?? []), ...mine]);
       }
       const siblings = [...(group ?? [])]
         .filter(([other]) => other !== output)
@@ -649,7 +660,8 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
           nested.flatMap(([dir, g]) =>
             [...g.values()].flat().map((name) => `${relativeUnder(key, dir)}/${name}`),
           ),
-        );
+        )
+        .concat(finished);
       group?.delete(output);
       if (group?.size === 0) {
         announced.delete(key);
@@ -732,7 +744,7 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
       },
       buildStart() {
         announced.clear();
-        mappedDirs.clear();
+        finishedNames.clear();
       },
       generateBundle: generateBundleHook,
       writeBundle: (output: OutputLike, bundle?: object) =>
@@ -774,7 +786,7 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
       buildStart() {
         unbakedOutDirs.clear();
         announced.clear();
-        mappedDirs.clear();
+        finishedNames.clear();
       },
       generateBundle: generateBundleHook,
       writeBundle: (output: OutputLike, bundle?: object) => uploadForOutput(output, {}, bundle),
@@ -892,20 +904,13 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
       // which keeps the SRI guard that refuses a build whose integrity hashes the stamp would invalidate.
       // A development build that is not uploaded (`afterEmit` skips it) is not stamped either: rspack
       // serve/watch would otherwise spawn the CLI on every rebuild for bundles nothing uses.
-      const preStamped = tapProcessAssetsStamp(
-        compiler,
-        compiler.options.mode === 'development' && !resolved.uploadInDevelopment,
-      );
+      const preStamped = tapProcessAssetsStamp(compiler, isUnuploadedDevelopment(compiler));
       // End of the build (#184): upload after emit, as webpack does.
       // Rspack's production default is `devtool: false`: no maps are emitted and the upload silently finds
       // nothing. Said once, like esbuild's `sourcemap: false`.
       // Judged on the RESOLVED default: an unset `devtool` is `eval` in development (the dev-skip notice covers
       // that build) and false otherwise.
-      if (
-        resolved.enabled &&
-        !compiler.options.devtool &&
-        !(compiler.options.mode === 'development' && !resolved.uploadInDevelopment)
-      ) {
+      if (resolved.enabled && !compiler.options.devtool && !isUnuploadedDevelopment(compiler)) {
         say(
           'Rspack `devtool` is off, so no source maps are emitted and there is nothing to upload. Set `devtool: "source-map"` for builds you want symbolicated (ignore this if you emit maps another way).',
         );
@@ -940,7 +945,10 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
         taken,
       );
       injectDefines(compiler, DefinePlugin, identityDefines, taken);
-      // THE SRI FIX on webpack 5: stamp inside the compilation (see tapProcessAssetsStamp).
+      // THE SRI FIX on webpack 5: stamp inside the compilation (see tapProcessAssetsStamp), in every mode.
+      // Unlike Rspack, webpack's `afterEmit` upload has no development gate (and `resolve.ts` documents that
+      // webpack is not gated), so skipping the stamp in development would not avoid the CLI: it would only
+      // move it to `afterEmit` (inject on disk, then upload) and lose the SRI protection there.
       const preStamped = tapProcessAssetsStamp(compiler);
 
       compiler.hooks.afterEmit.tapPromise(name, async (compilation?: AssetNamesLike) => {

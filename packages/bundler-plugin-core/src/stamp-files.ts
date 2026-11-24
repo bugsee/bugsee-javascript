@@ -8,7 +8,7 @@
 // The originals are SPILLED to a temp directory with a content hash beside them, not held in memory: a
 // build can have hundreds of megabytes of scripts and maps, and the verification only ever needs one
 // bundle and its map at a time.
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import type { Dirent } from 'node:fs';
 import {
   chmod,
@@ -279,15 +279,24 @@ export async function restoreAtomically(spill: string, target: string): Promise<
     (info) => info.mode & 0o7777,
     () => undefined,
   );
-  const temp = join(dirname(real), `.bugsee-restore-${process.pid}-${Date.now()}`);
+  // Unique per call (concurrent runs of one process restore into the same directory) and created exclusively
+  // (`wx`): a name that already exists is never written to, and never removed by a call that did not create it.
+  const temp = join(
+    dirname(real),
+    `.bugsee-restore-${process.pid}-${randomBytes(8).toString('hex')}`,
+  );
+  const bytes = await readFile(spill);
   try {
-    await writeFile(temp, await readFile(spill));
+    await writeFile(temp, bytes, { flag: 'wx' });
     if (mode !== undefined) {
       await chmod(temp, mode);
     }
     await rename(temp, real);
   } catch (error) {
-    await unlink(temp).catch(() => undefined);
+    // A temp file that already existed (EEXIST) is someone else's: only one this call created is removed.
+    if ((error as NodeJS.ErrnoException).code !== 'EEXIST') {
+      await unlink(temp).catch(() => undefined);
+    }
     throw error;
   }
 }
@@ -310,10 +319,15 @@ export async function verifyAndRestore(
   failed: Array<{ path: string; error: string }>;
 }> {
   const { entries } = snapshot;
+  const unreadable = new Map<string, string>();
   const read = async (file: string): Promise<Buffer | undefined> => {
     try {
       return await readFile(file);
-    } catch {
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+        // Not "deleted": a file that cannot be read cannot be verified, and it may still carry a bad rewrite.
+        unreadable.set(file, String(error));
+      }
       return undefined; // deleted meanwhile: not part of the comparison
     }
   };
@@ -357,7 +371,10 @@ export async function verifyAndRestore(
     const now = new Map([[bundle, after]]);
     if (entries.has(map)) {
       partner.set(bundle, partner.get(bundle) ?? map);
-      partner.set(map, bundle);
+      // A rollback relationship the ORIGINAL pointers established is never replaced by a changed pointer.
+      if (!partner.has(map)) {
+        partner.set(map, bundle);
+      }
       before.set(map, await original(map));
       const mapNow = await read(map);
       if (mapNow !== undefined) {
@@ -383,15 +400,32 @@ export async function verifyAndRestore(
   }
   for (const file of changed) {
     if (file.endsWith('.map') && !paired.has(file)) {
-      issues.push(
-        ...verifyStamp(
-          new Map([[file, await original(file)]]),
-          new Map([[file, (await read(file)) as Buffer]]),
-          options.parse,
-          path,
-        ),
-      );
+      const before = new Map([[file, await original(file)]]);
+      const now = new Map([[file, (await read(file)) as Buffer]]);
+      // A map rewritten beside an UNCHANGED bundle (one stamped earlier, which inject left alone) must still
+      // agree with that bundle's id: hand the bundle to the verifier, as the paired path does. (A CHANGED bundle that
+      // names this map would have paired it above, so every bundle reaching the check here is unchanged.)
+      for (const name of entries.keys()) {
+        if (!/\.[cm]?js$/i.test(name)) {
+          continue;
+        }
+        const bytes = await read(name);
+        if (bytes === undefined) {
+          continue;
+        }
+        if (resolveMapName(name, bytes.toString('utf8'), (n) => entries.has(n), path) === file) {
+          before.set(name, bytes);
+          now.set(name, bytes);
+        }
+      }
+      issues.push(...verifyStamp(before, now, options.parse, path));
     }
+  }
+
+  // A file that cannot be read now is an incomplete verification: reported (and restored from its original),
+  // never silently skipped. Unrelated pairs were still checked above.
+  for (const [file, error] of unreadable) {
+    issues.push({ name: file, reason: `it could not be read to verify the stamp: ${error}` });
   }
 
   const toRestore = new Set<string>();
@@ -465,16 +499,27 @@ export async function verifyStampedOnDisk(
     // The pair that was ACTUALLY loaded is the one verified (a missing known map must not make a loaded
     // sibling go unchecked).
     let hint: ReadonlyMap<string, string> = new Map();
-    try {
-      const first = hinted ?? pointed;
-      files.set(first, await readFile(first));
-      hint = known; // only once the known map was really loaded
-    } catch {
-      // The pointer names no file: the `<bundle>.map` sibling inject pairs by default.
-      await readFile(`${bundle}.map`).then(
-        (bytes) => files.set(`${bundle}.map`, bytes),
-        () => undefined,
-      );
+    // Candidates in order: the build's own map, the bundle's pointer, the `<bundle>.map` sibling inject pairs by
+    // default. The first that loads is the one verified.
+    const candidates = [...new Set([hinted, pointed, `${bundle}.map`])].filter(
+      (name): name is string => name !== undefined,
+    );
+    let loaded = false;
+    for (const candidate of candidates) {
+      try {
+        files.set(candidate, await readFile(candidate));
+        loaded = true;
+        if (candidate === hinted) {
+          hint = known; // only once the known map was really loaded
+        }
+        break;
+      } catch {
+        // try the next candidate
+      }
+    }
+    if (!loaded && hinted !== undefined) {
+      issues.push({ name: hinted, reason: 'the stamped map could not be read' });
+      continue;
     }
     issues.push(...verifyStampedPairs(files, hint));
   }

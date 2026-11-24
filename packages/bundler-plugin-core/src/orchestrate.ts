@@ -287,6 +287,7 @@ export async function uploadSourcemaps(
       const bundle = map.slice(0, -'.map'.length);
       if (
         /\.[cm]?js$/i.test(bundle) &&
+        own(bundle) && // a foreign bundle (another output's) is never handed to inject
         (await access(bundle).then(
           () => true,
           () => false,
@@ -378,17 +379,23 @@ export async function uploadSourcemaps(
       const { issues, restored, failed } = await verifyAndRestore(snapshot);
       // ENFORCE the claim the pinned-bundle exception rests on: inject leaves an already-stamped bundle's
       // bytes alone. If it did not, the pinned bytes changed: put them (and the map) back, and say so.
+      let pinnedFailure: Error | undefined;
       for (const pair of pinnedAndStamped) {
         if (!(await sameAsSnapshot(snapshot, pair.bundle))) {
           const undone = await restorePaths(snapshot, [pair.bundle, pair.map]);
-          reportContinuing(
-            new Error(
-              `bugsee-cli changed ${pair.bundle}, which Subresource Integrity pins and which was already stamped; its original bytes were restored` +
-                (undone.length > 0
-                  ? ` (could not restore: ${undone.map((u) => u.path).join(', ')})`
-                  : ''),
-            ),
+          const failure = new Error(
+            `bugsee-cli changed ${pair.bundle}, which Subresource Integrity pins and which was already stamped; its original bytes were restored` +
+              (undone.length > 0
+                ? ` (could not restore: ${undone.map((u) => u.path).join(', ')})`
+                : ''),
           );
+          if (undone.length > 0 && options.failOnError === true) {
+            // The pinned bytes are still changed: the browser would refuse the script. Strict, like any
+            // other file that could not be restored.
+            pinnedFailure ??= failure;
+          } else {
+            reportContinuing(failure);
+          }
         }
       }
       for (const error of pairErrors) {
@@ -403,9 +410,17 @@ export async function uploadSourcemaps(
         }
         reportContinuing(failure);
       }
-      return undefined;
+      return pinnedFailure;
     } finally {
-      await snapshot.dispose();
+      // A failed spill removal is a diagnostic: it must not replace the (possibly strict) result being returned,
+      // not even through a reporter that throws while saying so.
+      await snapshot.dispose().catch((error: unknown) => {
+        try {
+          reportContinuing(error);
+        } catch {
+          // the handler threw: the result of the catch-up stands
+        }
+      });
     }
   };
 
@@ -681,8 +696,14 @@ export async function uploadSourcemaps(
       const siblingHasMaps =
         options.siblingsHaveMaps === true ||
         (options.siblingOwnFiles ?? []).some((name) => name.endsWith('.map'));
+      // "This output has no maps": by ITS names when they are known (a stale or foreign map in the directory
+      // is not this output's), else by what the directory walk found.
+      const ownHasNoMaps =
+        options.ownFiles !== undefined
+          ? !options.ownFiles.some((name) => name.endsWith('.map'))
+          : everything.length === 0;
       if (deletable.length === 0) {
-        if (options.failOnError === true && !(everything.length === 0 && siblingHasMaps)) {
+        if (options.failOnError === true && !(ownHasNoMaps && siblingHasMaps)) {
           throw new Error(
             `no source maps with a debug-ID were found in ${outDir}, so nothing was uploaded`,
           );
@@ -738,10 +759,13 @@ export async function uploadSourcemaps(
         deletable = uploadedMaps.length > 0 ? [...uploadedMaps, ...unuploadableMaps] : [];
       } else {
         ({ deletable, kept } = await (options.partitionMaps ?? partitionByKeyed)(
-          files === undefined
-            ? (snapshot as string[])
-            : [...files.maps, ...(files.stylesheetMaps ?? [])],
+          files === undefined ? (snapshot as string[]) : files.maps,
         ));
+        // The caller's stylesheet maps are classified by the CALLER (a CSS map may be named `x1.map`, which the
+        // script-map key check would keep): they go with the uploaded maps, once an upload is confirmed.
+        if (files !== undefined) {
+          deletable = [...deletable, ...(files.stylesheetMaps ?? [])];
+        }
         if (files === undefined) {
           // A directory walk also sees foreign files; an unkeyed map in a fenced directory is not reported.
           kept = kept.filter((map) => !isFencedPath(relative(outDir, map)));

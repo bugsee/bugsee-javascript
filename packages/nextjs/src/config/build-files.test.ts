@@ -1,0 +1,280 @@
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { collectBuildFiles, mapPointerOf, pairByPointer, partitionBuildFiles } from './build-files';
+
+// `mapPointerOf` resolves against the host's path API, so the pointer fixtures use native absolute paths (win32: `C:\\o\\a.js`).
+const p = (path: string): string => resolve(path);
+
+describe('partitionBuildFiles', () => {
+  it('pairs each bundle with its map and sorts both', () => {
+    const files = ['/o/b.js.map', '/o/a.js', '/o/b.js', '/o/a.js.map'];
+    expect(partitionBuildFiles(files)).toEqual({
+      scripts: ['/o/a.js', '/o/b.js'],
+      maps: ['/o/a.js.map', '/o/b.js.map'],
+      stylesheetMaps: [],
+    });
+  });
+
+  it('accepts an upper-case extension, as the core does', () => {
+    expect(partitionBuildFiles(['/o/A.JS', '/o/A.JS.map']).scripts).toEqual(['/o/A.JS']);
+  });
+
+  it('accepts .mjs and .cjs bundles', () => {
+    const files = ['/o/a.mjs', '/o/a.mjs.map', '/o/b.cjs', '/o/b.cjs.map'];
+    expect(partitionBuildFiles(files).scripts).toEqual(['/o/a.mjs', '/o/b.cjs']);
+  });
+
+  it('never stamps a bundle that has no map, and never sends a map that has no bundle', () => {
+    const files = ['/o/lonely.js', '/o/orphan.js.map', '/o/ok.js', '/o/ok.js.map'];
+    const parts = partitionBuildFiles(files);
+    expect(parts.scripts).toEqual(['/o/ok.js']);
+    expect(parts.maps).toEqual(['/o/ok.js.map']);
+  });
+
+  it('keeps stylesheet maps apart: deleted with the rest, never sent', () => {
+    const files = ['/o/a.css', '/o/a.css.map', '/o/a.js', '/o/a.js.map'];
+    const parts = partitionBuildFiles(files);
+    expect(parts.stylesheetMaps).toEqual(['/o/a.css.map']);
+    expect(parts.maps).toEqual(['/o/a.js.map']);
+  });
+
+  it('ignores everything else', () => {
+    expect(partitionBuildFiles(['/o/a.html', '/o/a.json', '/o/a.png'])).toEqual({
+      scripts: [],
+      maps: [],
+      stylesheetMaps: [],
+    });
+  });
+});
+
+describe('mapPointerOf', () => {
+  it('resolves the pointer against the bundle directory', () => {
+    expect(mapPointerOf(p('/o/chunks/a.js'), 'code();\n//# sourceMappingURL=other.js.map\n')).toBe(
+      p('/o/chunks/other.js.map'),
+    );
+    expect(mapPointerOf(p('/o/chunks/a.js'), 'x\n//@ sourceMappingURL=../m/a.map')).toBe(
+      p('/o/m/a.map'),
+    );
+  });
+
+  it('decodes a percent-encoded pointer (Turbopack names contain brackets)', () => {
+    expect(mapPointerOf(p('/o/a.js'), 'x\n//# sourceMappingURL=%5Broot%5D__a._.js.map\n')).toBe(
+      p('/o/[root]__a._.js.map'),
+    );
+  });
+
+  it('uses a pointer as written when it is not valid percent-encoding', () => {
+    expect(mapPointerOf(p('/o/a.js'), 'x\n//# sourceMappingURL=100%.js.map')).toBe(
+      p('/o/100%.js.map'),
+    );
+  });
+
+  it('reads a stylesheet pointer from its /*# */ comment, not the // form', () => {
+    expect(mapPointerOf(p('/o/a.css'), 'a{}\n/*# sourceMappingURL=a.css.map */')).toBe(
+      p('/o/a.css.map'),
+    );
+    expect(mapPointerOf(p('/o/a.css'), 'a{}\n//# sourceMappingURL=a.css.map')).toBeUndefined();
+    expect(mapPointerOf(p('/o/a.js'), 'x\n/*# sourceMappingURL=a.js.map */')).toBeUndefined();
+  });
+
+  it('reads the legacy /*@ */ stylesheet form too', () => {
+    expect(mapPointerOf(p('/o/a.css'), 'a{}\n/*@ sourceMappingURL=x.css.map*/')).toBe(
+      p('/o/x.css.map'),
+    );
+  });
+
+  it('has no pointer for a bundle without a comment, or with an inline map', () => {
+    expect(mapPointerOf(p('/o/a.js'), 'no comment')).toBeUndefined();
+    expect(
+      mapPointerOf(p('/o/a.js'), 'x\n//# sourceMappingURL=data:application/json;base64,e30='),
+    ).toBeUndefined();
+  });
+
+  it('only counts the comment that ends the bundle', () => {
+    expect(mapPointerOf(p('/o/a.js'), '//# sourceMappingURL=a.map\nmore();')).toBeUndefined();
+  });
+});
+
+describe('pairByPointer', () => {
+  const code = (map: string): string => `code();\n//# sourceMappingURL=${map}\n`;
+  const reader = (sources: Record<string, string>) => async (file: string) => sources[file] ?? '';
+
+  it('pairs a bundle with a map that is NOT named after it', async () => {
+    const files = [p('/o/0ihtw.js'), p('/o/1wkfrb.js.map')];
+    const parts = await pairByPointer(files, reader({ [p('/o/0ihtw.js')]: code('1wkfrb.js.map') }));
+    expect(parts).toEqual({
+      scripts: [p('/o/0ihtw.js')],
+      maps: [p('/o/1wkfrb.js.map')],
+      stylesheetMaps: [],
+      shared: [],
+    });
+  });
+
+  it('ignores a pointer to a file that is not there', async () => {
+    const parts = await pairByPointer(
+      [p('/o/a.js')],
+      reader({ [p('/o/a.js')]: code('gone.js.map') }),
+    );
+    expect(parts.scripts).toEqual([]);
+  });
+
+  it('ignores a pointer to something that is not a map', async () => {
+    const parts = await pairByPointer(
+      [p('/o/a.js'), p('/o/b.js')],
+      reader({ [p('/o/a.js')]: code('b.js') }),
+    );
+    expect(parts.scripts).toEqual([]);
+    expect(parts.maps).toEqual([]);
+  });
+
+  it('pairs neither bundle of a map two bundles share, and reports them', async () => {
+    const parts = await pairByPointer(
+      [p('/o/a.js'), p('/o/b.js'), p('/o/shared.js.map'), p('/o/c.js'), p('/o/c.js.map')],
+      reader({
+        [p('/o/a.js')]: code('shared.js.map'),
+        [p('/o/b.js')]: code('shared.js.map'),
+        [p('/o/c.js')]: code('c.js.map'),
+      }),
+    );
+    expect(parts.scripts).toEqual([p('/o/c.js')]);
+    expect(parts.maps).toEqual([p('/o/c.js.map')]);
+    expect(parts.shared).toEqual([p('/o/a.js'), p('/o/b.js')]);
+  });
+
+  it('does not read files that are not scripts', async () => {
+    const read = vi.fn(async () => '');
+    await pairByPointer([p('/o/a.json'), p('/o/a.js.map'), p('/o/a.txt')], read);
+    expect(read).not.toHaveBeenCalled();
+  });
+
+  it("keeps this build's stylesheet maps apart (a stylesheet points at them): deleted, never sent", async () => {
+    const css = (map: string): string => `a{}\n/*# sourceMappingURL=${map} */\n`;
+    const parts = await pairByPointer(
+      [p('/o/a.css'), p('/o/x1.map')],
+      reader({ [p('/o/a.css')]: css('x1.map') }),
+    );
+    expect(parts.stylesheetMaps).toEqual([p('/o/x1.map')]);
+    expect(parts.maps).toEqual([]);
+  });
+
+  it("leaves a stylesheet or declaration map nothing points at alone: it is not this build's", async () => {
+    const parts = await pairByPointer(
+      [p('/o/a.css'), p('/o/a.css.map'), p('/o/foreign.css.map'), p('/o/types.d.ts.map')],
+      reader({ [p('/o/a.css')]: 'a{}\n/*# sourceMappingURL=a.css.map */' }),
+    );
+    expect(parts.stylesheetMaps).toEqual([p('/o/a.css.map')]);
+  });
+
+  it('ignores a stylesheet pointer to a missing or non-map file, or an inline map', async () => {
+    const parts = await pairByPointer(
+      [p('/o/a.css'), p('/o/b.css'), p('/o/c.css'), p('/o/c.txt')],
+      reader({
+        [p('/o/a.css')]: 'a{}/*# sourceMappingURL=gone.css.map */',
+        [p('/o/b.css')]: 'a{}/*# sourceMappingURL=c.txt */',
+        [p('/o/c.css')]: 'a{}/*# sourceMappingURL=data:application/json;base64,e30= */',
+      }),
+    );
+    expect(parts.stylesheetMaps).toEqual([]);
+  });
+
+  it('sorts its output', async () => {
+    const parts = await pairByPointer(
+      [p('/o/z.js'), p('/o/a.js'), p('/o/m1.map'), p('/o/m0.map')],
+      reader({ [p('/o/z.js')]: code('m1.map'), [p('/o/a.js')]: code('m0.map') }),
+    );
+    expect(parts.scripts).toEqual([p('/o/a.js'), p('/o/z.js')]);
+    expect(parts.maps).toEqual([p('/o/m0.map'), p('/o/m1.map')]);
+  });
+});
+
+describe('collectBuildFiles', () => {
+  let root: string;
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'bugsee-bf-'));
+  });
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+  const put = (rel: string, content = 'x'): void => {
+    mkdirSync(join(root, rel, '..'), { recursive: true });
+    writeFileSync(join(root, rel), content);
+  };
+  const bundle = (rel: string, mapName = `${rel.split('/').pop()}.map`): void => {
+    put(rel, `code();\n//# sourceMappingURL=${encodeURIComponent(mapName)}\n`);
+    put(`${rel}/../${mapName}`);
+  };
+
+  it('walks nested directories, bracketed names included', async () => {
+    bundle('chunks/[root-of-the-server]__a._.js');
+    bundle('chunks/ssr/b.js');
+    const parts = await collectBuildFiles(root);
+    expect(parts.scripts).toEqual([
+      join(root, 'chunks/[root-of-the-server]__a._.js'),
+      join(root, 'chunks/ssr/b.js'),
+    ]);
+    expect(parts.maps).toHaveLength(2);
+  });
+
+  it('pairs by the pointer inside the bundle when the map has another name', async () => {
+    bundle('chunks/0ihtw.js', '1wkfrb.js.map');
+    const parts = await collectBuildFiles(root);
+    expect(parts.scripts).toEqual([join(root, 'chunks/0ihtw.js')]);
+    expect(parts.maps).toEqual([join(root, 'chunks/1wkfrb.js.map')]);
+  });
+
+  it('never descends into node_modules', async () => {
+    bundle('node_modules/x/a.js');
+    bundle('ok.js');
+    expect((await collectBuildFiles(root)).scripts).toEqual([join(root, 'ok.js')]);
+  });
+
+  it('does descend into a route directory that happens to be called cache', async () => {
+    bundle('chunks/app/cache/page.js');
+    expect((await collectBuildFiles(root)).scripts).toEqual([
+      join(root, 'chunks/app/cache/page.js'),
+    ]);
+  });
+
+  it('returns nothing for a directory that does not exist', async () => {
+    expect(await collectBuildFiles(join(root, 'absent'))).toEqual({
+      scripts: [],
+      maps: [],
+      stylesheetMaps: [],
+      shared: [],
+    });
+  });
+
+  it('collects deeply nested output: no depth cutoff silently drops a route\u2019s bundle', async () => {
+    const deep = `${Array.from({ length: 30 }, (_, i) => `d${i}`).join('/')}/page.js`;
+    bundle(deep);
+    bundle('top.js');
+    const scripts = (await collectBuildFiles(root)).scripts;
+    expect(scripts).toHaveLength(2);
+    expect(scripts).toContain(join(root, deep));
+  });
+
+  it('reads only the END of a bundle to find its pointer', async () => {
+    // A pointer-looking comment at the START of a large file is not the bundle\u2019s pointer; only the tail counts.
+    put('big.js', `//# sourceMappingURL=big.js.map\n${'x'.repeat(40_000)}\nend();\n`);
+    put('big.js.map');
+    expect((await collectBuildFiles(root)).scripts).toEqual([]);
+    put('big2.js', `${'x'.repeat(40_000)}\n//# sourceMappingURL=big2.js.map\n`);
+    put('big2.js.map');
+    expect((await collectBuildFiles(root)).scripts).toEqual([join(root, 'big2.js')]);
+  });
+
+  it('reports a directory it cannot read instead of calling it empty', async () => {
+    put('locked/a.js');
+    chmodSync(join(root, 'locked'), 0o000);
+    try {
+      if (process.getuid?.() === 0 || process.platform === 'win32') {
+        return; // root reads it anyway, and Windows ignores the mode bits
+      }
+      await expect(collectBuildFiles(root)).rejects.toThrow(/EACCES/);
+    } finally {
+      chmodSync(join(root, 'locked'), 0o755);
+    }
+  });
+});

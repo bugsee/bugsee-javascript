@@ -261,6 +261,11 @@ export function verifyStamp(
       const mapId = mapDebugId(after.get(name) as Buffer);
       if (mapId === null) {
         issues.push({ name, reason: 'the stamped map is not valid JSON (an object)' });
+      } else if (mapId === undefined && unchangedIds.has(name)) {
+        issues.push({
+          name,
+          reason: `the map has no debugId (its bundle carries ${unchangedIds.get(name)})`,
+        });
       } else if (
         mapId !== undefined &&
         unchangedIds.has(name) &&

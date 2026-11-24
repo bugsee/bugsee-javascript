@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { UploadSourcemapsOptions, UploadSourcemapsResult } from './orchestrate';
-import { resolvePluginOptions, runPluginUpload } from './resolve';
+import { relativeUnder, resolvePluginOptions, runPluginUpload } from './resolve';
 import type { ResolveVcsMetadataOptions, VcsMetadata } from './vcs';
 
 /**
@@ -362,6 +362,27 @@ describe('one pipeline per output directory', () => {
     ]);
     expect(seen[0]).toEqual(['b/c.js']); // not dist-other's (a prefix-named sibling directory)
     expect(seen[1]).toEqual([]);
+  });
+
+  it('a disabled plugin returns before any path resolution (a removed cwd must not make it reject)', async () => {
+    const cwd = vi.spyOn(process, 'cwd').mockImplementation(() => {
+      throw new Error('ENOENT: uv_cwd');
+    });
+    try {
+      const off = { ...resolved, enabled: false };
+      await expect(
+        runPluginUpload(off, 'relative/dist', { ownFiles: ['a.js'] }),
+      ).resolves.toBeUndefined();
+    } finally {
+      cwd.mockRestore();
+    }
+  });
+
+  it('relativeUnder: a child directory whose NAME starts with two dots is still inside the parent', () => {
+    expect(relativeUnder('/build/dist', '/build/dist/..chunks')).toBe('..chunks');
+    expect(relativeUnder('/build/dist', '/build/dist')).toBe('');
+    expect(relativeUnder('/build/dist', '/build/dist-other')).toBeUndefined();
+    expect(relativeUnder('/build/dist', '/build')).toBeUndefined();
   });
 
   it('a failed in-flight run does not stop the waiting second output from running', async () => {
