@@ -998,3 +998,75 @@ describe('a pointer with a ?query (webpack / Rspack [name].js?[contenthash]) (ro
     expect(ids(report)).not.toContain('stamp.map-id-mismatch');
   });
 });
+
+describe('index (sectioned) source maps (round 10)', () => {
+  const index = (sections: unknown[], extra: Record<string, unknown> = {}): string =>
+    JSON.stringify({ version: 3, sections, ...extra });
+  const section = (sources: string[], content?: string[]) => ({
+    offset: { line: 0, column: 0 },
+    map: {
+      version: 3,
+      sources,
+      ...(content ? { sourcesContent: content } : {}),
+      names: [],
+      mappings: 'AAAA',
+    },
+  });
+  const pair = (map: string): void => {
+    put('a.js', `a\n//# sourceMappingURL=a.js.map${stamp(ID_A)}`);
+    put('a.js.map', map);
+  };
+
+  it('sources live inside the sections: not map.no-sources, and the embedded content is counted', async () => {
+    pair(index([section(['a.ts'], ['x']), section(['b.ts'], ['y'])], { debugId: ID_A }));
+    const report = await run();
+    expect(ids(report)).not.toContain('map.no-sources');
+    expect(ids(report)).not.toContain('map.invalid');
+    expect(find(report, 'map.sources-content')?.message).toContain('all 2 sources');
+  });
+
+  it('sections without sourcesContent and with sources not on disk: map.sources-unresolvable', async () => {
+    pair(index([section(['a.ts']), section(['b.ts'], ['y'])], { debugId: ID_A }));
+    const report = await run();
+    expect(find(report, 'map.sources-unresolvable')?.details).toEqual({ unresolved: 1, total: 2 });
+  });
+
+  it('an index map whose sections carry no sources is still map.no-sources', async () => {
+    pair(index([section([]), { offset: { line: 1, column: 0 }, url: 'x.map' }], { debugId: ID_A }));
+    expect(ids(await run())).toContain('map.no-sources');
+    pair(index([], { debugId: ID_A }));
+    expect(ids(await run())).toContain('map.no-sources');
+  });
+
+  it('content stays aligned per section: a second source without content is the one reported', async () => {
+    pair(index([section(['a.ts', 'b.ts'], ['x'])], { debugId: ID_A }));
+    expect(find(await run(), 'map.sources-unresolvable')?.details).toEqual({
+      unresolved: 1,
+      total: 2,
+    });
+  });
+
+  it('an empty top-level sources array falls through to the sections; a section without a map or sources is skipped', async () => {
+    pair(
+      index(
+        [section(['a.ts'], ['x']), { offset: { line: 1, column: 0 }, map: { version: 3 } }, null],
+        { debugId: ID_A, sources: [] },
+      ),
+    );
+    const report = await run();
+    expect(ids(report)).not.toContain('map.no-sources');
+    expect(ids(report)).not.toContain('doctor.internal-error');
+    expect(find(report, 'map.sources-content')?.message).toContain('all 1 sources');
+  });
+
+  it('top-level sources win over sections', async () => {
+    pair(
+      index([section(['z.ts'], ['z'])], {
+        debugId: ID_A,
+        sources: ['a.ts'],
+        sourcesContent: ['x'],
+      }),
+    );
+    expect(find(await run(), 'map.sources-content')?.message).toContain('all 1 sources');
+  });
+});

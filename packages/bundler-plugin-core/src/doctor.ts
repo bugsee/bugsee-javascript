@@ -236,6 +236,38 @@ export function globToRegExp(glob: string): RegExp {
   return new RegExp(`^${source}$`);
 }
 
+/**
+ * The `sources` and their embedded `sourcesContent` (aligned by index) of a map. An ordinary map has them at the top
+ * level; an INDEX map keeps them inside `sections[].map`, so those are concatenated, each section's content padded to
+ * its own sources so the alignment survives.
+ */
+export function mapSources(json: Record<string, unknown>): {
+  sources: unknown[];
+  content: unknown[];
+} {
+  if (Array.isArray(json.sources) && json.sources.length > 0) {
+    return {
+      sources: json.sources as unknown[],
+      content: Array.isArray(json.sourcesContent) ? (json.sourcesContent as unknown[]) : [],
+    };
+  }
+  const sources: unknown[] = [];
+  const content: unknown[] = [];
+  for (const section of Array.isArray(json.sections) ? (json.sections as unknown[]) : []) {
+    const map = (section as { map?: Record<string, unknown> } | null)?.map;
+    if (typeof map !== 'object' || map === null || !Array.isArray(map.sources)) {
+      continue;
+    }
+    const own = map.sources as unknown[];
+    const embedded = Array.isArray(map.sourcesContent) ? (map.sourcesContent as unknown[]) : [];
+    own.forEach((source, i) => {
+      sources.push(source);
+      content.push(embedded[i]);
+    });
+  }
+  return { sources, content };
+}
+
 interface ParsedMap {
   ok: true;
   json: Record<string, unknown>;
@@ -760,8 +792,8 @@ async function diagnose(dirInput: string, options: DoctorOptions): Promise<Docto
       });
       return;
     }
-    const sources = Array.isArray(json.sources) ? (json.sources as unknown[]) : undefined;
-    if (sources === undefined || sources.length === 0) {
+    const { sources, content } = mapSources(json);
+    if (sources.length === 0) {
       add({
         id: 'map.no-sources',
         severity: 'error',
@@ -771,7 +803,6 @@ async function diagnose(dirInput: string, options: DoctorOptions): Promise<Docto
       });
       return;
     }
-    const content = Array.isArray(json.sourcesContent) ? (json.sourcesContent as unknown[]) : [];
     const missing = sources.filter((_, i) => typeof content[i] !== 'string').map(String);
     if (missing.length === 0) {
       contentFacts.push({
