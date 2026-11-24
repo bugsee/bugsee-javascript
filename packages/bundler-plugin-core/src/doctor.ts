@@ -343,6 +343,26 @@ export function mapSources(json: Record<string, unknown>): {
 /** Nested index maps are followed this deep (a real one is 1-2 levels); a hostile chain must not overflow the stack. */
 const MAX_INDEX_DEPTH = 32;
 
+/**
+ * Whether a map holds any GENERATED segment at all (a `mappings` with something besides separators, in the map or in
+ * any section). Rollup writes `sources: []`, `mappings: ""` for a facade or empty chunk: there is nothing to map, so
+ * nothing to symbolicate. Beyond the nesting cap it cannot tell, and says yes (so a deep chain is not waved through).
+ */
+export function hasGeneratedSegments(map: Record<string, unknown>, depth = 0): boolean {
+  if (typeof map.mappings === 'string' && /[^;,]/.test(map.mappings)) {
+    return true;
+  }
+  if (depth >= MAX_INDEX_DEPTH) {
+    return true;
+  }
+  return (Array.isArray(map.sections) ? (map.sections as unknown[]) : []).some((section) => {
+    const inner = (section as { map?: unknown } | null)?.map;
+    return typeof inner === 'object' && inner !== null
+      ? hasGeneratedSegments(inner as Record<string, unknown>, depth + 1)
+      : false;
+  });
+}
+
 const BASE64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
 
 /**
@@ -987,6 +1007,18 @@ async function diagnose(dirInput: string, options: DoctorOptions): Promise<Docto
       return;
     }
     const { sources, content, roots, hasOriginal } = mapSources(json);
+    if (sources.length === 0 && !hasGeneratedSegments(json)) {
+      // A facade / empty chunk (Rollup: `sources: []`, `mappings: ""`): nothing generated, nothing to symbolicate.
+      if (first) {
+        add({
+          id: 'map.no-sources',
+          severity: 'info',
+          file: mapName,
+          message: `${mapName} has no sources and no mappings (a facade or empty chunk): there is nothing to map, so nothing to symbolicate.`,
+        });
+      }
+      return;
+    }
     if (sources.length === 0) {
       invalid(
         `${mapName} has no \`sources\`; it can map nothing back to your code.`,

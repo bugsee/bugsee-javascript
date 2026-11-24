@@ -1214,8 +1214,8 @@ describe('index (sectioned) source maps (round 10)', () => {
   it('an index map whose sections carry no sources is still map.no-sources', async () => {
     pair(index([section([]), { offset: { line: 1, column: 0 }, url: 'x.map' }], { debugId: ID_A }));
     expect(ids(await run())).toContain('map.no-sources');
-    pair(index([], { debugId: ID_A }));
-    expect(ids(await run())).toContain('map.no-sources');
+    pair(index([], { debugId: ID_A })); // no sections at all: nothing generated, see the facade-chunk tests below
+    expect(find(await run(), 'map.no-sources')?.severity).toBe('info');
   });
 
   it('content stays aligned per section: a second source without content is the one reported', async () => {
@@ -1856,5 +1856,87 @@ describe('output.walk-fenced lists only what was really not walked (round 17)', 
     const walked = await inDist(fencedWalk);
     expect(relFiles(walked.files)).toEqual(['viewer/t.js']);
     expect(walked.skipped).toEqual([]);
+  });
+});
+
+describe('a facade or empty chunk has an empty map and that is healthy (round 18)', () => {
+  const rollupEmpty = (extra: Record<string, unknown> = {}): string =>
+    JSON.stringify({
+      version: 3,
+      file: 'index.js',
+      sources: [],
+      sourcesContent: [],
+      names: [],
+      mappings: '',
+      ...extra,
+    });
+  const pairOne = (map: string): void => {
+    put('index.js', `export{a}from'./main.js';\n//# sourceMappingURL=index.js.map${stamp(ID_A)}`);
+    put('index.js.map', map);
+  };
+
+  it('the Rollup facade map (sources [], mappings "") is an info, not an error, and the run passes --strict', async () => {
+    pairOne(rollupEmpty({ debugId: ID_A }));
+    const report = await run();
+    expect(find(report, 'map.no-sources')).toMatchObject({
+      severity: 'info',
+      file: 'index.js.map',
+    });
+    expect(find(report, 'map.no-sources')?.message).toContain('nothing to map');
+    expect(report.summary).toMatchObject({ errors: 0, warnings: 0 });
+    expect(doctorExitCode(report, true)).toBe(0);
+  });
+
+  it('only separators in mappings (";;;" or ",;") is still empty', async () => {
+    for (const mappings of [';;;', ',;,', ';']) {
+      pairOne(rollupEmpty({ debugId: ID_A, mappings }));
+      expect(find(await run(), 'map.no-sources')?.severity, mappings).toBe('info');
+    }
+  });
+
+  it('generated segments but no sources stays an error (a stripped map)', async () => {
+    pairOne(rollupEmpty({ debugId: ID_A, mappings: 'AAAA' }));
+    expect(find(await run(), 'map.no-sources')?.severity).toBe('error');
+    pairOne(rollupEmpty({ debugId: ID_A, mappings: ';;A' }));
+    expect(find(await run(), 'map.no-sources')?.severity).toBe('error');
+  });
+
+  it('index maps: empty when no section has segments; an error when any section does or the chain is too deep to tell', async () => {
+    const leaf = (mappings: string, line: number) => ({
+      offset: { line, column: 0 },
+      map: { version: 3, sources: [], names: [], mappings },
+    });
+    pairOne(JSON.stringify({ version: 3, debugId: ID_A, sections: [leaf('', 0), leaf(';', 3)] }));
+    expect(find(await run(), 'map.no-sources')?.severity).toBe('info');
+    pairOne(
+      JSON.stringify({ version: 3, debugId: ID_A, sections: [leaf('', 0), leaf('AAAA', 3)] }),
+    );
+    expect(find(await run(), 'map.no-sources')?.severity).toBe('error');
+    let deep: Record<string, unknown> = { version: 3, sources: [], mappings: '' };
+    for (let i = 0; i < 40; i++) {
+      deep = { version: 3, sections: [{ offset: { line: 0, column: 0 }, map: deep }] };
+    }
+    pairOne(JSON.stringify({ ...deep, debugId: ID_A }));
+    expect(find(await run(), 'map.no-sources')?.severity).toBe('error'); // beyond the cap: cannot tell, so not waved through
+  });
+
+  it('an empty map reached through aliases in different directories is noted once', async () => {
+    put('real/app.js.map', rollupEmpty({ debugId: ID_A }));
+    for (const d of ['a', 'b']) {
+      put(`${d}/app.js`, `a\n//# sourceMappingURL=app.js.map${stamp(ID_A)}`);
+      symlinkSync(join(dist, 'real', 'app.js.map'), join(dist, d, 'app.js.map'));
+    }
+    const noted = (await run()).findings.filter(
+      (f) => f.id === 'map.no-sources' && !(f.file ?? '').startsWith('real/'),
+    );
+    expect(noted).toHaveLength(1);
+  });
+
+  it('a shared empty map is noted once', async () => {
+    put('a.js', `a\n//# sourceMappingURL=shared.map${stamp(ID_A)}`);
+    put('b.js', `b\n//# sourceMappingURL=shared.map${stamp(ID_A)}`);
+    put('shared.map', rollupEmpty({ debugId: ID_A }));
+    const report = await run();
+    expect(report.findings.filter((f) => f.id === 'map.no-sources')).toHaveLength(1);
   });
 });

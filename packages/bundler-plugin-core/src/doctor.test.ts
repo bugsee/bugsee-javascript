@@ -316,9 +316,10 @@ describe('diagnoseBuildOutput', () => {
     put('b.js', `b${stamp(ID_B)}`);
     put('b.js.map', JSON.stringify({ version: 3, debugId: ID_B, mappings: '' }));
     const report = await run();
-    expect(report.findings.filter((f) => f.id === 'map.no-sources').map((f) => f.file)).toEqual([
-      'a.js.map',
-      'b.js.map',
+    const found = report.findings.filter((f) => f.id === 'map.no-sources');
+    expect(found.map((f) => [f.file, f.severity])).toEqual([
+      ['a.js.map', 'error'], // generated segments but no sources: a stripped map
+      ['b.js.map', 'info'], // no sources AND no mappings: an empty chunk, nothing to map
     ]);
   });
 
