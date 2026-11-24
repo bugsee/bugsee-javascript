@@ -1732,20 +1732,23 @@ describe('round 16 review findings', () => {
     }
   });
 
-  it('a directory exclude is not satisfied by a pattern that only matches the probe directory names', async () => {
-    put('a.js', `a${stamp(ID_A)}`);
-    put('vendor/app.js', 'x');
-    chmodSync(join(dist, 'vendor'), 0o000);
-    try {
-      for (const pattern of ['vendor/zz-probe-1/**', 'vendor/zz-1/**', 'vendor/zz-2/zz-3/**']) {
-        const kept = find(await run({ exclude: [pattern] }), 'output.dir-unreadable')?.details;
-        expect(kept, pattern).toEqual({ directories: ['vendor'] });
+  it.skipIf(process.getuid?.() === 0)(
+    'a directory exclude is not satisfied by a pattern that only matches the probe directory names',
+    async () => {
+      put('a.js', `a${stamp(ID_A)}`);
+      put('vendor/app.js', 'x');
+      chmodSync(join(dist, 'vendor'), 0o000);
+      try {
+        for (const pattern of ['vendor/zz-probe-1/**', 'vendor/zz-1/**', 'vendor/zz-2/zz-3/**']) {
+          const kept = find(await run({ exclude: [pattern] }), 'output.dir-unreadable')?.details;
+          expect(kept, pattern).toEqual({ directories: ['vendor'] });
+        }
+        expect(ids(await run({ exclude: ['vendor/**'] }))).not.toContain('output.dir-unreadable');
+      } finally {
+        chmodSync(join(dist, 'vendor'), 0o700);
       }
-      expect(ids(await run({ exclude: ['vendor/**'] }))).not.toContain('output.dir-unreadable');
-    } finally {
-      chmodSync(join(dist, 'vendor'), 0o700);
-    }
-  });
+    },
+  );
 
   it('a mapping whose source index is outside the leaf sources has no original position', async () => {
     const pairMap = (mappings: string, sources: string[] = ['a.ts']): void => {
@@ -1778,6 +1781,11 @@ describe('round 16 review findings', () => {
     expect(hasOriginalPosition('AEAA;AFAA', 2)).toBe(true); // +2 then -2: the second segment lands on index 0
     // an unusable segment (bad character) does not move the running source index
     expect(hasOriginalPosition('AEA$,AAAA', 2)).toBe(true);
+    // only a segment with an original line and column moves the running source index (ECMA-426)
+    expect(hasOriginalPosition('AC,EDAA', 1)).toBe(false); // AC (2 values) must not commit +1
+    expect(hasOriginalPosition('AEAA$,AAAA', 2)).toBe(true); // a segment with a bad character commits nothing
+    expect(hasOriginalPosition('ACA,EDAA', 1)).toBe(false); // nor three values
+    expect(hasOriginalPosition('ACAA,EDAA', 3)).toBe(true); // four values commit: 1 then 1+(-1)=0
     // continuation digits: 'gB' is 16, so the source delta below is 16
     expect(hasOriginalPosition('AgBAA', 17)).toBe(true);
     expect(hasOriginalPosition('AgBAA', 16)).toBe(false);
@@ -1912,6 +1920,13 @@ describe('a facade or empty chunk has an empty map and that is healthy (round 18
       "import{a}from'./main.js';export{a};",
       "import a, { b } from './m.js'\nimport * as c from './c.js'\nexport { a, b, c }",
       `export{a}from'./main.js';\n//# sourceMappingURL=a.js.map${stamp(ID_A)}`,
+      // Rollup's CommonJS output
+      "'use strict';\n\nvar main = require('./main.js');\n\nexports.a = main.a;\nexports.b = main.b;\n",
+      "'use strict';\nObject.defineProperty(exports, '__esModule', { value: true });\nvar main = require('./main.js');\nexports.a = main.a;",
+      '"use strict";require("./side-effect.cjs");',
+      "'use strict';\nvar m = require('./m.js');\nObject.defineProperty(exports, 'a', {\n  enumerable: true,\n  get: function () { return m.a; }\n});",
+      "module.exports = require('./main.cjs');",
+      "const main = require('./main.js');\nexports.default = main;",
     ]) {
       expect(isFacadeCode(facade), JSON.stringify(facade)).toBe(true);
     }
@@ -1924,9 +1939,49 @@ describe('a facade or empty chunk has an empty map and that is healthy (round 18
       'export default function(){}',
       "export { a } from './m.js' + 'x'",
       'console.log(1)',
+      // CommonJS that is real code
+      "'use strict';\nvar m = require('./m.js');\nexports.f = function(){ return 1 };",
+      "'use strict';\nrequire('./m.js')();",
+      "var m = require('./m.js') + 1;",
+      'exports.a = main.a(); ',
+      "Object.defineProperty(exports, 'a', { get: function () { sideEffect(); return 1; } });",
     ]) {
       expect(isFacadeCode(code), JSON.stringify(code)).toBe(false);
     }
+  });
+
+  it('isFacadeCode: comments are stripped outside quoted module specifiers only', () => {
+    for (const facade of [
+      'export { a } from "https://cdn.example/a.js";',
+      "import 'http://x.test/y.js' // a trailing comment",
+      "/* don't */ export{a}from'./m.js'; // it's fine",
+      "export{a}from'./m.js'; /* block with // inside */\nexport{b}from'./n.js'",
+    ]) {
+      expect(isFacadeCode(facade), facade).toBe(true);
+    }
+    expect(isFacadeCode("var u = 'http://x'; export{a}from'./m.js'")).toBe(false);
+    expect(isFacadeCode("export{a}from'./m.js' /* unterminated")).toBe(true); // an open block comment is a comment
+    expect(isFacadeCode("export{a}from'./m.js; export function f(){}")).toBe(false); // an open string swallows the rest
+  });
+
+  it('isFacadeCode: a registration-looking line is the stub only when the debugId comment follows it', () => {
+    expect(isFacadeCode('var d=globalThis._bugseeDebugIds;\n// just a note\n')).toBe(false);
+    expect(isFacadeCode('var d=globalThis._bugseeDebugIds;\n//# sourceMappingURL=a.map\n')).toBe(
+      false,
+    );
+  });
+
+  it('isFacadeCode: only the TRAILING registration stub is ignored, not the marker inside real code', () => {
+    // a bundle that carries the Bugsee SDK has the marker in its own (minified, one-line) code
+    const sdk = 'var d=globalThis._bugseeDebugIds;export function f(){return d}';
+    expect(isFacadeCode(`${sdk}${stamp(ID_A)}`)).toBe(false);
+    expect(isFacadeCode(`${sdk}\n`)).toBe(false);
+    // a facade followed by the stub is fine, whatever comments and blank lines come after it
+    expect(
+      isFacadeCode(`export{a}from'./m.js';${stamp(ID_A)}\n\n//# sourceMappingURL=x.map\n`),
+    ).toBe(true);
+    // a marker in the MIDDLE of a facade-looking file does not make the code after it vanish
+    expect(isFacadeCode(`var x=globalThis._bugseeDebugIds;\nexport{a}from'./m.js';`)).toBe(false);
   });
 
   it('only separators in mappings (";;;" or ",;") is still empty', async () => {
@@ -1982,6 +2037,40 @@ describe('a facade or empty chunk has an empty map and that is healthy (round 18
       (f) => f.id === 'map.no-sources' && !(f.file ?? '').startsWith('real/'),
     );
     expect(noted).toHaveLength(1);
+  });
+
+  it('a shared empty map is an error if ANY claimant has real code, whichever claims it first', async () => {
+    const facade = `export{a}from'./m.js';${stamp(ID_A)}`;
+    const real = `export function f(){return 1}\n${stamp(ID_A)}`;
+    for (const [first, second] of [
+      [facade, real],
+      [real, facade],
+    ] as const) {
+      put('a.js', first.replace(stamp(ID_A), `\n//# sourceMappingURL=shared.map${stamp(ID_A)}`));
+      put('b.js', second.replace(stamp(ID_A), `\n//# sourceMappingURL=shared.map${stamp(ID_A)}`));
+      put('shared.map', rollupEmpty({ debugId: ID_A }));
+      const noted = (await run()).findings.filter((f) => f.id === 'map.no-sources');
+      expect(noted.map((f) => f.severity)).toEqual(['error']);
+    }
+    put('b.js', facade.replace(stamp(ID_A), `\n//# sourceMappingURL=shared.map${stamp(ID_A)}`));
+    put('a.js', facade.replace(stamp(ID_A), `\n//# sourceMappingURL=shared.map${stamp(ID_A)}`));
+    expect(
+      (await run()).findings.filter((f) => f.id === 'map.no-sources').map((f) => f.severity),
+    ).toEqual(['info']);
+  });
+
+  it('the same in different directories (aliases of one real map)', async () => {
+    put('real/app.js.map', rollupEmpty({ debugId: ID_A }));
+    const code = (c: string): string => `${c}\n//# sourceMappingURL=app.js.map${stamp(ID_A)}`;
+    put('a/app.js', code("export{a}from'./m.js';"));
+    put('b/app.js', code('export function f(){return 1}'));
+    for (const d of ['a', 'b']) {
+      symlinkSync(join(dist, 'real', 'app.js.map'), join(dist, d, 'app.js.map'));
+    }
+    const noted = (await run()).findings.filter(
+      (f) => f.id === 'map.no-sources' && !(f.file ?? '').startsWith('real/'),
+    );
+    expect(noted.map((f) => f.severity)).toEqual(['error']);
   });
 
   it('a shared empty map is noted once', async () => {

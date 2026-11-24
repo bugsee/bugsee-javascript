@@ -344,25 +344,83 @@ export function mapSources(json: Record<string, unknown>): {
 const MAX_INDEX_DEPTH = 32;
 
 const MODULE_SPECIFIER = String.raw`\s*(?:'[^'\n]*'|"[^"\n]*")`;
-/** One `import ...` or `export ... from ...` / `export { ... }` statement, at the start of the text. */
+const IDENT = String.raw`[\w$]+`;
+const REQUIRE_CALL = String.raw`require\s*\(${MODULE_SPECIFIER}\s*\)`;
+/**
+ * The statements a facade chunk is made of, each matched at the start of the text: ESM `import ...` /
+ * `export ... from ...` / `export { ... }`, and Rollup's CommonJS shape (`'use strict'`, the `__esModule` marker,
+ * `var x = require('...')`, `exports.a = x.a`, a live-binding getter, `module.exports = require('...')`).
+ */
 const FACADE_STATEMENT = new RegExp(
-  String.raw`^\s*(?:import\s*(?:(?:[\w$]+\s*,?\s*)?(?:\*\s*as\s+[\w$]+|\{[^}]*\})?\s*from)?${MODULE_SPECIFIER}|export\s*(?:\*\s*(?:as\s+[\w$]+\s*)?from${MODULE_SPECIFIER}|\{[^}]*\}\s*(?:from${MODULE_SPECIFIER})?))\s*;?`,
+  `^\\s*(?:${[
+    String.raw`import\s*(?:(?:${IDENT}\s*,?\s*)?(?:\*\s*as\s+${IDENT}|\{[^}]*\})?\s*from)?${MODULE_SPECIFIER}`,
+    String.raw`export\s*(?:\*\s*(?:as\s+${IDENT}\s*)?from${MODULE_SPECIFIER}|\{[^}]*\}\s*(?:from${MODULE_SPECIFIER})?)`,
+    String.raw`(?:'use strict'|"use strict")`,
+    String.raw`Object\.defineProperty\s*\(\s*exports\s*,\s*(?:'__esModule'|"__esModule")\s*,\s*\{\s*value\s*:\s*(?:true|!0)\s*\}\s*\)`,
+    String.raw`(?:(?:var|const|let)\s+${IDENT}\s*=\s*)?${REQUIRE_CALL}`,
+    String.raw`exports\.${IDENT}\s*=\s*(?:${IDENT}(?:\.${IDENT})*|${REQUIRE_CALL})`,
+    String.raw`module\.exports\s*=\s*${REQUIRE_CALL}`,
+    String.raw`Object\.defineProperty\s*\(\s*exports\s*,${MODULE_SPECIFIER}\s*,\s*\{\s*enumerable\s*:\s*(?:true|!0)\s*,\s*get\s*:\s*function\s*\(\s*\)\s*\{\s*return\s+${IDENT}(?:\.${IDENT})*\s*;?\s*\}\s*\}\s*\)`,
+  ].join('|')})\\s*;?`,
 );
 
 /**
- * Whether a bundle holds no code of its own: only `import`s, re-exports and comments, plus the Bugsee registration
- * (found by its marker, on its own line: the stamp appends it). That is a facade or empty chunk, whose empty map is
- * correct. Anything else (a function, a call, a declaration) is real code, and an empty map for it is a stripped one.
- * Conservative on purpose: whatever it cannot read as a facade is not one.
+ * `code` without its comments, found OUTSIDE string literals (a `//` inside `'https://cdn/x.js'` is not a comment, and
+ * a quote inside a comment is not a string). An unterminated string swallows the rest, which makes the text unreadable
+ * as a facade: the safe direction.
+ */
+function stripJsComments(code: string): string {
+  let out = '';
+  let quote: string | undefined;
+  for (let i = 0; i < code.length; i++) {
+    const ch = code.charAt(i);
+    if (quote !== undefined) {
+      out += ch;
+      if (ch === quote) {
+        quote = undefined;
+      }
+    } else if (ch === '"' || ch === "'" || ch === '`') {
+      quote = ch;
+      out += ch;
+    } else if (ch === '/' && code.charAt(i + 1) === '/') {
+      const end = code.indexOf('\n', i);
+      i = end === -1 ? code.length : end - 1; // the newline itself is kept
+      out += ' ';
+    } else if (ch === '/' && code.charAt(i + 1) === '*') {
+      const end = code.indexOf('*/', i + 2);
+      i = end === -1 ? code.length : end + 1;
+      out += ' ';
+    } else {
+      out += ch;
+    }
+  }
+  return out;
+}
+
+/**
+ * Whether a bundle holds no code of its own: only imports, re-exports (ESM or Rollup's CommonJS shape) and comments,
+ * plus the Bugsee registration the stamp appended: the TRAILING lines that carry its marker, with the comments and
+ * blank lines around them. A marker earlier in the file is the bundle's own code (an SDK reads `_bugseeDebugIds`), so
+ * it stays. A facade or empty chunk's empty map is correct; anything else (a function, a call, a declaration) is real
+ * code, and an empty map for it is a stripped one. Conservative on purpose: whatever it cannot read as a facade is not.
  */
 export function isFacadeCode(code: string): boolean {
-  let rest = code
-    .split('\n')
-    .filter((line) => !line.includes(REGISTRATION))
-    .join('\n')
-    .replace(/\/\*[\s\S]*?\*\//g, ' ')
-    .replace(/\/\/[^\n]*/g, ' ')
-    .trim();
+  const lines = code.split('\n');
+  let sawDebugId = false; // the stamp ends with `//# debugId=...`: only then is a marker line before it the stub
+  let removedStub = false;
+  for (let last = lines.at(-1); last !== undefined; last = lines.at(-1)) {
+    const text = last.trim();
+    if (text.startsWith('//')) {
+      sawDebugId ||= text.startsWith('//# debugId=');
+    } else if (text !== '') {
+      if (!(sawDebugId && !removedStub && text.includes(REGISTRATION))) {
+        break;
+      }
+      removedStub = true; // the one registration line the stamp appended
+    }
+    lines.pop();
+  }
+  let rest = stripJsComments(lines.join('\n')).trim();
   while (rest !== '') {
     const statement = FACADE_STATEMENT.exec(rest);
     if (statement === null) {
@@ -421,8 +479,8 @@ export function hasOriginalPosition(
       if (finish()) {
         return true;
       }
-      if (usable && values >= 2) {
-        source = segmentSource; // the next segment's delta is against this one
+      if (usable && values >= 4) {
+        source = segmentSource; // only a segment with an original line and column moves it; the next segment's delta is against this one
       }
       values = 0;
       usable = true;
@@ -765,6 +823,7 @@ async function diagnose(dirInput: string, options: DoctorOptions): Promise<Docto
   const seenMaps = new Set<string>();
   // Relative sources resolve from the map URL's directory, so an alias in another directory has its own verdict.
   const seenBases = new Set<string>();
+  const emptyMapNotes = new Map<string, DoctorFinding>();
   const markSeen = (real: string): boolean => {
     if (seenMaps.has(real)) {
       return false;
@@ -1013,6 +1072,13 @@ async function diagnose(dirInput: string, options: DoctorOptions): Promise<Docto
     /** The bundle that claims this map, when there is one: an empty map is only right for a facade chunk. */
     bundleCode?: string,
   ): void {
+    // An empty map shared with a bundle that has real code is a stripped map for THAT bundle, whichever claimed it first.
+    const note = emptyMapNotes.get(real);
+    if (note !== undefined && bundleCode !== undefined && !isFacadeCode(bundleCode)) {
+      note.severity = 'error';
+      note.message = `${note.file} has no \`sources\`; it can map nothing back to your code.`;
+      note.fix = 'Enable full source maps in the bundler (not a stripped / empty map).';
+    }
     const first = markSeen(real); // content and structure are the same for every name of one file
     const base = `${real}\0${dirname(mapPath)}`;
     if (seenBases.has(base)) {
@@ -1042,12 +1108,14 @@ async function diagnose(dirInput: string, options: DoctorOptions): Promise<Docto
     if (sources.length === 0 && !hasGeneratedSegments(json) && isFacadeCode(bundleCode ?? '')) {
       // A facade / empty chunk (Rollup: `sources: []`, `mappings: ""`): nothing generated, nothing to symbolicate.
       if (first) {
-        add({
+        const finding: DoctorFinding = {
           id: 'map.no-sources',
           severity: 'info',
           file: mapName,
           message: `${mapName} has no sources and no mappings (a facade or empty chunk): there is nothing to map, so nothing to symbolicate.`,
-        });
+        };
+        add(finding);
+        emptyMapNotes.set(real, finding); // upgraded to an error if a bundle with real code claims it too
       }
       return;
     }
