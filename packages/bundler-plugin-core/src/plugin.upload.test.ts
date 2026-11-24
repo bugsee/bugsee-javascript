@@ -160,8 +160,13 @@ describe('the output hooks actually drive the upload', () => {
   describe('webpack 5: stamps inside the compilation', () => {
     const DEV_TOOLING = 500;
 
+    // Faithful: a Buffer source is NOT rewritten by RealContentHashPlugin, so the fake refuses one.
     class RawSource {
-      constructor(readonly bytes: Buffer) {}
+      constructor(readonly value: string) {
+        if (typeof value !== 'string') {
+          throw new TypeError('a Buffer source would keep stale content-hash references');
+        }
+      }
     }
 
     function webpack5Compiler(options: { mode?: string } = {}) {
@@ -237,6 +242,23 @@ describe('the output hooks actually drive the upload', () => {
       expect(stampSpy).toHaveBeenCalledOnce();
     });
 
+    it('stamps in every mode, development included, and uploads after emit as already stamped', async () => {
+      // webpack has no development gate on its afterEmit upload (unlike Rspack), so skipping the in-build
+      // stamp there would only move the CLI to afterEmit and lose the SRI protection.
+      for (const mode of ['development', 'production', 'none', undefined]) {
+        stampSpy.mockClear();
+        uploadSpy.mockClear();
+        const w = webpack5Compiler(mode === undefined ? {} : { mode });
+        apply({ appToken: 'tok' }, w.compiler);
+        await w.compile();
+        expect(w.processAssets).toHaveLength(1);
+        expect(stampSpy).toHaveBeenCalledOnce();
+        await w.taps[0]?.fn();
+        expect(uploadSpy).toHaveBeenCalledOnce();
+        expect((uploadSpy.mock.calls[0]?.[2] as { preStamped?: boolean }).preStamped).toBe(true);
+      }
+    });
+
     it('then uploads WITHOUT re-injecting after emit', async () => {
       const w = webpack5Compiler({ mode: 'production' });
       apply({ appToken: 'tok' }, w.compiler);
@@ -268,7 +290,7 @@ describe('the output hooks actually drive the upload', () => {
       expect(w.updated).toHaveLength(1);
       expect(w.updated[0]?.name).toBe('main.js');
       expect(w.updated[0]?.source).toBeInstanceOf(RawSource);
-      expect((w.updated[0]?.source as RawSource).bytes.toString()).toBe('stamped');
+      expect((w.updated[0]?.source as RawSource).value).toBe('stamped');
     });
 
     it('passes the dry-run flag to the stamp', async () => {

@@ -31,11 +31,17 @@ describe('@bugsee/nextjs — real `next build`', () => {
 
   beforeAll(() => {
     rmSync(outDir, { recursive: true, force: true });
-    build = spawnSync('pnpm', ['exec', 'next', 'build'], {
-      cwd: appDir,
-      encoding: 'utf8',
-      env: { ...process.env, NEXT_TELEMETRY_DISABLED: '1' },
-    });
+    // The `next` binary is invoked by path: this package also installs Next 16 (as `next16`, for the source-map
+    // e2e), whose bin of the same name would win a `pnpm exec next`.
+    build = spawnSync(
+      process.execPath,
+      [join(appDir, 'node_modules', 'next', 'dist', 'bin', 'next'), 'build'],
+      {
+        cwd: appDir,
+        encoding: 'utf8',
+        env: { ...process.env, NEXT_TELEMETRY_DISABLED: '1' },
+      },
+    );
   });
 
   afterAll(() => {

@@ -35,8 +35,12 @@ let delayMs = 0;
 // with a reason; CI (or BUGSEE_REQUIRE_CLI=1) requires it, so a CI run can never go green testing less.
 const cli = resolveBugseeCli();
 const cliProbe = cli.endsWith('.js')
-  ? spawnSync(process.execPath, [cli, '--version'], { encoding: 'utf8' })
-  : spawnSync(cli, ['--version'], { encoding: 'utf8' });
+  ? spawnSync(process.execPath, [cli, '--version'], {
+      encoding: 'utf8',
+      timeout: 15_000,
+      killSignal: 'SIGKILL',
+    })
+  : spawnSync(cli, ['--version'], { encoding: 'utf8', timeout: 15_000, killSignal: 'SIGKILL' });
 const cliAvailable = cliProbe.status === 0;
 const cliRequired = process.env.CI !== undefined || process.env.BUGSEE_REQUIRE_CLI !== undefined;
 if (!cliAvailable && !cliRequired) {
@@ -175,10 +179,14 @@ describeReal('real Rspack build', () => {
     expectUploaded(app.out, before);
   });
 
-  it('REFUSES an SRI build: nothing is stamped or uploaded and the maps stay', async () => {
+  it('stamps IN the build, so a page pinning a hash the build cannot satisfy is REPORTED (the build still uploads)', async () => {
+    // Since the in-build stamp (Rspack stamps at PROCESS_ASSETS_STAGE_DEV_TOOLING + 1) nothing is rewritten
+    // after emit, so the post-emit SRI refusal no longer applies. What can still be wrong is a pin that
+    // never matched (here: a hand-written page with a made-up hash), and the post-stamp integrity check
+    // says so instead of shipping it silently. The real-SRI-plugin builds are in
+    // plugin.in-build.real-build.test.ts.
     const app = makeApp('rspack-sri');
     mkdirSync(app.out, { recursive: true });
-    // What an SRI plugin leaves behind: a page pinning the hash of the entry script.
     writeFileSync(
       join(app.out, 'index.html'),
       '<script src="main.js" integrity="sha384-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"></script>',
@@ -197,10 +205,9 @@ describeReal('real Rspack build', () => {
         ],
       }),
     );
-    expect(errors.map(String).join()).toContain('refusing to stamp debug-IDs');
-    expect(requests.length).toBe(before);
-    expect(readFileSync(join(app.out, 'main.js'), 'utf8')).not.toContain('debugId');
-    expect(existsSync(join(app.out, 'main.js.map'))).toBe(true);
+    expect(errors.map(String).join()).toContain('no longer matches the integrity hash');
+    expect(requests.length).toBeGreaterThan(before);
+    expect(readFileSync(join(app.out, 'main.js'), 'utf8')).toContain('debugId');
   });
 
   it('a build with a compile error uploads nothing', async () => {

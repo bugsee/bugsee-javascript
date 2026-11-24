@@ -1,0 +1,5 @@
+---
+'@bugsee/bundler-plugin-core': patch
+---
+
+Vite, Rollup and Rspack now stamp debug-IDs INSIDE the build (Vite/Rollup in `generateBundle`, `order: 'pre'`; Rspack at `PROCESS_ASSETS_STAGE_DEV_TOOLING + 1`, as webpack 5 already did), so Subresource Integrity hashes taken later describe the stamped bytes and a page that pins them keeps loading, with its maps uploaded. List the Bugsee plugin before any SRI plugin. A failed or impossible in-build stamp (an older Rollup, `sourcemap: 'inline'`) falls back to stamping after emit, where the SRI refusal still applies; esbuild and the standalone CLI stay post-emit. Every stamp is now verified (each bundle still parses, its sourceMappingURL is intact, the bytes are the original plus the appended stamp, and the map carries the bundle's debugId; a failure leaves or restores the original bytes and is reported), an in-build stamp is re-checked on disk and against the page's integrity pins, and `.map` files are deleted only after a confirmed upload and only when they carry a debugId. Adds `acorn` as a dependency for the parse check.

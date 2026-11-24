@@ -1,11 +1,30 @@
 // SM-A2 — orchestrate a source-map upload by driving `bugsee-cli`: inject debug-IDs, upload the maps, then
 // delete the client `.map` files (privacy). Each side-effecting step is behind an injectable seam so the
 // orchestration is unit-tested without a real binary or filesystem.
-import { readdir, unlink } from 'node:fs/promises';
-import { join } from 'node:path';
+import { access, readdir, readFile, unlink } from 'node:fs/promises';
+import path, { join, relative, resolve } from 'node:path';
+import { readDebugId } from './debug-ids';
 import { type RunBugseeCliOptions, runBugseeCli, type SpawnResult } from './run-cli';
 import { findIntegrityMismatches, findSriProtectedScripts, type SriProtectedScript } from './sri';
+import {
+  isFencedPath,
+  isProjectRootOrAbove,
+  isUploadableMap,
+  listOutputMaps,
+  MAX_WALK_DEPTH,
+  NEVER_WALK,
+  ownedBy,
+  partitionByKeyed,
+  restorePaths,
+  type SnapshotTarget,
+  type StampSnapshot,
+  sameAsSnapshot,
+  snapshotStampFiles,
+  verifyAndRestore,
+  verifyStampedOnDisk,
+} from './stamp-files';
 import type { VcsMetadata } from './vcs';
+import { formatIssues, localPointerTarget } from './verify-stamp';
 
 /** The `runBugseeCli` shape, injectable for tests. */
 export type RunFn = (args: string[], options: RunBugseeCliOptions) => Promise<SpawnResult>;
@@ -53,8 +72,13 @@ export interface UploadSourcemapsOptions {
     /** Maps the CLI is not given (stylesheet maps); deleted with `maps`, only after a confirmed upload. */
     stylesheetMaps?: readonly string[];
   };
-  /** Injectable `.map` lister for the delete snapshot of a directory run (default {@link listMapFiles}). */
+  /** Injectable `.map` lister for the delete snapshot of a directory run (default {@link listOutputMaps}). */
   listMapFiles?: (dir: string) => Promise<string[]>;
+  /**
+   * Injectable keyed-map check for the deletion step (default {@link partitionByKeyed}): which of the
+   * candidate maps carry a debug-id, i.e. were actually keyed for upload, and so may be deleted.
+   */
+  partitionMaps?: typeof partitionByKeyed;
   /** Injectable SRI scan (default {@link findSriProtectedScripts}). */
   findSri?: (dir: string) => Promise<SriProtectedScript[]>;
   /**
@@ -63,6 +87,34 @@ export interface UploadSourcemapsOptions {
    * refusal, which exists only to protect a page from that rewrite. Runs {@link verifySri} instead.
    */
   preStamped?: boolean;
+  /**
+   * The bundles (paths relative to `outDir`) the in-build stamp wrote. With `preStamped`, the on-disk
+   * re-check judges exactly these and their maps — never the directory, so a file that was not part of the
+   * bundle (a `public/` script, a stale file with `emptyOutDir: false`) is not taken for one the stamp
+   * missed. Without it the re-check has nothing to name and does not run.
+   */
+  stampedBundles?: readonly string[];
+  /**
+   * The names this build emitted (relative to `outDir`). A stylesheet / declaration map is deleted only if it is
+   * among them, and a keyed script map only if it is among them too; anything else is foreign, left alone, and
+   * said. Without it (a directory run where the output is not known) the directory-name fence applies.
+   */
+  ownFiles?: readonly string[];
+  /**
+   * The names OTHER outputs of the same directory emitted. This output neither uploads nor reports their
+   * maps: each output handles its own, so N outputs into one directory make N uploads, not N times everything.
+   */
+  siblingOwnFiles?: readonly string[];
+  /** An output of the directory that has maps already finished in this build (so an unmapped one has nothing to do). */
+  siblingsHaveMaps?: boolean;
+  /** The in-build stamp's bundle -> map names (relative to `outDir`), for maps the pointer and sibling cannot name. */
+  stampedMaps?: Readonly<Record<string, string>>;
+  /** Where a non-failing observation goes (default: nowhere — callers that want it pass the notice sink). */
+  onNotice?: (message: string) => void;
+  /** Injectable lister of the script maps to consider for a pre-stamped directory upload (default {@link listOutputMaps}). */
+  listUploadMaps?: (dir: string) => Promise<string[]>;
+  /** Where the pre-inject originals are spilled (default: the OS temp directory). A test seam. */
+  spillRoot?: string;
   /** Injectable integrity check for the pre-stamped path (default {@link findIntegrityMismatches}). */
   verifySri?: (dir: string) => Promise<SriProtectedScript[]>;
   /**
@@ -94,33 +146,6 @@ export interface UploadSourcemapsResult {
   vcs?: VcsMetadata;
 }
 
-/**
- * Directories never descended into when deleting `.map` files.
- *
- * A relative `output.file` resolves the output dir to `'.'` — `path.dirname('bundle.js') === '.'`, an
- * entirely ordinary Rollup library config — so the walk started at the PROJECT ROOT. With no exclusions it
- * unlinked dependency source maps under `node_modules/` (breaking debugging until a reinstall) and a
- * developer's own authored maps under `src/`. Silent, unrecoverable loss in the working tree, on by default.
- */
-const NEVER_WALK = new Set([
-  'node_modules',
-  'src',
-  '.git',
-  '.next',
-  '.nuxt',
-  '.svelte-kit',
-  '.cache',
-  'test',
-  'tests',
-  '__tests__',
-]);
-
-/**
- * Depth limit for the walk. Build output is shallow (`dist/assets/chunk.js.map` is 2); an unbounded walk
- * from a mis-resolved root could traverse an entire disk.
- */
-const MAX_DELETE_DEPTH = 6;
-
 /** Paths per CLI call: keeps a build with thousands of outputs under the OS command-line length limit. */
 export const MAX_PATHS_PER_CALL = 200;
 function inBatches<T>(items: readonly T[]): T[][] {
@@ -133,7 +158,7 @@ function inBatches<T>(items: readonly T[]): T[][] {
 
 /** Recursively list every build `*.map` under `dir`. */
 export async function listMapFiles(dir: string, depth = 0): Promise<string[]> {
-  if (depth > MAX_DELETE_DEPTH) {
+  if (depth > MAX_WALK_DEPTH) {
     return [];
   }
   const found: string[] = [];
@@ -177,6 +202,20 @@ export async function defaultDeleteMapFiles(
   return deleted;
 }
 
+/** The error for a stamp that did not verify: what was restored, and anything that could not be. */
+function verifyFailure(
+  issues: Parameters<typeof formatIssues>[0],
+  restored: readonly string[],
+  failed: ReadonlyArray<{ path: string; error: string }>,
+): Error {
+  return new Error(
+    `the debug-ID stamp did not verify, so ${restored.length} file(s) were restored to the bundler's original bytes (${formatIssues(issues)})` +
+      (failed.length > 0
+        ? `; COULD NOT restore ${failed.map((f) => `${f.path} (${f.error})`).join(', ')}, which still carry the unverified stamp`
+        : ''),
+  );
+}
+
 /** Where a contained upload failure goes when the user gave no `onError`. */
 function defaultUploadErrorHandler(error: unknown): void {
   console.warn(`[bugsee] source-map upload skipped: ${String(error)}`);
@@ -201,6 +240,192 @@ export async function uploadSourcemaps(
   const cliOptions: RunBugseeCliOptions = { token: appToken, endpoint };
   const onError = options.onError ?? defaultUploadErrorHandler;
 
+  const notice = (message: string): void =>
+    (options.onNotice ?? ((m: string) => console.warn(`[bugsee] ${m}`)))(message);
+
+  /**
+   * Reports something that does NOT stop the upload (the catch-up's problems): the default must not say the
+   * upload was skipped, as the contained-failure wording does.
+   */
+  const reportContinuing = (error: unknown): void =>
+    (options.onError ?? ((e: unknown) => console.warn(`[bugsee] ${String(e)}`)))(error);
+
+  /** The map is a JSON object (what inject can stamp): not empty, not garbage, not `[]` / `null`. */
+  const isMapObject = async (map: string): Promise<boolean> => {
+    try {
+      const parsed: unknown = JSON.parse(await readFile(map, 'utf8'));
+      return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed);
+    } catch {
+      return false;
+    }
+  };
+
+  /**
+   * CATCH UP the build's OWN script maps that still carry no debug-id. Vite builds a worker through a
+   * sub-build, then puts its code in the output while REGENERATING its map (Vite 8) or emitting both after
+   * our `generateBundle` (Vite 7): the worker file is stamped without its map carrying the id, or not stamped
+   * at all. `sourcemaps inject` on a bundle that already carries the id AND the registration leaves its bytes
+   * unchanged and puts the id in the map (measured, bugsee-cli 0.9.0). Only maps this build emitted
+   * (`ownFiles`) are touched, never a `public/` copy; a bundle that is not fully stamped yet and is pinned by
+   * Subresource Integrity is left alone (stamping it would change pinned bytes).
+   *
+   * Robust by construction: a map that is not a JSON object is skipped (the CLI rejects the whole batch for
+   * one), a rejected batch is retried pair by pair, and whatever was rewritten is verified and restored.
+   * Returns a failure only when files could not be restored from an unverified stamp (and `failOnError` is on).
+   */
+  const catchUpUnkeyed = async (ownFiles: readonly string[]): Promise<Error | undefined> => {
+    const own = ownedBy(outDir, ownFiles);
+    const unkeyed = (
+      await (options.partitionMaps ?? partitionByKeyed)(
+        (
+          await (options.listUploadMaps ?? listOutputMaps)(outDir)
+        ).filter((map) => isUploadableMap(map) && own(map)),
+      )
+    ).kept;
+    const pairs: Array<{ bundle: string; map: string }> = [];
+    for (const map of unkeyed) {
+      const bundle = map.slice(0, -'.map'.length);
+      if (
+        /\.[cm]?js$/i.test(bundle) &&
+        own(bundle) && // a foreign bundle (another output's) is never handed to inject
+        (await access(bundle).then(
+          () => true,
+          () => false,
+        )) &&
+        (await isMapObject(map))
+      ) {
+        pairs.push({ bundle, map });
+      }
+    }
+    // Maps that are not the bundle's sibling (a moved `maps/w.js.map`): found through the OWN bundles' pointers.
+    const matched = new Set(pairs.map((pair) => pair.map));
+    const loose = unkeyed.filter((map) => !matched.has(map));
+    if (loose.length > 0) {
+      for (const name of ownFiles) {
+        const bundle = resolve(outDir, name);
+        if (!/\.[cm]?js$/i.test(bundle)) {
+          continue;
+        }
+        let text: string;
+        try {
+          text = await readFile(bundle, 'utf8');
+        } catch {
+          continue;
+        }
+        const target = localPointerTarget(bundle, text, path);
+        const map =
+          target === undefined ? undefined : loose.find((m) => resolve(m) === resolve(target));
+        if (map !== undefined && (await isMapObject(map))) {
+          pairs.push({ bundle, map });
+        }
+      }
+    }
+    if (pairs.length === 0) {
+      return undefined;
+    }
+    const pinned = new Set(
+      (await (options.findSri ?? findSriProtectedScripts)(outDir)).map((pin) =>
+        resolve(pin.script),
+      ),
+    );
+    const eligible: typeof pairs = [];
+    const blocked: typeof pairs = [];
+    const pinnedAndStamped: typeof pairs = [];
+    for (const pair of pairs) {
+      let code: string;
+      try {
+        code = await readFile(pair.bundle, 'utf8');
+      } catch {
+        continue; // vanished, or not a file: not a candidate
+      }
+      // "Stamped" means the id AND the registration: a foreign `//# debugId=` comment alone would still get
+      // the registration appended, which changes pinned bytes.
+      const stamped = readDebugId(code) !== undefined && code.includes('_bugseeDebugIds');
+      (pinned.has(resolve(pair.bundle)) && !stamped ? blocked : eligible).push(pair);
+      if (pinned.has(resolve(pair.bundle)) && stamped) {
+        pinnedAndStamped.push(pair);
+      }
+    }
+    if (blocked.length > 0) {
+      notice(
+        `${blocked.length} script(s) this build emitted were not fully stamped because Subresource Integrity pins them, so their maps were not uploaded: ${blocked.map((pair) => pair.bundle).join(', ')}`,
+      );
+    }
+    if (eligible.length === 0) {
+      return undefined;
+    }
+    const targets = eligible.flatMap((pair) => [pair.bundle, pair.map]);
+    const snapshot = await snapshotStampFiles({ files: targets }, options.spillRoot);
+    try {
+      const pairErrors: Error[] = [];
+      try {
+        for (const batch of inBatches(targets)) {
+          await run(['sourcemaps', 'inject', ...batch], cliOptions);
+        }
+      } catch {
+        // The CLI rejected a batch: find out which pair, so one bad file does not cost the others.
+        for (const pair of eligible) {
+          try {
+            await run(['sourcemaps', 'inject', pair.bundle, pair.map], cliOptions);
+          } catch (error) {
+            pairErrors.push(
+              new Error(`bugsee-cli could not stamp ${pair.bundle}: ${String(error)}`),
+            );
+          }
+        }
+      }
+      // Whatever was rewritten (even by a CLI that then failed) is verified, and restored if it is not sound:
+      // BEFORE anything is reported, so a user handler that throws cannot skip it.
+      const { issues, restored, failed } = await verifyAndRestore(snapshot);
+      // ENFORCE the claim the pinned-bundle exception rests on: inject leaves an already-stamped bundle's
+      // bytes alone. If it did not, the pinned bytes changed: put them (and the map) back, and say so.
+      let pinnedFailure: Error | undefined;
+      for (const pair of pinnedAndStamped) {
+        if (!(await sameAsSnapshot(snapshot, pair.bundle))) {
+          const undone = await restorePaths(snapshot, [pair.bundle, pair.map]);
+          const failure = new Error(
+            `bugsee-cli changed ${pair.bundle}, which Subresource Integrity pins and which was already stamped; its original bytes were restored` +
+              (undone.length > 0
+                ? ` (could not restore: ${undone.map((u) => u.path).join(', ')})`
+                : ''),
+          );
+          if (undone.length > 0 && options.failOnError === true) {
+            // The pinned bytes are still changed: the browser would refuse the script. Strict, like any
+            // other file that could not be restored.
+            pinnedFailure ??= failure;
+          } else {
+            reportContinuing(failure);
+          }
+        }
+      }
+      for (const error of pairErrors) {
+        reportContinuing(error);
+      }
+      if (issues.length > 0) {
+        const failure = verifyFailure(issues, restored, failed);
+        // Restored means the output is exactly what the bundler wrote (safe): reported. Only files that could
+        // NOT be restored still carry an unverified stamp, which `failOnError` refuses to ship.
+        if (options.failOnError === true && failed.length > 0) {
+          return failure;
+        }
+        reportContinuing(failure);
+      }
+      return pinnedFailure;
+    } finally {
+      // A failed spill removal is a diagnostic: it must not replace the (possibly strict) result being returned,
+      // not even through a reporter that throws while saying so.
+      await snapshot.dispose().catch((error: unknown) => {
+        try {
+          reportContinuing(error);
+        } catch {
+          // the handler threw: the result of the catch-up stands
+        }
+      });
+    }
+  };
+
+  let original: StampSnapshot | undefined;
+  let restoredAny = false;
   try {
     if (options.preStamped === true) {
       // 0'. Stamped in the build, so this run rewrites nothing and cannot break SRI. What it CAN do is
@@ -213,10 +438,11 @@ export async function uploadSourcemaps(
         const error = new Error(
           `${first.script} no longer matches the integrity hash ${first.html} pins` +
             (broken.length > 1 ? ` (and ${broken.length - 1} more)` : '') +
-            `, so the browser will refuse to run it. Bugsee stamps debug-IDs inside the build at ` +
-            `PROCESS_ASSETS_STAGE_DEV_TOOLING + 1, before webpack-subresource-integrity hashes at ` +
-            `PROCESS_ASSETS_STAGE_OPTIMIZE_INLINE; a plugin that hashes EARLIER than that sees the ` +
-            `bytes before the stamp. Move that plugin's hashing later, or disable this plugin for this build.`,
+            `, so the browser will refuse to run it. Bugsee stamps debug-IDs inside the build, before the ` +
+            `bundler writes its output (webpack/Rspack: PROCESS_ASSETS_STAGE_DEV_TOOLING + 1; Vite/Rollup: ` +
+            `generateBundle, order 'pre'). A plugin that hashes EARLIER than that sees the bytes before the ` +
+            `stamp, and one that rewrites the file AFTER it changes bytes that were already hashed. Run the ` +
+            `hashing after this plugin (list this plugin first), or disable this plugin for this build.`,
         );
         if (options.failOnError === true) {
           throw error;
@@ -225,6 +451,57 @@ export async function uploadSourcemaps(
         // page that is broken, not them. NOT through the default `onError` wording, which says the
         // upload was skipped; here it was not.
         (options.onError ?? ((e: unknown) => console.warn(`[bugsee] ${String(e)}`)))(error);
+      }
+      // 0'''. CATCH UP the build's OWN script maps that still carry no debug-id. Vite builds a worker through a
+      //       sub-build, then copies its code into the output while REGENERATING its map (Vite 8) or emitting both
+      //       after our `generateBundle` (Vite 7): the worker file is stamped without its map carrying the id, or
+      //       not stamped at all. `sourcemaps inject` on an already-stamped bundle leaves its bytes unchanged
+      //       and puts the bundle's id in the map (measured, bugsee-cli 0.9.0), so this is idempotent. Only maps
+      //       this build emitted (`ownFiles`) are touched, never a `public/` copy; a bundle that is not stamped
+      //       yet and is pinned by Subresource Integrity is left alone (stamping it would break the page).
+      if (!dryRun && files === undefined && options.ownFiles !== undefined) {
+        // Best effort: nothing in the catch-up may cost the build its other maps. Only an applied stamp that
+        // does not VERIFY is a strict failure (thrown under failOnError); a CLI error is reported and the map
+        // simply stays unkeyed.
+        let strict: Error | undefined;
+        try {
+          strict = await catchUpUnkeyed(options.ownFiles);
+        } catch (error) {
+          onError(
+            new Error(`stamping this build's remaining script maps failed: ${String(error)}`),
+          );
+        }
+        if (strict !== undefined) {
+          throw strict;
+        }
+      }
+      // 0''. The same stamp, as it is on disk after the bundler wrote the output. A later step can rewrite a
+      //      chunk or REGENERATE its map after the in-build stamp (Vite does, for dynamic-import preload
+      //      markers), and a bundle that looks stamped with a map that no longer carries its id cannot be
+      //      symbolicated. Nothing to restore here (no originals), so it is reported; the keyed check at
+      //      deletion keeps any map that lost its id. Not on a dry run: nothing was stamped.
+      if (!dryRun && options.stampedBundles !== undefined) {
+        const known = new Map(
+          Object.entries(options.stampedMaps ?? {}).map(([bundle, map]) => [
+            resolve(outDir, bundle),
+            resolve(outDir, map),
+          ]),
+        );
+        const lost = await verifyStampedOnDisk(
+          options.stampedBundles.map((bundle) => resolve(outDir, bundle)),
+          known,
+        );
+        if (lost.length > 0) {
+          const failure = new Error(
+            `the debug-IDs stamped inside the build did not survive intact to disk: they changed after the build wrote it, ` +
+              `or something rewrote a bundle or its map after Bugsee stamped it (${formatIssues(lost)}). ` +
+              `Affected maps cannot be matched to their bundle.`,
+          );
+          if (options.failOnError === true) {
+            throw failure;
+          }
+          onError(failure);
+        }
       }
     } else {
       // 0. Refuse outright if the build pins its own script hashes. `sourcemaps inject` appends bytes
@@ -241,19 +518,90 @@ export async function uploadSourcemaps(
             `hash of ${first.script}` +
             (pinned.length > 1 ? ` (and ${pinned.length - 1} more)` : '') +
             `. Injecting a debug-ID rewrites that file, so the browser would refuse to run it and the ` +
-            `page would load nothing. Source maps were NOT uploaded. See ` +
+            `page would load nothing. Source maps were NOT uploaded. Bundlers that let this plugin stamp ` +
+            `inside the build (webpack 5, Rspack, Vite, Rollup) avoid this; if one did and this still fired, its ` +
+            `in-build stamp failed (see the earlier warning). For esbuild or the standalone CLI, run ` +
+            `\`bugsee-cli sourcemaps inject\` BEFORE the step that computes the hashes. See ` +
             `https://github.com/bugsee/bugsee-javascript/blob/main/docs/design/source-maps.md#subresource-integrity`,
         );
       }
 
+      // 0b. Take the originals, so a stamp that does not verify can be undone (see below). Not on a dry run:
+      //     inject writes nothing, so there is nothing to undo.
+      const target: SnapshotTarget =
+        files === undefined ? { dir: outDir } : { files: [...files.scripts, ...files.maps] };
+      //     A directory that is the project root (or above) is NOT snapshotted: a bare `output.file`
+      //     resolves to `.`, and snapshot-and-restore there would reach across the project tree.
+      if (!dryRun) {
+        if (files === undefined && (await isProjectRootOrAbove(outDir))) {
+          onError(
+            new Error(
+              `the debug-ID stamp of ${outDir} cannot be verified or undone: the output directory is the project root (or contains it), so originals are not snapshotted. Set an output directory (output.dir) to get stamp verification.`,
+            ),
+          );
+        } else {
+          original = await snapshotStampFiles(target, options.spillRoot);
+        }
+      }
+
       // 1. Inject debug-IDs (rewrites the built .js + .map in place).
-      if (files === undefined) {
-        await run(['sourcemaps', 'inject', outDir, ...dryFlag], cliOptions);
-      } else {
-        // A script and its map may land in different batches: harmless, the debug-id is derived from the
-        // bundle's content, so each side stamps the same id (measured with 250 entries, none mismatched).
-        for (const batch of inBatches([...files.scripts, ...files.maps])) {
-          await run(['sourcemaps', 'inject', ...batch, ...dryFlag], cliOptions);
+      try {
+        if (files === undefined) {
+          await run(['sourcemaps', 'inject', outDir, ...dryFlag], cliOptions);
+        } else {
+          // A script and its map may land in different batches: harmless, the debug-id is derived from the
+          // bundle's content, so each side stamps the same id (measured with 250 entries, none mismatched).
+          for (const batch of inBatches([...files.scripts, ...files.maps])) {
+            await run(['sourcemaps', 'inject', ...batch, ...dryFlag], cliOptions);
+          }
+        }
+      } catch (error) {
+        // A rejected inject may already have rewritten files (an earlier batch, or a partial write): verify and
+        // restore them BEFORE the failure propagates, so no unverified stamp stays on disk.
+        if (original !== undefined) {
+          let note: string | undefined;
+          try {
+            const { issues, restored, failed } = await verifyAndRestore(original);
+            if (failed.length > 0) {
+              // Files still carry the unverified rewrite: that must not go unmentioned.
+              note = verifyFailure(issues, restored, failed).message;
+            }
+          } catch (restoreError) {
+            note = `restoring the originals also failed: ${restoreError instanceof Error ? restoreError.message : String(restoreError)}`;
+          }
+          if (note !== undefined) {
+            // The ORIGINAL error object is kept (a BugseeCliError stays one); the restore problem is appended.
+            const message = `${error instanceof Error ? error.message : String(error)}; ${note}`;
+            if (error instanceof Error) {
+              try {
+                error.message = message;
+              } catch {
+                // a frozen / read-only error: the note must not be lost, so report a new error instead
+                throw new Error(message, { cause: error });
+              }
+              throw error;
+            }
+            throw new Error(message, { cause: error });
+          }
+        }
+        throw error;
+      }
+
+      // 1b. VERIFY what inject wrote (verify-stamp.ts): every changed bundle still parses and keeps its map
+      //     pointer, the bytes are the original plus an appended stamp, every map is JSON whose debugId
+      //     matches its bundle. A failure puts the ORIGINAL bytes back (bundle and map as a pair) and is
+      //     reported — a script that no longer parses is a blank page, and shipping it silently is the one
+      //     outcome this must rule out. What did verify stays stamped and is uploaded below; the restored
+      //     maps carry no debugId, so the keyed check at deletion keeps them.
+      if (original !== undefined) {
+        const { issues, restored, failed } = await verifyAndRestore(original);
+        restoredAny = restored.length > 0;
+        if (issues.length > 0) {
+          const failure = verifyFailure(issues, restored, failed);
+          if (options.failOnError === true) {
+            throw failure;
+          }
+          onError(failure);
         }
       }
     }
@@ -276,11 +624,24 @@ export async function uploadSourcemaps(
     // A DIRECTORY run snapshots the maps that exist now: they are the ones this upload covers, and only they
     // may be deleted (a map written meanwhile was never sent). If the snapshot cannot be taken, nothing is
     // deleted afterwards and that is reported. A FILE run (`files`) names its maps up front.
+    // A PRE-STAMPED directory is uploaded as an explicit file set (below), and what is deleted is exactly
+    // that set: no second walk to disagree with the first about which maps exist.
+    // (Also after a restore: a restored map is unkeyed again, and the CLI rejects a DIRECTORY that holds one.)
+    const explicitUpload =
+      files === undefined &&
+      (options.preStamped === true ||
+        restoredAny ||
+        // a sibling output's maps share the directory: upload only the names that are ours, never the directory
+        options.siblingsHaveMaps === true ||
+        (options.siblingOwnFiles?.length ?? 0) > 0) &&
+      !dryRun;
+    let uploadedMaps: string[] = [];
+    let unuploadableMaps: string[] = [];
     let snapshot: string[] | undefined;
     let snapshotError: unknown;
-    if (files === undefined && deleteMaps && !dryRun) {
+    if (files === undefined && deleteMaps && !dryRun && !explicitUpload) {
       try {
-        snapshot = await (options.listMapFiles ?? listMapFiles)(outDir);
+        snapshot = await (options.listMapFiles ?? listOutputMaps)(outDir);
       } catch (error) {
         snapshotError = error;
       }
@@ -300,7 +661,60 @@ export async function uploadSourcemaps(
       ...(options.stripSourcesContent === true ? ['--strip-sources-content'] : []),
       ...dryFlag,
     ];
-    if (files === undefined) {
+    // A PRE-STAMPED directory is uploaded as an explicit file set, never as the directory. Only what the
+    // in-build stamp wrote has a debug-id; anything else in the directory (a `public/` vendor script and
+    // its map, a stale map with `emptyOutDir: false`) has none, and the CLI exits non-zero for a directory
+    // holding such a map ("nothing was uploaded"), which would lose EVERY map of the build. Unkeyed maps
+    // are left alone and said, not failed.
+    if (explicitUpload) {
+      // ONE walk: the uploadable maps are classified by key; the stylesheet / declaration maps of the same
+      // walk are never uploaded but embed the source, so they are deleted with the uploaded ones.
+      // Sorted here, so the CLI batches and the notice are stable whatever order a walk returns.
+      const siblings = ownedBy(outDir, options.siblingOwnFiles ?? []);
+      const mineByName = ownedBy(outDir, options.ownFiles ?? []);
+      const everything = [...(await (options.listUploadMaps ?? listOutputMaps)(outDir))]
+        // (own wins: a name in both lists is this output's)
+        .filter((map) => mineByName(map) || !siblings(map))
+        .sort();
+      const { deletable, kept } = await (options.partitionMaps ?? partitionByKeyed)(
+        everything.filter(isUploadableMap),
+      );
+      // Only THIS build's own stylesheet / declaration maps are deleted: never one under node_modules, src,
+      // test or a dot-directory (foreign files this build did not produce), and an unkeyed map there is
+      // not worth a notice either.
+      const notFenced = (map: string): boolean => !isFencedPath(relative(outDir, map));
+      // (ownership is applied once, when deciding what to delete)
+      unuploadableMaps = everything.filter((map) => !isUploadableMap(map));
+      const noticed = kept.filter(notFenced);
+      if (noticed.length > 0) {
+        (options.onNotice ?? ((m: string) => console.warn(`[bugsee] ${m}`)))(
+          `${noticed.length} source map(s) in ${outDir} have no readable debug-ID, so they were not uploaded (left on disk untouched): ${noticed.join(', ')}`,
+        );
+      }
+      // An output with no maps of its own while a sibling output of the directory has some has nothing to
+      // do: that is not "this build produced no maps". A lone unmapped output still fails.
+      const siblingHasMaps =
+        options.siblingsHaveMaps === true ||
+        (options.siblingOwnFiles ?? []).some((name) => name.endsWith('.map'));
+      // "This output has no maps": by ITS names when they are known (a stale or foreign map in the directory
+      // is not this output's), else by what the directory walk found.
+      const ownHasNoMaps =
+        options.ownFiles !== undefined
+          ? !options.ownFiles.some((name) => name.endsWith('.map'))
+          : everything.length === 0;
+      if (deletable.length === 0) {
+        if (options.failOnError === true && !(ownHasNoMaps && siblingHasMaps)) {
+          throw new Error(
+            `no source maps with a debug-ID were found in ${outDir}, so nothing was uploaded`,
+          );
+        }
+      } else {
+        for (const batch of inBatches(deletable)) {
+          await run(uploadArgs(batch), cliOptions);
+        }
+        uploadedMaps = deletable;
+      }
+    } else if (files === undefined) {
       await run(uploadArgs([outDir]), cliOptions);
     } else {
       for (const batch of inBatches(files.maps)) {
@@ -327,13 +741,65 @@ export async function uploadSourcemaps(
       onError(failure);
       return { injected: true, uploaded: true, deletedMaps: [], ...vcsEcho };
     }
-    const deletedMaps = deleteMaps
-      ? await (options.deleteMapFiles ?? defaultDeleteMapFiles)(
-          outDir,
-          files === undefined ? snapshot : [...files.maps, ...(files.stylesheetMaps ?? [])],
-        )
-      : [];
-    return { injected: true, uploaded: true, deletedMaps, ...vcsEcho };
+    //    "The upload command exited 0" is not "this map was uploaded": the CLI skips a map with no debug-id.
+    //    Only a map that carries one was keyed for upload, so only those are deleted (stamp-files.ts).
+    let deletedMaps: string[] = [];
+    if (deleteMaps) {
+      // A pre-stamped build deletes exactly what it uploaded (already classified keyed, so not re-read) plus
+      // the maps that were never uploadable, and only if something was uploaded. Any other path classifies
+      // its candidates here.
+      let deletable: string[];
+      let kept: string[] = [];
+      const own = ownedBy(outDir, options.ownFiles);
+      // A keyed script map is deleted only if this build emitted it (when the build's names are known); a
+      // stylesheet / declaration map only if it is this build's (by name, or the directory fence as fallback).
+      const mayDelete = (map: string): boolean =>
+        isUploadableMap(map) ? options.ownFiles === undefined || own(map) : own(map);
+      if (explicitUpload) {
+        deletable = uploadedMaps.length > 0 ? [...uploadedMaps, ...unuploadableMaps] : [];
+      } else {
+        ({ deletable, kept } = await (options.partitionMaps ?? partitionByKeyed)(
+          files === undefined ? (snapshot as string[]) : files.maps,
+        ));
+        // The caller's stylesheet maps are classified by the CALLER (a CSS map may be named `x1.map`, which the
+        // script-map key check would keep): they go with the uploaded maps, once an upload is confirmed.
+        if (files !== undefined) {
+          deletable = [...deletable, ...(files.stylesheetMaps ?? [])];
+        }
+        if (files === undefined) {
+          // A directory walk also sees foreign files; an unkeyed map in a fenced directory is not reported.
+          kept = kept.filter((map) => !isFencedPath(relative(outDir, map)));
+        }
+      }
+      // Directory runs only: the explicit `files` path deletes exactly the files it was given.
+      let foreign: string[] = [];
+      if (files === undefined) {
+        foreign = deletable.filter((map) => isUploadableMap(map) && !mayDelete(map));
+        deletable = deletable.filter(mayDelete);
+      }
+      if (foreign.length > 0) {
+        (options.onNotice ?? ((m: string) => console.warn(`[bugsee] ${m}`)))(
+          `${foreign.length} keyed source map(s) in ${outDir} were not produced by this build, so they were left on disk (uploaded, not deleted): ${foreign.join(', ')}`,
+        );
+      }
+      deletedMaps = await (options.deleteMapFiles ?? defaultDeleteMapFiles)(outDir, deletable);
+      if (kept.length > 0) {
+        const failure = new Error(
+          `${kept.length} source map(s) have no readable debug-ID, so they were not uploaded and were left on disk: ${kept.join(', ')}`,
+        );
+        if (options.failOnError === true) {
+          throw failure;
+        }
+        onError(failure);
+      }
+    }
+    // Truthful: a pre-stamped build with no keyed map made no upload at all.
+    return {
+      injected: true,
+      uploaded: !explicitUpload || uploadedMaps.length > 0,
+      deletedMaps,
+      ...vcsEcho,
+    };
   } catch (error) {
     // A telemetry side effect must not break a production deploy. Reported, never swallowed;
     // `failOnError` is there for teams that would rather the build stopped.
@@ -342,5 +808,17 @@ export async function uploadSourcemaps(
     }
     onError(error);
     return { injected: false, uploaded: false, deletedMaps: [], ...vcsEcho };
+  } finally {
+    // Cleanup must never fail a build whose upload already succeeded, nor mask the error being reported:
+    // removing the spill directory can fail (EPERM/EBUSY under antivirus on Windows). Said, not thrown.
+    try {
+      await original?.dispose();
+    } catch (error) {
+      onError(
+        new Error(
+          `could not remove the temporary spill directory of the originals: ${String(error)}`,
+        ),
+      );
+    }
   }
 }

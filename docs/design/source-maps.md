@@ -130,8 +130,8 @@ are Rollup `writeBundle`, esbuild `onEnd` (registered through unplugin's `esbuil
 or `write: false`, which is what tsup always sets, with a notice; the plugin sets `sourcemap: 'external'` only when it is
 unset, and says so when it is `false`) and Rspack `afterEmit`, each calling
 `runPluginUpload` with the same SRI guard as Vite and webpack (#184; real esbuild and Rspack builds are exercised in
-`plugin.real-build.test.ts`). Rspack has no in-compilation stamp stage wired, so it takes the post-emit inject path
-(an SRI build is refused, not stamped). They do **not** cover **Angular**: its builder does not accept esbuild
+`plugin.real-build.test.ts`). Rollup and Rspack stamp INSIDE the build like Vite and webpack 5 (§7.1); only esbuild
+takes the post-emit inject path (an SRI build is refused there, not stamped). They do **not** cover **Angular**: its builder does not accept esbuild
 plugins, so Angular uses the documented CLI post-build recipe (`docs/source-maps-usage.md §2`). Next.js on webpack
 uses the webpack plugin. Bun, tsup and `tsc`/`swc` stay CLI-post-build (tsup via `onSuccess`).
 esbuild builds work on **per-build file lists**: the plugin sets `metafile: true` and, in `onEnd`, takes the build's own
@@ -162,13 +162,11 @@ SDK's concern (needs `hermes-compose-source-map` + a preserved bundle id).
 
 ## 7.1 Subresource Integrity
 
-**The plugin refuses to stamp a build that pins its own script hashes** (`sri.ts`,
-`findSriProtectedScripts`). This is not a precaution — it is measured.
-
 `sourcemaps inject` appends the debug-ID comment and the `_bugseeDebugIds` registration to every emitted `.js`.
-A build that computed SRI hashes during emit — `webpack-subresource-integrity`, Angular's
-`subresourceIntegrity: true` — has already written a hash of the PRE-stamp bytes into the HTML. Measured on a
-real webpack 5.111 build loaded in **Chromium 151.0.7922.34**:
+Done AFTER the bundler wrote its output, that changes bytes a build step may already have hashed: a build that
+computed SRI hashes during emit (`webpack-subresource-integrity`, Rspack's `SubresourceIntegrityPlugin`, a Vite SRI
+plugin, Angular's `subresourceIntegrity: true`) has written a hash of the PRE-stamp bytes into the HTML. Measured on
+a real webpack 5.111 build loaded in **Chromium 151.0.7922.34**:
 
 | | `window.__ran` | console |
 |---|---|---|
@@ -176,28 +174,301 @@ real webpack 5.111 build loaded in **Chromium 151.0.7922.34**:
 | after inject | **`false`** | `Failed to find a valid digest in the 'integrity' attribute for resource '…/main.<hash>.js' … The resource has been blocked.` |
 
 `index.html` is byte-identical across that pair; only the JS grew, 114 → 472 bytes. The page loads and nothing
-runs — strictly worse than having no source maps.
+runs — strictly worse than having no source maps. Two mechanisms keep that from happening.
 
-So `uploadSourcemaps` scans the output directory's HTML *before* anything is written, and when a `<script>`
-pins a `.js` inside that directory it reports (or, under `failOnError`, throws) and uploads nothing. The build
-is left exactly as the bundler emitted it; verified against the real webpack+SRI build — bytes unchanged, page
-still runs, `{injected: false, uploaded: false}`.
+### Stamp inside the build (the fix)
 
-**What the guard does NOT see** (review, 2026-09-18 — each verified against the implementation):
+The Rust `inject` stays the one implementation (§4): `stampAssets` (`stamp-assets.ts`) stages the build's bundles
+and maps in a temp directory with the same relative layout, runs the real `sourcemaps inject` over it, verifies
+the result (below) and writes back only what changed. What differs per bundler is WHERE it is called, so that
+every later hash is taken over the stamped bytes:
+
+| Bundler | Hook | Ordering |
+|---|---|---|
+| webpack 5, **Rspack** | `compilation.hooks.processAssets` at `PROCESS_ASSETS_STAGE_DEV_TOOLING + 1` (501) | maps are emitted AT 500; `webpack-subresource-integrity` / Rspack's `SubresourceIntegrityPlugin` hash later (measured: after 700), so they hash the stamped bytes — for the HTML and for the lazy-chunk `sriHashes` table in the runtime. Rspack uses the same `compiler.rspack` API (`Compilation`, `sources.RawSource`) as webpack; verified against a real Rspack 2.2.9 build with the built-in SRI plugin. |
+| **Vite**, **Rollup** | `generateBundle` with `order: 'pre'` | the bundle's chunks (`code`) and their `.map` files (bundle ASSETS: measured on Rollup 4.65, Vite 7.3 and Vite 8.3/Rolldown) are in memory and are what gets written. `order: 'pre'` runs before Vite builds `index.html` (where a `transformIndexHtml` SRI plugin hashes) and before default-order and `post` hooks. |
+
+The in-build stamp is **per build**: webpack/Rspack reset it per compilation; Vite/Rollup record it per OUTPUT
+(keyed by the output-options object both hooks receive, not the directory, so two outputs written concurrently
+into one folder cannot consume each other's answer) in `generateBundle` and consume it in the matching
+`writeBundle` (so a stamp can never carry over to a later build, nor from one Vite environment to another; a
+write that cannot be matched is simply not stamped). Assets whose names differ only by case cannot be staged on
+a case-insensitive disk and fall back to post-emit. A failed or impossible in-build
+stamp degrades to the POST-EMIT path below — never to an unchecked page: a chunk whose map is not a bundle asset
+(an older Rollup, `sourcemap: 'inline'`) is not stamped in memory and says so once; a failed stamp is reported
+(thrown under `failOnError`).
+
+**Ordering limits, measured — do not read them as guarantees.**
+
+- Vite/Rollup hooks of the SAME order run in plugin order: list the Bugsee plugin **before** any SRI plugin
+  (`plugins: [bugseeVitePlugin(...), sriPlugin()]`). An SRI plugin with `order: 'pre'` listed first hashes unstamped bytes.
+- Vite itself rewrites a chunk that has dynamic `import()`s **after** user `generateBundle` hooks (it replaces
+  `__VITE_PRELOAD__` markers, and **regenerates that chunk's `.map` asset from `chunk.map`**). Two consequences,
+  both measured: (1) an SRI plugin that hashes in `transformIndexHtml` pins the pre-substitution bytes of such a
+  chunk whether or not Bugsee is installed — only an SRI step that hashes last (`generateBundle`, `order: 'post'`)
+  is correct for lazy-loading apps; (2) the regenerated map would drop the debugId, so the stamp also carries the
+  id on `chunk.map` (`debugId`/`debug_id`), which is the one thing Vite keeps. Both are covered by real builds
+  (`plugin.in-build.real-build.test.ts`, and a Chromium run in `instrumentation-tests/test/sri-vite-rollup.e2e.ts`).
+- A plugin that rewrites chunks AFTER the Bugsee stamp changes bytes that were already hashed or stamped. The
+  post-build checks below detect (not prevent) it, and only what they check: a debug-ID inconsistency between a bundle and its map, and an HTML integrity pin that no longer matches the bytes. A later plugin that changes executable JS, keeps both debug-IDs, and then emits a pin that matches the changed bytes passes both checks; they report those two inconsistencies, not every rewrite.
+
+### Verify the stamp
+
+After ANY stamp (in-build or post-emit), `verify-stamp.ts` checks it, because stamping rewrites shipped JS:
+
+1. every stamped `.js`/`.cjs`/`.mjs` still **parses** (acorn, module then script; a bundle the parser could not read
+   before is not blamed on the stamp);
+2. the **`//# sourceMappingURL=` comment** is preserved byte-for-byte as the last one (measured, bugsee-cli 0.9.0:
+   `inject` APPENDS the runtime stub and the `//# debugId=` comment AFTER the sourceMappingURL line, so "still the
+   last line" is not an invariant; "the same pointer, and nothing but the stamp after it" is);
+3. every stamped **map** is a JSON object with a `debugId` equal to its bundle's `//# debugId=` comment;
+4. nothing else changed: the stamped bundle is the original bytes **plus an appended stamp** (prefix equality —
+   skipped for a bundle that was already stamped, where `inject` replaces the old stamp).
+
+In-build, a failure writes NOTHING back (all or nothing: the asset table is exactly what the bundler produced),
+reports through `onError` (throws under `failOnError`) and falls back to the post-emit path. Post-emit, the
+originals are SPILLED to a temp directory before `inject` with a content hash (not held in memory; one bundle
+and its map are in memory at a time), covering everything inject can change: the whole output directory. The
+walk skips `src`, `test`, `node_modules` and dot-directories ONLY when the directory is the project root or
+above, where it keeps the walk out of the source tree (Rollup `preserveModules` writes `dist/src/*.js`, which
+inject stamps and the snapshot must therefore cover). A directory that IS the working directory or contains it
+(a bare `output.file` resolves to `.`) is never snapshotted or restored, and says so; an ordinary output
+directory is verified even when it holds a `package.json` (`dist/cjs` `{"type":"commonjs"}`, ng-packagr). If
+the spill itself fails (a full disk) the spill directory is removed, inject does NOT run, and it is reported
+(an unverifiable, unrestorable stamp is not applied). A failing file is restored to its original bytes **together with its pair**
+(bundle first, via write-temp-then-rename, keeping the file mode and writing through a symlink); a restore that fails is reported by name as still carrying the
+unverified stamp. The pair is resolved from the bundle's `sourceMappingURL` (custom `sourcemapFileName(s)`
+names), falling back to `<bundle>.map`. After the bundler wrote an in-build stamp, the files are re-checked on
+disk (every bundle with a map carries a debugId its map shares), which is what catches a later step regenerating
+a map; only the bundles the stamp wrote are judged, never the directory, so a `public/` script or a stale file
+beside them is not mistaken for a miss. A stamped build is also re-checked against
+its HTML (`findIntegrityMismatches`, `sri.ts`): any `<script integrity>` / `<link rel=modulepreload integrity>` whose
+hash no longer matches the emitted bytes is reported (a warning; thrown only under `failOnError`).
+
+**Known limits of the on-disk verification** (accepted, no code change): the walk is unfenced when the
+output directory is a project directory reached from a different working directory (the project-root refusal
+compares against the cwd); and `realpath` does not normalise case on case-insensitive file systems, so the
+cwd-equals-output check can miss a differently-cased spelling of the same directory. The depth cap of 6 applies
+ONLY to a walk from a project root; an ordinary output directory is walked to any depth, like the CLI's scan
+and inject. A spill directory that cannot be removed (EPERM/EBUSY) is reported, never thrown. Windows paths
+resolve a custom map name through the native path API (the in-memory asset names use posix).
+
+`ownedBy` compares names case-exact and byte-exact against the on-disk name. On a case-insensitive or
+normalising file system (macOS APFS, Windows) a case-only or Unicode-form-only rename between builds, without
+`output.clean`, makes the build's own map look foreign: it is still uploaded but is kept on disk with the "not
+produced by this build" notice, so it fails safe (nothing is wrongly deleted). Two follow-ups if it ever
+matters, deliberately NOT implemented: identify files by `stat` (dev + ino) instead of by name, or do not stage
+`?`-named webpack assets and send them to the post-emit path.
+
+### Ordering constraint: RealContentHashPlugin, and string sources
+
+The in-build stamp runs at `PROCESS_ASSETS_STAGE_DEV_TOOLING + 1`, BEFORE webpack's `RealContentHashPlugin`
+(`PROCESS_ASSETS_STAGE_OPTIMIZE_HASH`) renames `[contenthash]` chunks from their final bytes. That plugin
+rewrites the hash references (the runtime's chunk-name table, each bundle's `//# sourceMappingURL`, the map's
+`file`) **only inside string sources**. Stamped bytes handed back as a Buffer kept the stale pre-rename names:
+the runtime asked for `x.<oldhash>.js` while `x.<newhash>.js` was on disk (`ChunkLoadError`, a broken page).
+Measured on real webpack 5 and Rspack builds in Chromium with a lazy `import()`. So the compilation store writes
+the stamped result back as a **string source** (`new RawSource(text)`), decoded as strict, BOM-preserving UTF-8;
+an asset whose bytes are not valid UTF-8 refuses the whole stamp BEFORE anything is written (`store.check`, a
+two-phase write-back), and the build falls back to stamping after emit. Vite and Rollup name chunks before
+`generateBundle` (the names are final there) and esbuild / the CLI stamp after the hash step, so none of them is
+affected; a hashed-lazy-chunk real build of webpack, Rspack, Rollup and Vite (7 and 8) runs in Chromium
+(`instrumentation-tests/test/lazy-chunk.e2e.ts`; there is no esbuild or direct-CLI build in that suite, and
+stamping after emit does not take part in `RealContentHashPlugin` at all). It also covers Rspack with `SubresourceIntegrityPlugin` and checks that every bundle's `sourceMappingURL` and
+map `file` name a file that exists.
+
+### Vite workers (sub-builds), and the catch-up
+
+Vite builds a worker through its OWN sub-build and then puts it into the output: measured, on Vite 8 the worker's
+JS is an asset of the main bundle at `generateBundle` (so it is stamped in memory) while its `.map` is
+REGENERATED afterwards WITHOUT the id; on Vite 7 neither worker file is in the bundle at `generateBundle`
+(both are emitted later), so the worker is not stamped at all. Either way the worker file and its map end up
+without a shared id (a worker crash could not be symbolicated). The user's plugin does not run inside the worker
+sub-build unless it is listed in `worker.plugins` (verified with real Vite 7 and 8), so detecting and skipping
+that sub-build is not the issue; the fix is a **catch-up before the upload**: the build's OWN (`ownFiles`, the
+final bundle at `writeBundle`, which does list the worker and its map) script maps that carry no debug-id are
+run through `sourcemaps inject` (an explicit file list). Measured with bugsee-cli 0.9.0: inject on a
+bundle that already carries BOTH its debug-id comment and the runtime registration leaves its bytes unchanged
+and writes its id into the map, so such a bundle is not stamped twice and a Subresource-Integrity pin on it is
+not invalidated. "Stamped" therefore means both (a foreign `//# debugId=` comment alone would still get the
+registration appended): a pinned bundle that is not fully stamped is left alone and said (stamping it would
+change pinned bytes). A `public/` copy is not in `ownFiles` and is never touched. The catch-up is **best
+effort** and never costs the build its other maps: a map that is not a JSON object (empty, garbage, `[]`,
+`null`; the CLI rejects the whole batch for one) is skipped and left untouched, a batch the CLI rejects is
+retried pair by pair, a failing pair is reported (`onError`) and the rest still stamp and upload, whatever was
+rewritten is verified and restored, and an unexpected failure inside it is reported and the upload goes on.
+Only a stamp that did not verify AND could not be restored (an unverified stamp still on disk) is a
+`failOnError` failure. The result is verified (and restored on failure) like any other
+stamp. Covered by real Vite 7 and 8 builds with `new Worker(new URL(...))` and `?worker`, and in Chromium
+(`instrumentation-tests/test/lazy-chunk.e2e.ts`): the worker runs, registers its id, and its map has the same
+id. (The hand-rolled SRI step pins only the entry chunks in `index.html`, never worker files.)
+
+### Hardening details (review follow-ups)
+
+- **Post-emit inject failures and restores.** A rejected `inject` (any batch) is followed by a verify-and-restore of
+  everything it may already have rewritten, before the failure propagates. If verification restored any pair, the
+  upload is an EXPLICIT keyed set (a restored map is unkeyed again, and the CLI rejects a directory that holds one).
+  A snapshot that cannot read a file (anything but ENOENT) aborts before inject runs. The rollback partner of a bundle
+  is the map its ORIGINAL pointer named; a map is not restored when its bundle could not be (reported as incomplete).
+- **On-disk re-check.** A bundle the stamp named that cannot be read is reported. After webpack's RealContentHashPlugin
+  renames `[contenthash]` assets, the re-check is given the FINAL script names from the compilation (the names the
+  stamp reported are stale). A changed map is also held to an unchanged, already-stamped bundle's id, and a changed map that LOST its id beside such a bundle is an issue (valid JSON alone is not enough). A rewritten file that cannot be read for a reason other than `ENOENT` is reported as an incomplete verification (and restored), never treated as deleted; the restore writes through a unique, exclusively created temp file, so concurrent restores in one directory never share one.
+- **Catch-up.** Pairs are found by the sibling name AND by the own bundles' `sourceMappingURL` (a moved
+  `maps/w.js.map`). The claim that inject leaves an already-stamped, SRI-pinned bundle alone is ENFORCED: if its bytes
+  changed they are restored (with its map) and reported; under `failOnError` a pinned bundle that could NOT be restored is a strict failure (the browser would refuse it) and no map is uploaded. Two bundles claiming one map refuse the in-build stamp.
+- **Concurrent outputs.** A second output with its own `ownFiles` for the same directory waits for the in-flight
+  upload and then runs itself, so its maps are not mistaken for foreign ones. Outputs announce their names at
+  `generateBundle` (before any of them writes; a new build forgets outputs that never wrote), and each run leaves
+  the maps of the outputs still pending to those outputs: neither uploaded by this run nor reported as "not produced
+  by this build". N outputs into one directory make N uploads, not N times everything.
+- **A rejected inject whose rewrite could not be restored** says so (the rethrown error carries which files still
+  hold the unverified rewrite), with or without `failOnError`. Two bundles claiming one map, counting a bundle's
+  own sibling as a claim, refuse the in-build stamp.
+
+### Several outputs into one directory
+
+Outputs written concurrently into one directory (several `bundle.write()` calls, or Vite environments) coordinate by
+the PHYSICAL directory: `dist`, `dist/`, `./dist`, an absolute path and a symlink to it are one key (the real path
+of the deepest existing ancestor plus the not-yet-created rest). Each output announces its names at
+`generateBundle`; a run leaves the maps of every still-pending sibling to that sibling, on every path: the explicit
+pre-stamped upload, and the post-emit path (which, when siblings exist, also uploads an explicit file set instead of
+the directory, so a sibling's maps are neither uploaded, nor reported as "not produced by this build", nor deleted).
+**`failOnError` and an output with no maps:** an output whose own map set is empty while a sibling output of the
+same directory has maps has nothing to do and does NOT fail ("no source maps with a debug-ID were found" is for a lone
+output, or when no sibling has maps either). "This output has no maps" is judged by ITS names when they are known, so a stale or foreign map in the directory
+does not defeat it. The sibling counts when it is announced and about to write, or has
+already written and finished in this build (its names stay known to later outputs of the build, so with
+`deleteMaps: false` its maps left on disk are not uploaded a second time) (an unmapped output that comes LAST must not fail because its mapped
+sibling got there first). An output whose own map exists but is unkeyed still fails. **Only an output that will
+write is a sibling:** `bundle.generate()` (`isWrite === false`) is never announced, so a generate-only mapped output
+cannot make a later unmapped write pass silently, and it is not stamped at all (it never reaches `writeBundle`, so no CLI is spawned and
+`failOnError` cannot fail a build that writes nothing). **Nested directories:** an output written into `dist/b` while
+another writes `dist` is a sibling of the parent run under its relative path (`b/x.js.map`), because the parent's
+directory walk covers it; the nested run never sees the parent's files. **Directory identity** uses the canonical
+on-disk spelling (`realpath.native`), so `dist` and `DIST` are one directory on a case-insensitive filesystem.
+**Known limit:** an output that announced itself and then never reaches `writeBundle` (a failed write) keeps its
+announcement until the next `buildStart`; maps another output finds that carry its names are left on disk, not
+reported. A name this output itself emitted is never treated as a sibling's. A rejected inject keeps its ORIGINAL
+error object (a `BugseeCliError` stays one; a frozen one is reported as a new error caused by it); a failed restore
+is appended to the message.
+
+### Maps that are not the bundle sibling
+
+`sourcemapFileNames` can put a map anywhere in the output (`maps/[name].js.map`, bundles in `js/`). `inject`
+pairs a staged bundle with its map by the `<bundle>.map` sibling name (the `//# sourceMappingURL` comment is a
+placeholder at `generateBundle` time and not reliable: measured, it names `index.js.map` while the map is at
+`maps/index.js.map`), so `stampAssets` asks the store which asset is a bundle's map (`mapOf`, Rollup's
+`sourcemapFileName`) and STAGES it as the sibling, writing the stamped bytes back at its real name. Without
+that the bundle was stamped with an id that was never put in the map and nothing was uploaded. If the map cannot
+be staged at all (not a `.map` name) or the sibling name is taken by another asset, the whole in-build stamp is
+refused and the build falls back to stamping after emit. Covered by real Rollup, Vite 7 and Vite 8 builds
+(`maps/[name].js.map`, with and without `js/` bundles, `failOnError` on and off). The upload result is truthful:
+`uploaded` is false when a pre-stamped build had no keyed map to upload.
+
+### Maps the stamp cannot reach, and the one deletion rule
+
+- webpack and Rspack name a bundle's map through the compilation's asset info (`related.sourceMap`), so a map
+  moved by `SourceMapDevToolPlugin({ filename: 'maps/[file].map' })` is staged as the bundle's sibling like a
+  Rollup/Vite one (`mapOf` for the compilation store). The pointer is NOT trusted: measured, Rspack emits
+  `../maps/js/main.js.map` for a bundle in `js/` whose map is outside the output.
+- A stamped bundle whose map lies **outside the output directory** cannot be stamped with it (inject does not
+  follow `..` out of the directory it is given). The in-build stamp is refused and, because stamping after emit
+  would half-stamp the same way, NOT retried: the build is reported (and fails under `failOnError`), nothing is
+  stamped, uploaded or deleted. On the post-emit path a stamped bundle whose pointer reaches an existing map
+  outside the snapshotted directory is restored and reported.
+- A `sourceMappingURL` is read to the end of the line (a bundler can emit an unencoded space), and `.JS`
+  bundles are stamped like `.js` (the CLI does).
+- After the bundler wrote an in-build stamp, the on-disk re-check uses the build's own bundle -> map names (from
+  the store), so a moved map that neither its pointer nor its sibling name can reach is still checked.
+- **One deletion rule for every path, by IDENTITY not by directory name.** The plugin knows the names its build
+  emitted (`ownFiles`, relative to the output directory: the final bundle's keys at Vite/Rollup `writeBundle`,
+  the compilation's assets at webpack/Rspack `afterEmit`; the esbuild path deletes exactly its listed files).
+  A map is deleted only if THIS build emitted it: a stylesheet / declaration map iff it is in `ownFiles`, a keyed
+  script map iff it was uploaded (confirmed) AND is in `ownFiles`. Anything else is foreign, whatever directory
+  it is in or called (a `public/` copy, a stale file, `src/old.d.ts.map`): never deleted. A foreign KEYED map is
+  still uploaded (as the CLI's directory scan did) and left on disk with a notice. Names are compared
+  normalised (separators, a leading `./`), case-exact. Only when the build's names are unknown (a directory run
+  with no bundler output to ask) does the directory-name fence (`node_modules`, `src`, `test(s)`, `__tests__`,
+  dot-directories) apply, as the fallback; an unkeyed map in such a directory is never reported. The post-emit
+  path uses the same whole-directory walk as the pre-stamped path (fenced only at a project root).
+- **Asset names with a `?query`.** Ground truth, measured on real builds: webpack/Rspack drop `?...` when they
+  write a file (`[name].js?[contenthash]` is written as `main.js`) and KEEP `#` (`a#1.js` is written as `a#1.js`);
+  Rollup and Vite write every name literally, `?` and `#` included (`index.js?v=1` stays). So the compilation
+  store presents and stages the name cut at the `?` only (inject matches by extension) and maps it back to the
+  real asset name on every read and write; `related.sourceMap` names are cut the same way, and two assets that
+  would collide once cut keep their real names. `ownFiles` knows each name literally AND without its `?query`,
+  and compares the file on disk literally, so `main#old.js.map` is never mistaken for `main#new.js.map`. An
+  in-build stamp that stages NO bundle while the build emitted script-like assets never claims to have
+  stamped: it says so (a notice) and the post-emit path runs. (A Rollup/Vite file name with a `?` is not a
+  `.js` file to the CLI either; the same notice appears.)
+- An outside-the-output map is reported with how to fix it: emit the maps inside the output directory, or upload
+  them yourself with bugsee-cli.
+
+### Uploading a pre-stamped directory
+
+A pre-stamped build is uploaded as an **explicit file set**, never as the directory. Only what the in-build
+stamp wrote has a debug-id; anything else in the output directory (a `public/` vendor script and its map, a
+stale map with `emptyOutDir: false`) has none, and the real bugsee-cli (0.9.0, measured, without `--dry-run`)
+exits non-zero for a directory that holds a map without a debug-id ("source map has no debug_id … nothing was
+uploaded"), which would lose EVERY map of the build. So every uploadable map under the directory (the whole output directory, fenced only at a project
+root) is partitioned by whether it carries a debug-id BEFORE the CLI call. "Uploadable" is what the CLI scans a
+directory for: **every `*.map` except stylesheet and declaration maps** (`.css.map`, `.d.ts.map`, `.d.mts.map`,
+`.d.cts.map`), NOT only `*.js.map`: the stamp keys a map whatever it is called (`sourcemapFileName(s)`,
+`[name].map`), and a narrower filter silently dropped such a build's maps (measured on Rollup, Vite and Rspack
+with `[name].map`). The keyed ones are uploaded by path (in batches), the rest are left on disk untouched and
+reported as a **notice** (`onNotice`), not an error: they were never part of the build, so they do not fail
+`failOnError`. If nothing is keyed there is no CLI call (a notice; under `failOnError` the "no maps" failure the
+strict CLI used to give). The deletion set comes from the SAME walk: exactly the maps that were uploaded (already classified keyed, so
+not re-read), plus the stylesheet and declaration maps of that walk, which are never uploaded but embed the
+source and so are deleted with them (as on the post-emit and `files` paths). A script map is deleted only if it
+was uploaded and the upload was confirmed: an unkeyed or unreadable one is never deleted, and nothing the walk
+merely saw is (a keyed map under `test/` or a dot-directory is uploaded AND deleted). The stylesheet and
+declaration maps are deleted only if something was uploaded. A map that cannot be read (anything but ENOENT) is
+not "gone": it is neither uploaded nor deleted and is reported with the unkeyed ones. A dry run still passes the directory (nothing was stamped; `--dry-run` only warns). Rspack development
+builds that are not uploaded (`uploadInDevelopment` unset) are no longer stamped either (webpack's `afterEmit` upload has no development gate, so its in-build stamp stays on in every mode). A map rewritten beside an unchanged, already-stamped
+bundle is held to that bundle's debug-ID (and restored if it differs) on the post-emit path. Covered by real builds
+(`plugin.in-build.real-build.test.ts`: Vite 7/8 with a `publicDir` vendor script, Rollup with a stale one, and `[name].map` custom map
+names on Rollup, Vite 7/8 and Rspack; real CLI, no dry run, `failOnError` on and off). Not run for real: webpack
+itself (Rspack shares its SourceMapDevToolPlugin filename path).
+
+### Map deletion
+
+`.map` files are deleted (default) only after a **confirmed** upload: after `debug-files upload` returned success,
+and only the maps that carry a debugId (`partitionByKeyed`, `stamp-files.ts`) — a script map without one was not
+keyed for upload (bugsee-cli 0.9.0 exits 11 on one in a directory run; a CLI that skipped it with exit 0 would
+otherwise lose the only copy). Such maps are kept and reported (thrown under `failOnError`); stylesheet maps are
+never uploaded and are still deleted (they embed the source). A failed upload deletes nothing.
+
+### Post-emit path and the guard (esbuild, the standalone CLI, and any in-build failure)
+
+esbuild has no pre-write hook (`write: false` is the caller's), and the CLI runs after the build, so they stamp after
+emit. Because that rewrites hashed bytes, **the plugin refuses to stamp a build that pins its own script hashes**
+(`sri.ts`, `findSriProtectedScripts`): `uploadSourcemaps` scans the output directory's HTML *before* anything is
+written, and when a `<script>` pins a `.js` inside that directory it reports (or, under `failOnError`, throws) and
+uploads nothing. The build is left exactly as the bundler emitted it; verified against a real webpack+SRI build —
+bytes unchanged, page still runs, `{injected: false, uploaded: false}`. The refusal message names the workaround: a
+bundler that stamps in the build (webpack 5, Rspack, Vite, Rollup), or `bugsee-cli sourcemaps inject` BEFORE the
+step that computes the hashes (esbuild, Angular, Bun, `tsc`). The CLI has its own guard as of 0.7.13:
+`sourcemaps inject` refuses an SRI build unless `--allow-sri` is passed.
+
+**What the guards do NOT see** (each verified against the implementation):
 
 - **Manifest-driven SRI.** `webpack-subresource-integrity` exposes `compilation.assets[*].integrity`
   for server-rendered templates (`webpack-assets-manifest` with `integrity: true`, shakapacker): the hash
   lives in `manifest.json` and the page is rendered at request time, so there is no HTML in the output
-  directory to scan. Such a build still breaks.
+  directory to scan. The in-build stamp makes that hash correct on webpack/Rspack; on the post-emit path such a
+  build still breaks.
 - **HTML emitted outside the output directory.** `html-webpack-plugin`'s `filename` can point anywhere
   (`../templates/index.html` is the usual Django/Rails shape); the scan only walks `outDir`.
 - **Importmap integrity** (`<script type="importmap">` whose JSON body carries an `integrity` map) —
   an inline script with no `src`.
-- **The standalone CLI path.** The guard lives in `@bugsee/bundler-plugin-core`, which wires
-  `writeBundle` for vite and rollup, `afterEmit` for webpack and Rspack, and `onEnd` for esbuild. Users driving
-  `bugsee-cli` directly (Angular 17+, Bun, `tsc`) get no guard from the plugin, but the CLI has its own as of
-  0.7.13: `sourcemaps inject` refuses an SRI build unless `--allow-sri` is passed. Angular's
-  `subresourceIntegrity: true` is exactly the config this protects against.
+- **Lazy-chunk hash tables are not read.** The post-stamp integrity check compares what the HTML pins; the table
+  `webpack-subresource-integrity` / Rspack embed in the runtime chunk is correct because it was hashed after the
+  stamp (real-build test: every lazy chunk's digest appears in the runtime), but it is not re-verified from disk.
+- **In-build stamping covers what is in the bundler's asset table.** A script copied verbatim from a `public/`
+  directory (never in the bundle) is no longer stamped, since the post-emit inject is skipped for a pre-stamped build.
+- **The standalone CLI path.** Users driving `bugsee-cli` directly (Angular 17+, Bun, `tsc`) get no plugin guard,
+  but the CLI's own (`--allow-sri`).
 
 It does see, and refuses: `<script integrity src=…>` and `<link rel=modulepreload|preload integrity href=…>`
 in any `.html` under the output directory, quoted or bare, in any attribute order, with a whitespace-padded
@@ -207,12 +478,9 @@ prefetch is discarded, not fatal), or a symlinked page.
 
 **Why not rewrite the hashes instead.** `webpack-subresource-integrity` also embeds the lazy chunks' hashes in
 the runtime chunk (`__webpack_require__.sriHashes = {480: "sha384-…"}`), so patching the HTML alone would still
-break every dynamic import, and Angular's builder has its own shape.
-
-**The real fix, not yet built:** stamp during `processAssets` / `generateBundle`, before the bundler computes
-its hashes — the only approach correct for the HTML *and* the runtime-embedded lazy hashes. It needs an
-in-memory (or write-then-read-back) stamping path rather than shelling out over already-emitted files, which
-is a change to the spawn model in §4 and is tracked as OPEN-FINDINGS D3.
+break every dynamic import, and Angular's builder has its own shape. Stamping before the hash is the only approach
+correct for the HTML *and* the runtime-embedded lazy hashes (OPEN-FINDINGS D3's "real fix"; now built for webpack 5,
+Rspack, Vite and Rollup).
 
 ---
 
@@ -257,9 +525,67 @@ Windows hosts were not run. Bun does not map `Error.stack` and has no
 
 ---
 
+## 7.3 Next.js: `withBugsee` (`@bugsee/nextjs/config`)
+
+Status: **BUILT** (`packages/nextjs/src/config/`, real-build e2e `packages/nextjs-e2e/test/source-maps.e2e.ts`).
+`withBugsee(nextConfig, options)` wraps a Next config (object, phase function, async, or a promise) so
+`next build` stamps debug-IDs and uploads source maps, on **both** bundlers. It takes the plugin options of §4
+(through `resolvePluginOptions`, same env / `.env.bugsee-build-plugin` lookup, same identity resolution) plus
+`serverSourceMaps` (default on), `deleteServerMaps` (default off) and `silent`. It never touches `next dev`
+(`next start`, `next export`): a function config is gated on the phase, an object config on `dev` in the webpack
+function and on the hook only existing in a production build.
+
+**Why not the generic webpack plugin (measured).** Adding `@bugsee/webpack-plugin` in `webpack(config)` runs it
+three times (client, server, edge) and breaks on Next's layout: the server compilation's `output.path` is
+`.next/server/chunks` while its assets are named `../app/page.js`, so (1) the in-build stamp skipped them (an asset
+name may not escape the staging directory; the verify step then failed the run) and (2) the plugin's directory-wide
+upload of `.next` swept up the server compilation's files. `withBugsee` therefore ships a small per-compilation
+plugin that reuses the same core (`stampAssets`, `runPluginUpload`) but stages `../` names under a stand-in
+directory and uploads **exactly the files its own compilation emitted** (`files` mode; nothing walks `.next`).
+
+**Detecting the bundler.** `process.env.TURBOPACK` (set by `next build` before the config loads, Next 15.5 and 16
+alike); otherwise webpack. `NEXT_RSPACK` (the experimental Rspack adapter) is not special-cased and unverified.
+
+| | webpack (`--webpack`; default <= 15) | Turbopack (default 16; `--turbopack` in 15.x) |
+|---|---|---|
+| stamp | in the compilation, `PROCESS_ASSETS_STAGE_DEV_TOOLING + 1` (SRI-safe), client + server + edge | after the build, in `compiler.runAfterProductionCompile`: the real `inject` over the written files, with the post-emit verify-and-restore |
+| upload | each compilation's `afterEmit`, its own files | the hook: `.next/static` (browser) then `.next/server` (node + edge), explicit file lists |
+| maps | client: `productionBrowserSourceMaps` (forced on only if unset); server/edge: `devtool: 'source-map'` unless the app set one | always emitted (browser: `productionBrowserSourceMaps`; server maps are emitted regardless of `serverSourceMaps`, measured on 16.4) |
+| SRI (`experimental.sri`) | works: the hashes are of the stamped bytes (verified against the written HTML) | **not stampable**: Turbopack writes `server/subresource-integrity-manifest.json` and the HTML hashes BEFORE the hook (appending one byte in the hook made every `integrity` wrong), so the build is left unmodified, a notice says why, and nothing is uploaded |
+| min Next | any with `webpack()` | 15.4.0 (the first release with `compiler.runAfterProductionCompile`: present in the 15.4.0 types, schema and build, absent in 15.3.x, checked against the published tarballs); older Turbopack builds get a notice. `compiler.define` (the baked version/build) needs 15.1.0; below that it is not added |
+
+**Policy.** Browser maps live in `.next/static`, which `next start` and CDNs serve to every visitor: `deleteMaps`
+(default true) removes them after a *confirmed* upload, exactly as the plugins do (and, as there, a failed upload
+leaves them for a retry). `.next/server` is never served and a server run with source maps reads it, so server and
+edge maps stay unless `deleteServerMaps`. The build is registered once (browser run). The app version and build are baked
+through `compiler.define` (applies to all three runtimes; repeating the keys in `defineServer` is a Next error,
+measured). Only bundles that have a map are stamped on Turbopack, and bundles are paired with maps by the
+`sourceMappingURL` pointer inside each bundle: Turbopack does not name a map after its bundle (Next 16.4:
+`0ihtwxitjxx9w.js` points at `1wkfrb_3m2k-z.js.map`), and Next 15.5's Turbopack points two runtime chunks at ONE map.
+A map carries one debug-ID (the hash of bundle + map), so such bundles are left unstamped (a notice counts them) and
+their shared map stays on disk, unuploaded; they are Turbopack's runtime, not the app.
+
+**SRI fallback guard.** A webpack in-build stamp that failed falls back (core) to stamping the written files; on an SRI build that rewrites bytes Next already pinned (measured: Chromium blocked every script). The per-compilation plugin therefore skips the fallback and the upload when `experimental.sri` is set or Next's integrity manifest sits next to the output (`sri.ts`, shared with the Turbopack step), with a notice. `productionBrowserSourceMaps` is forced on only when this build can upload (not Turbopack + SRI, not Turbopack < 15.4.0), so an upload that cannot happen never leaves Bugsee-requested public maps. On webpack, when no upload follows (an SRI build whose stamp failed, or an abandoned stamp), the browser maps Bugsee itself turned on are deleted from this compilation's own files; maps the app enabled stay and the notice says they are public. Every removal is attempted and each failure reported through `onError` (console warning without one; `failOnError` rethrows the first); a throwing `onError` aborts like the core's. Nothing is deleted on a dry run or with `deleteMaps: false` (the notice then says the maps stay public), and the same sweep runs when a later stage dropped the last client script but left its map. The reason a stamp did not apply is always reported through `onError`/console, never only through the (mutable) notice sink.
+
+**Composition.** The app's `webpack` function runs first and its result is extended (Next itself rejects an async one, measured on 16.4.6); its
+`compiler.runAfterProductionCompile` runs before ours; its `compiler.define` keys win; `productionBrowserSourceMaps`
+is respected when set. Without a token the integration changes nothing Next emits.
+
+**Open.** Both runs resolve the app identity, the token file and the installed Next from `process.cwd()` at config
+load, so run `next build` from the project directory (Next passes no project dir to a config function). The
+Turbopack hook does receive `metadata.projectDir` and says so when it differs from the directory the config was
+resolved for (`next build <dir>` from a monorepo root); it does not re-resolve, so the baked define and the upload
+identity cannot disagree. Applying `withBugsee` twice is a no-op the second time (a WeakSet of extended configs). Any
+failure in the post-build hook is contained (reported, never thrown) unless `failOnError`, because Next fails the
+build on anything the hook throws. A failed upload leaves the browser maps in the public `.next/static` (forced on
+by `withBugsee`), and Next 15's shared Turbopack runtime map stays there too (unuploaded, not the app's code). A Turbopack SRI build
+cannot be symbolicated by upload (see the table); an in-hook alternative would have to re-hash the integrity
+manifests and the HTML Next writes later, which is Next's contract, not ours.
+
 ## 8. Deferred
 - A real-`bugsee-cli` integration e2e (needs the built Rust binary in the harness) — follow-up once CI has it.
-- Turbopack loader for Next.js (`turbopack.rules`) — Next-adapter follow-up.
+- ~~Turbopack loader for Next.js (`turbopack.rules`)~~ — superseded by §7.3 (a post-build hook, not a loader: a loader
+  sees one module at a time and cannot stamp a finished chunk).
 - Node/edge runtime debug-ID wiring (browser done in SM7) — trivial.
 - The exact debug-ID WIRE FORMAT — additive ` debugId=<id>` string suffix now; a structured `debug_meta`/per-frame
   field is a refinement gated on the JS-backend symbolication contract.
