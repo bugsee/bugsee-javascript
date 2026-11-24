@@ -27,6 +27,16 @@ const SCRIPT_TAG = /<script\b[^>]*>/gi;
 const PRELOAD_TAG = /<link\b[^>]*>/gi;
 const HTML_COMMENT = /<!--[\s\S]*?-->/g;
 
+it('the detailed scan keeps every distinct pin of a script; the stamp wrapper one per script', async () => {
+  const dir = await fixture();
+  await writeFile(join(dir, 'a.html'), '<script src="a.js" integrity="sha384-AAA"></script>');
+  await writeFile(join(dir, 'b.html'), '<script src="a.js" integrity="sha384-BBB"></script>');
+  await writeFile(join(dir, 'c.html'), '<script src="a.js" integrity="sha384-AAA"></script>');
+  const detailed = await findSriProtectedScriptsDetailed(dir);
+  expect(detailed.scripts.map((s) => s.integrity)).toEqual(['sha384-AAA', 'sha384-BBB']);
+  expect(await findSriProtectedScripts(dir)).toHaveLength(1);
+});
+
 it('MAX_HTML_BYTES is 8 MiB', () => {
   expect(MAX_HTML_BYTES).toBe(8 * 1024 * 1024);
 });

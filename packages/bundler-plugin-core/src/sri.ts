@@ -162,13 +162,19 @@ const walkHtml = async (dir: string, depth = 0): Promise<string[]> => {
 export async function findSriProtectedScripts(outDirInput: string): Promise<SriProtectedScript[]> {
   // No page cap here: this is the guard stamping relies on, and a pin it cannot see is a script stamping would
   // break. Only the diagnostic (which must stay bounded on hostile input) passes a cap.
-  return (await findSriProtectedScriptsDetailed(outDirInput, Number.POSITIVE_INFINITY)).scripts;
+  const scripts = (await findSriProtectedScriptsDetailed(outDirInput, Number.POSITIVE_INFINITY))
+    .scripts;
+  // One entry per script (the first pin found): stamping asks "is this script pinned at all", the doctor wants every pin.
+  const seen = new Set<string>();
+  return scripts.filter((pin) => !seen.has(pin.script) && seen.add(pin.script));
 }
 
 /** What {@link findSriProtectedScripts} found, and the pages it did not scan because they are larger than {@link MAX_HTML_BYTES}. */
 export interface SriScan {
   scripts: SriProtectedScript[];
   skippedPages: Array<{ html: string; size: number }>;
+  /** Pages that exist but could not be read (permissions, a race): their pins were NOT checked. */
+  unreadablePages: string[];
 }
 
 export async function findSriProtectedScriptsDetailed(
@@ -184,11 +190,14 @@ export async function findSriProtectedScriptsDetailed(
   const seen = new Set<string>();
   const found: SriProtectedScript[] = [];
   const skippedPages: SriScan['skippedPages'] = [];
+  const unreadablePages: string[] = [];
   for (const html of pages.sort()) {
     const read = await readRegularFile(html, maxHtmlBytes);
     if (!read.ok) {
       if (read.tooLarge !== undefined) {
         skippedPages.push({ html, size: read.tooLarge.size });
+      } else {
+        unreadablePages.push(html); // any other failure: the page's pins were NOT checked, and that is said
       }
       continue;
     }
@@ -208,14 +217,15 @@ export async function findSriProtectedScriptsDetailed(
       }
       const script = resolveLocalScript(outDir, htmlDir, unquote(url));
       // Only a JS file we emit can be broken by inject; a `.mjs`/`.cjs` counts, a `.wasm` does not.
-      if (script === undefined || !/\.[cm]?js$/i.test(script) || seen.has(script)) {
+      const pin = unquote(integrity).trim();
+      if (script === undefined || !/\.[cm]?js$/i.test(script) || seen.has(`${script}\0${pin}`)) {
         continue;
       }
-      seen.add(script);
-      found.push({ html, script, integrity: unquote(integrity).trim() });
+      seen.add(`${script}\0${pin}`);
+      found.push({ html, script, integrity: pin });
     }
   }
-  return { scripts: found, skippedPages };
+  return { scripts: found, skippedPages, unreadablePages };
 }
 
 /** SRI's hash algorithms, weakest to strongest — the order the spec compares them in. */

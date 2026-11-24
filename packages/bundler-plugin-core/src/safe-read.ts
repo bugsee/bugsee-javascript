@@ -11,7 +11,11 @@ export type ReadResult =
   | { ok: true; bytes: Buffer }
   | { ok: false; reason: string; tooLarge?: { size: number } };
 
-/** `O_NOFOLLOW` / `O_NONBLOCK` are absent on some platforms (Windows): then the descriptor checks still apply. */
+/**
+ * `O_NOFOLLOW` / `O_NONBLOCK` are absent on some platforms (Windows). There the "never follows a symlink in the last
+ * component" guarantee is WEAKER: only the descriptor checks (regular file, size) apply, and callers that must stay
+ * inside a directory (`readInside` in doctor.ts) additionally resolve the real path and check containment first.
+ */
 const OPEN_FLAGS = constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0);
 
 /**

@@ -83,8 +83,29 @@ export interface DoctorOptions {
 
 const DEFAULT_MAX_MAP_BYTES = 50 * 1024 * 1024;
 const DEFAULT_MAX_BUNDLE_BYTES = 512 * 1024 * 1024;
-/** Files read at once: bounds open handles and the bytes held in memory. */
+/** Files read at once: bounds open handles. */
 const READ_CONCURRENCY = 16;
+/** Bytes read at once (a batch of sixteen 512 MiB scripts is 8 GiB): a single larger file is still read, alone. */
+const READ_BYTE_BUDGET = 256 * 1024 * 1024;
+
+/**
+ * Where the batch starting at `start` ends (exclusive): at most `maxCount` files and `budget` bytes, but always at
+ * least one file. `sizes` are what `stat` reported.
+ */
+export function batchEnd(
+  sizes: readonly number[],
+  start: number,
+  maxCount: number,
+  budget: number,
+): number {
+  let end = start + 1;
+  let total = sizes[start] ?? 0;
+  while (end < sizes.length && end - start < maxCount && total + (sizes[end] ?? 0) <= budget) {
+    total += sizes[end] ?? 0;
+    end++;
+  }
+  return end;
+}
 const BUNDLE = /\.[cm]?js$/i;
 const MAP = /\.map$/i;
 /** The global the runtime stub writes the id into (`@bugsee/browser` reads it at crash time). */
@@ -97,6 +118,7 @@ export const DOCTOR_CHECK_IDS = [
   'output.no-js',
   'output.unreadable',
   'output.excluded',
+  'output.exclude-unmatched',
   'output.walk-fenced',
   'stamp.missing-debug-id',
   'stamp.missing-registration',
@@ -415,12 +437,25 @@ async function diagnose(dirInput: string, options: DoctorOptions): Promise<Docto
 
   const realDir = await realpath(dir);
   const walked = await walkDetailed(dir);
-  const patterns = (options.exclude ?? []).map(globToRegExp);
+  // `./public/**` is `public/**`: a leading `./` would otherwise match nothing, silently.
+  const excludeGlobs = (options.exclude ?? []).map((glob) => glob.replace(/^(\.\/)+/, ''));
+  const patterns = excludeGlobs.map(globToRegExp);
+  const matchedPatterns = new Set<number>();
+  const isExcluded = (path: string): boolean => {
+    const name = rel(dir, path);
+    let hit = false;
+    patterns.forEach((pattern, i) => {
+      if (pattern.test(name)) {
+        matchedPatterns.add(i);
+        hit = true;
+      }
+    });
+    return hit;
+  };
   const excluded: string[] = [];
   const files = walked.files.filter((file) => {
-    const name = rel(dir, file);
-    if (patterns.some((pattern) => pattern.test(name))) {
-      excluded.push(name);
+    if (isExcluded(file)) {
+      excluded.push(rel(dir, file));
       return false;
     }
     return true;
@@ -442,6 +477,15 @@ async function diagnose(dirInput: string, options: DoctorOptions): Promise<Docto
       severity: 'info',
       message: `${excluded.length} file(s) matched --exclude and were not checked (${excluded.slice(0, MAX_LISTED).join(', ')}${excluded.length > MAX_LISTED ? ', …' : ''}).`,
       details: listDetails('files', excluded),
+    });
+  }
+  const unmatched = excludeGlobs.filter((_, i) => !matchedPatterns.has(i));
+  if (unmatched.length > 0) {
+    add({
+      id: 'output.exclude-unmatched',
+      severity: 'info',
+      message: `${unmatched.length} --exclude pattern(s) matched no file (${unmatched.join(', ')}); patterns are relative to ${dir} (Vite copies publicDir to its ROOT: write sw.js, not public/sw.js).`,
+      details: { patterns: unmatched },
     });
   }
   if (walked.skipped.length > 0) {
@@ -494,10 +538,21 @@ async function diagnose(dirInput: string, options: DoctorOptions): Promise<Docto
     });
   };
 
+  // What `stat` says each script weighs, to bound the bytes held at once (a failed stat weighs nothing: the read reports it).
+  const sizes = await Promise.all(
+    bundles.map((path) =>
+      stat(path).then(
+        (info) => info.size,
+        () => 0,
+      ),
+    ),
+  );
+  let readEnd = 0;
   for (let at = 0; at < bundles.length; at++) {
-    if (at % READ_CONCURRENCY === 0) {
+    if (at >= readEnd) {
       reads.clear();
-      await readBatch(bundles.slice(at, at + READ_CONCURRENCY));
+      readEnd = batchEnd(sizes, at, READ_CONCURRENCY, READ_BYTE_BUDGET);
+      await readBatch(bundles.slice(at, readEnd));
     }
     const bundle = bundles[at] as string;
     const name = rel(dir, bundle);
@@ -529,6 +584,8 @@ async function diagnose(dirInput: string, options: DoctorOptions): Promise<Docto
             outsideDir.push(`${name} -> ${pointer}`);
           } else if (mapSet.has(target)) {
             mapPath = target;
+          } else if (isExcluded(target)) {
+            // an excluded map is not the build's: neither read nor reported as dangling
           } else {
             // A symlinked DIRECTORY on the way can lead out although the path looks inside: judge the
             // real path, never read through it.
@@ -687,6 +744,16 @@ async function diagnose(dirInput: string, options: DoctorOptions): Promise<Docto
       });
       return;
     }
+    if (typeof json.mappings !== 'string' && !Array.isArray(json.sections)) {
+      add({
+        id: 'map.invalid',
+        severity: 'error',
+        file: mapName,
+        message: `${mapName} has neither \`mappings\` nor \`sections\`: it carries no position data, so no frame can be mapped.`,
+        fix: 'Check the build is not stripping the map; rebuild.',
+      });
+      return;
+    }
     const sources = Array.isArray(json.sources) ? (json.sources as unknown[]) : undefined;
     if (sources === undefined || sources.length === 0) {
       add({
@@ -759,6 +826,15 @@ async function diagnose(dirInput: string, options: DoctorOptions): Promise<Docto
     });
   }
   const withoutMap = new Set(unstampedWithoutMap);
+  if (bundles.length > 0 && unreadable.length === bundles.length) {
+    // Nothing was audited: that must not be ignorable into a pass (`--ignore output.unreadable`).
+    add({
+      id: 'output.no-js',
+      severity: 'error',
+      message: `None of the ${bundles.length} script(s) under ${dir} could be read, so nothing was checked.`,
+      fix: 'Make the scripts regular files that the current user can read, and run the doctor again.',
+    });
+  }
   if (unreadable.length > 0) {
     add({
       id: 'output.unreadable',
@@ -884,7 +960,7 @@ async function diagnose(dirInput: string, options: DoctorOptions): Promise<Docto
 
   // --- SRI ------------------------------------------------------------------------------------------
   const sriScan = await findSriProtectedScriptsDetailed(dir);
-  const pinned = sriScan.scripts;
+  const pinned = sriScan.scripts.filter((pin) => !isExcluded(pin.script));
   if (sriScan.skippedPages.length > 0) {
     const names = sriScan.skippedPages.map((page) => rel(dir, page.html));
     add({
@@ -892,6 +968,16 @@ async function diagnose(dirInput: string, options: DoctorOptions): Promise<Docto
       severity: 'warning',
       message: `${names.length} page(s) are larger than ${MAX_HTML_BYTES / 1024 / 1024} MiB and were not scanned for integrity pins (${names.slice(0, MAX_LISTED).join(', ')}${names.length > MAX_LISTED ? ', …' : ''}); a script they pin would not be noticed.`,
       fix: 'A real page is a few KB; check that this is not a data file named .html. Stamping still sees pins in such a page.',
+      details: listDetails('files', names),
+    });
+  }
+  if (sriScan.unreadablePages.length > 0) {
+    const names = sriScan.unreadablePages.map((page) => rel(dir, page));
+    add({
+      id: 'sri.html-skipped',
+      severity: 'warning',
+      message: `${names.length} page(s) could not be read and were not scanned for integrity pins (${names.slice(0, MAX_LISTED).join(', ')}${names.length > MAX_LISTED ? ', …' : ''}); a script they pin would not be noticed.`,
+      fix: 'Make the pages readable and run the doctor again.',
       details: listDetails('files', names),
     });
   }
@@ -1031,15 +1117,38 @@ async function diagnose(dirInput: string, options: DoctorOptions): Promise<Docto
     }
   }
 
+  // A check with no input did not run: no scripts means no stamp / pointer checks, no maps no map-content checks.
+  const needsBundles = (id: string): boolean => id.startsWith('stamp.') || NEEDS_BUNDLES.has(id);
   const passed = DOCTOR_CHECK_IDS.filter(
     (id) =>
-      !failed.has(id) && !INFO_ONLY.has(id) && !(options.skipEnv === true && id.startsWith('env.')),
+      !failed.has(id) &&
+      !INFO_ONLY.has(id) &&
+      !(options.skipEnv === true && id.startsWith('env.')) &&
+      !(bundles.length === 0 && needsBundles(id)) &&
+      !(maps.length === 0 && NEEDS_MAPS.has(id)),
   );
   return finish(dir, findings, bundles.length, maps.length, passed, options.ignore);
 }
 
+const NEEDS_BUNDLES: ReadonlySet<string> = new Set([
+  'build.dev-bundle',
+  'map.pointer-dangling',
+  'map.pointer-outside-dir',
+  'map.inline',
+]);
+const NEEDS_MAPS: ReadonlySet<string> = new Set([
+  'map.invalid',
+  'map.no-sources',
+  'map.sources-unresolvable',
+  'map.too-large',
+  'map.unreadable',
+]);
+
 /** Checks that only ever produce an `info` finding: they are not "passed", they are facts. */
 const INFO_ONLY: ReadonlySet<string> = new Set([
+  'output.excluded',
+  'output.exclude-unmatched',
+  'output.walk-fenced',
   'map.hidden',
   'map.sources-content',
   'env.token-source',

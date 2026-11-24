@@ -14,7 +14,7 @@ import {
 import { tmpdir } from 'node:os';
 import { dirname, join, win32 } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { type DoctorReport, diagnoseBuildOutput, sourcePath, walk } from './doctor';
+import { batchEnd, type DoctorReport, diagnoseBuildOutput, sourcePath, walk } from './doctor';
 import { listOutputMaps } from './stamp-files';
 
 const ID_A = '11111111-1111-4111-8111-111111111111';
@@ -432,7 +432,8 @@ describe('symlinks never lead outside the output directory (round 3)', () => {
     writeFileSync(real, `a${stamp(ID_A)}`);
     symlinkSync(real, join(dist, 'app.js'));
     const report = await run();
-    expect(ids(report)).not.toContain('output.no-js');
+    // not the misleading "No .js files found": the script IS there, and nothing could be read
+    expect(find(report, 'output.no-js')?.message).toContain('could be read');
     expect(find(report, 'output.unreadable')?.details).toEqual({
       files: ['app.js resolves outside the output directory'],
     });
@@ -485,7 +486,7 @@ describe('SRI reads are as guarded as every other read (review thread)', () => {
     expect(find(report, 'output.unreadable')?.details).toEqual({
       files: ['app.js is not a regular file'],
     });
-    expect(ids(report)).not.toContain('output.no-js');
+    expect(find(report, 'output.no-js')?.message).toContain('could be read');
     expect(ids(report)).not.toContain('sri.mismatch');
     expect(ids(report)).not.toContain('sri.unstamped-hazard');
     expect(find(report, 'sri.pin-unreadable')?.details).toEqual({
@@ -685,9 +686,58 @@ describe('files the build did not emit (round 6)', () => {
     });
   });
 
-  it('an exclude that matches nothing says nothing', async () => {
+  it('an exclude that matches nothing is SAID (a silent miss looks like a bug in the doctor), as an info', async () => {
     healthy();
-    expect(ids(await run({ exclude: ['nope/**'] }))).not.toContain('output.excluded');
+    const report = await run({ exclude: ['nope/**', 'app.js'] });
+    expect(ids(report)).toContain('output.excluded'); // app.js matched
+    expect(find(report, 'output.exclude-unmatched')).toMatchObject({
+      severity: 'info',
+      details: { patterns: ['nope/**'] },
+    });
+    expect(ids(await run({ exclude: ['app.js'] }))).not.toContain('output.exclude-unmatched');
+  });
+
+  it('Vite copies publicDir to the ROOT of the output: root-level patterns and a leading ./ both work', async () => {
+    healthy();
+    put('mockServiceWorker.js', 'w');
+    put('pdf.worker.min.mjs', 'w');
+    put('pdf.worker.min.mjs.map', mapJson());
+    const report = await run({ exclude: ['./mockServiceWorker.js', 'pdf.worker.min.mjs*'] });
+    expect(report.summary).toMatchObject({ errors: 0, warnings: 0, bundles: 1, maps: 1 });
+    expect(find(report, 'output.excluded')?.details).toEqual({
+      files: ['mockServiceWorker.js', 'pdf.worker.min.mjs', 'pdf.worker.min.mjs.map'],
+    });
+    expect(ids(report)).not.toContain('output.exclude-unmatched');
+  });
+
+  it('an excluded script pinned by a page is not judged for SRI either', async () => {
+    healthy();
+    put('vendor.js', 'v');
+    put('index.html', `<script src="vendor.js" integrity="sha384-AAAA"></script>`);
+    const before = await run();
+    expect(ids(before)).toContain('sri.mismatch');
+    const after = await run({ exclude: ['vendor.js'] });
+    expect(ids(after)).not.toContain('sri.mismatch');
+    expect(ids(after)).not.toContain('sri.unstamped-hazard');
+  });
+
+  it('a pointer to an excluded map is neither read nor reported', async () => {
+    put('a.js', `a\n//# sourceMappingURL=maps/a.js.map${stamp(ID_A)}`);
+    put('maps/a.js.map', mapJson({ debugId: ID_B }));
+    expect(ids(await run())).toContain('stamp.map-id-mismatch');
+    const report = await run({ exclude: ['maps/**'] });
+    expect(ids(report)).not.toContain('stamp.map-id-mismatch');
+    expect(ids(report)).not.toContain('map.pointer-dangling');
+    expect(find(report, 'output.excluded')?.details).toEqual({ files: ['maps/a.js.map'] });
+  });
+
+  it('the new info-only IDs are facts, never "passed"', async () => {
+    healthy();
+    put('public/x.js', 'x');
+    const report = await run({ exclude: ['public/**'] });
+    expect(report.passed).not.toContain('output.excluded');
+    expect(report.passed).not.toContain('output.exclude-unmatched');
+    expect(report.passed).not.toContain('output.walk-fenced');
   });
 
   it('glob semantics: * stays in a directory, ** crosses them, ? is one character, a trailing / is a directory', async () => {
@@ -780,5 +830,99 @@ describe('the walk fence is reported, and needs a real project directory (round 
     put('src/s.js', 'x');
     put('a.js', `a${stamp(ID_A)}`);
     expect((await run()).summary.bundles).toBe(2);
+  });
+});
+
+describe('round 7 review findings', () => {
+  const mkfifo = (path: string): boolean => spawnSync('mkfifo', [path]).status === 0;
+  const sri = (bytes: string): string =>
+    `sha384-${createHash('sha384').update(bytes).digest('base64')}`;
+
+  it('when EVERY script is unreadable the audit cannot pass, even with --ignore output.unreadable', async () => {
+    if (!mkfifo(join(dist, 'a.js'))) {
+      return;
+    }
+    const report = await run({ ignore: ['output.unreadable'] });
+    expect(find(report, 'output.no-js')).toMatchObject({ severity: 'error' });
+    expect(find(report, 'output.no-js')?.message).toContain('could be read');
+  });
+
+  it('some unreadable scripts are an ordinary, ignorable finding', async () => {
+    put('ok.js', `a${stamp(ID_A)}`);
+    if (!mkfifo(join(dist, 'a.js'))) {
+      return;
+    }
+    const report = await run({ ignore: ['output.unreadable'] });
+    expect(ids(report)).not.toContain('output.no-js');
+  });
+
+  it('a version-3 map without mappings (or sections) is map.invalid', async () => {
+    put('a.js', `a\n//# sourceMappingURL=a.js.map${stamp(ID_A)}`);
+    put(
+      'a.js.map',
+      JSON.stringify({ version: 3, sources: ['a.ts'], sourcesContent: ['x'], debugId: ID_A }),
+    );
+    const report = await run();
+    expect(find(report, 'map.invalid')?.message).toContain('mappings');
+    put('a.js.map', mapJson({ debugId: ID_A, mappings: undefined, sections: [] }));
+    expect(ids(await run())).not.toContain('map.invalid');
+    put('a.js.map', mapJson({ debugId: ID_A, mappings: 5 }));
+    expect(ids(await run())).toContain('map.invalid');
+  });
+
+  it('an unreadable HTML page is reported as not scanned, never silently passed', async () => {
+    put('a.js', `a${stamp(ID_A)}`);
+    const page = put('index.html', `<script src="a.js" integrity="${sri('x')}"></script>`);
+    chmodSync(page, 0o000);
+    try {
+      if (spawnSync('sh', ['-c', `cat '${page}' >/dev/null 2>&1`]).status === 0) {
+        return; // running as root: the permission does not bite
+      }
+      const finding = find(await run(), 'sri.html-skipped');
+      expect(finding).toMatchObject({ severity: 'warning', details: { files: ['index.html'] } });
+      expect(finding?.message).toContain('could not be read');
+    } finally {
+      chmodSync(page, 0o600);
+    }
+  });
+
+  it('the same script pinned by two pages with different hashes: the stale pin is reported', async () => {
+    const js = `console.log(1);${stamp(ID_A)}`;
+    put('a.js', js);
+    put('a.html', `<script src="a.js" integrity="${sri(js)}"></script>`);
+    put('b.html', `<script src="a.js" integrity="${sri('older bytes')}"></script>`);
+    const report = await run();
+    expect(find(report, 'sri.mismatch')).toMatchObject({ details: { scripts: ['a.js'] } });
+  });
+
+  it('passed lists only checks that had input: nothing for the stamp/map checks of an empty directory', async () => {
+    const report = await run();
+    expect(ids(report)).toContain('output.no-js');
+    for (const id of [
+      'stamp.missing-registration',
+      'stamp.map-id-mismatch',
+      'map.invalid',
+      'build.dev-bundle',
+    ]) {
+      expect(report.passed).not.toContain(id);
+    }
+    put('a.js', `a${stamp(ID_A)}`);
+    const healthy = await run();
+    expect(healthy.passed).toContain('stamp.missing-registration');
+    expect(healthy.passed).not.toContain('map.invalid'); // a bundle but no map: nothing to validate
+    put('a.js.map', mapJson({ debugId: ID_A }));
+    expect((await run()).passed).toContain('map.invalid');
+  });
+});
+
+describe('batchEnd bounds the bytes read at once', () => {
+  it('stops at the count limit, at the byte budget, and always takes at least one', () => {
+    expect(batchEnd([1, 1, 1, 1], 0, 2, 100)).toBe(2);
+    expect(batchEnd([10, 10, 10, 10], 0, 16, 25)).toBe(2);
+    expect(batchEnd([10, 10, 10, 10], 0, 16, 20)).toBe(2);
+    expect(batchEnd([10, 10, 10, 10], 0, 16, 40)).toBe(4);
+    expect(batchEnd([500, 1, 1], 0, 16, 100)).toBe(1);
+    expect(batchEnd([1, 500, 1], 1, 16, 100)).toBe(2);
+    expect(batchEnd([1, 1], 1, 16, 100)).toBe(2);
   });
 });

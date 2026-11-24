@@ -27,7 +27,7 @@ Options:
   --no-env               Skip the token / version / build / NODE_ENV checks.
   --deployed             The directory is (about to be) served: leftover .map files become a warning.
   --ignore <id>          Drop a check ID from the report; repeatable.
-  --exclude <glob>       Do not check files the build did not emit (e.g. 'public/**'); repeatable.
+  --exclude <glob>       Do not check files the build did not emit (e.g. sw.js; relative to <dir>); repeatable.
   --                     End of options (a directory may start with a dash after it).
   -h, --help             Show this help.
 

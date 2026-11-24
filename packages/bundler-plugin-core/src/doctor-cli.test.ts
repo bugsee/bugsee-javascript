@@ -97,7 +97,13 @@ describe('runDoctorCli', () => {
     writeFileSync(join(dist, 'a.js'), stamped);
     writeFileSync(
       join(dist, 'a.js.map'),
-      JSON.stringify({ version: 3, debugId: ID, sources: ['a'], sourcesContent: ['x'] }),
+      JSON.stringify({
+        version: 3,
+        debugId: ID,
+        sources: ['a'],
+        sourcesContent: ['x'],
+        mappings: 'AAAA',
+      }),
     );
     const args = [dist, '--no-env', '--strict'];
     expect((await cli(args)).code).toBe(0);

@@ -232,7 +232,9 @@ npx bugsee-sourcemaps-doctor dist --strict     # warnings fail the step too (exi
 npx bugsee-sourcemaps-doctor dist --deployed   # the directory is served: leftover .map files warn
 ```
 
-`--strict` passes straight after a default plugin run (maps removed after upload, bundles stamped) when the directory holds only what the build emitted. Scripts copied in (Vite `publicDir`, a copy plugin) are never stamped by the plugin and are indistinguishable from a bundle that lost its stamp: exclude them by path with `--exclude 'public/**'` (repeatable; listed as `output.excluded`). A directory that is a project (has a `package.json`) and is the working directory is walked fenced (no `src`, `test`, dot-directories, depth > 6), and the skipped directories are listed as `output.walk-fenced`. Other options: `--ignore <id>` (repeatable; hard failures such as `output.no-js` cannot be ignored), `--project-root`, `--max-map-mb`, `--no-env`, `--`.
+The `bugsee-sourcemaps-doctor` binary ships in `@bugsee/bundler-plugin-core`, not in a package of that name: in a project that has it installed (every Bugsee build plugin depends on it) `npx bugsee-sourcemaps-doctor` runs it; otherwise use `npx --package=@bugsee/bundler-plugin-core bugsee-sourcemaps-doctor dist`.
+
+`--strict` passes straight after a default plugin run (maps removed after upload, bundles stamped) when the directory holds only what the build emitted. Scripts copied in (Vite `publicDir`, a copy plugin) are never stamped by the plugin and are indistinguishable from a bundle that lost its stamp: exclude them by path, relative to the checked directory (Vite copies `public/` to the ROOT of the output, so `--exclude sw.js --exclude 'pdf.worker.min.mjs*'`; repeatable; listed as `output.excluded`, and a pattern that matches nothing is reported as `output.exclude-unmatched`). `--exclude` only removes files from the audit, not from what you deploy. A directory that is a project (has a `package.json`) and is the working directory is walked fenced (no `src`, `test`, dot-directories, depth > 6), and the skipped directories are listed as `output.walk-fenced`. Other options: `--ignore <id>` (repeatable; hard failures such as `output.no-js` cannot be ignored), `--project-root`, `--max-map-mb`, `--no-env`, `--`.
 
 Exit codes: `0` ok, `1` warnings only (with `--strict`), `2` errors. The package is `@bugsee/bundler-plugin-core`; the same report is available in code as `diagnoseBuildOutput(dir, options)`.
 
@@ -245,7 +247,7 @@ Typical findings and what to do:
 | `map.pointer-dangling` | The bundle's `sourceMappingURL` points at a map that is not on disk. A note when no `.map` is left and every bundle is stamped (maps removed after upload); otherwise a warning. Use hidden maps to avoid the 404. |
 | `map.inline` | The map is a `data:` URL inside the bundle: nothing to upload, and it ships to every visitor. |
 | `map.sources-unresolvable` | No `sourcesContent` and the sources are not on disk: frames will have no source lines. |
-| `map.public-leftover` | `.map` files are in the directory. A note by default; a warning with `--deployed` (you serve this directory). Keep `deleteMaps` on or exclude `*.map`. |
+| `map.public-leftover` | `.map` files are in the directory. A note by default; a warning with `--deployed` (you serve this directory). Keep `deleteMaps` on, or remove the maps / leave them out of the deploy (`--exclude` does not help: it only hides them from this audit). |
 | `sri.unstamped-hazard` / `sri.mismatch` / `sri.manifest-hashes` | Subresource Integrity hashes pin these scripts; stamping after hashing makes the browser block them. |
 | `env.token-missing` | No app token is visible to the build (a warning): the plugin is disabled and uploads nothing, which is fine if you upload with `bugsee-cli` by hand. `env.token-source` says where a found token comes from, never its value. |
 
