@@ -24,7 +24,7 @@ import {
   runPluginUpload,
 } from '@bugsee/bundler-plugin-core';
 import { type AngularOutput, resolveAngularOutput } from './output';
-import { findServerRoot, looksLikeAngularServer } from './server-root';
+import { findServerRoot, isStrictlyInside, looksLikeAngularServer } from './server-root';
 
 export interface AngularUploadOptions extends BugseePluginOptions {
   /** Workspace directory (angular.json is looked for here and above). Default: the working directory. */
@@ -209,6 +209,21 @@ export async function uploadAngularSourcemaps(
       );
     }
     outDir = located.browserDir;
+    if (
+      located.serverDir !== undefined &&
+      existsSync(located.serverDir) &&
+      isStrictlyInside(located.serverDir, outDir)
+    ) {
+      // `outputPath.browser: ''` puts the browser output in the base, with server/ below it: injecting the directory
+      // would stamp the server bundles as browser code and upload their maps as browser maps.
+      return misconfigured(
+        `the server output ${located.serverDir} is inside the browser output ${outDir} (outputPath.browser is empty), ` +
+          `so stamping the browser output would stamp the server too. Give the browser output its own directory ` +
+          `(the default browser/).`,
+        outDir,
+        located.configuration,
+      );
+    }
     rootBrowser = outDir;
     resealRoot =
       located.serverDir !== undefined && existsSync(located.serverDir)

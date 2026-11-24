@@ -321,6 +321,61 @@ describe('uploadAngularSourcemaps', () => {
       await expect(run({ failOnError: true })).rejects.toThrow(/ng build/);
     });
 
+    it('outputPath { browser: "" } on an SSR build (server/ inside the browser directory) is refused: it would stamp the server', async () => {
+      await write(
+        'angular.json',
+        JSON.stringify({
+          projects: {
+            demo: {
+              projectType: 'application',
+              root: '',
+              architect: {
+                build: {
+                  builder: '@angular/build:application',
+                  options: { outputPath: { base: 'dist/app', browser: '' } },
+                },
+              },
+            },
+          },
+        }),
+      );
+      await write('dist/app/main.js', 'x();');
+      await write('dist/app/server/server.mjs', '');
+      const runPluginUpload = ran();
+      const notices: string[] = [];
+      const out = await uploadAngularSourcemaps(
+        base({ cwd, onNotice: (m: string) => notices.push(m) }),
+        { runPluginUpload },
+      );
+      expect(out.status).toBe('misconfigured');
+      expect(runPluginUpload).not.toHaveBeenCalled();
+      expect(notices.join('\n')).toMatch(/server.*inside.*browser/s);
+    });
+
+    it('the same layout WITHOUT a server output is fine', async () => {
+      await write(
+        'angular.json',
+        JSON.stringify({
+          projects: {
+            demo: {
+              projectType: 'application',
+              root: '',
+              architect: {
+                build: {
+                  builder: '@angular/build:application',
+                  options: { outputPath: { base: 'dist/app', browser: '' } },
+                },
+              },
+            },
+          },
+        }),
+      );
+      await write('dist/app/main.js', 'x();');
+      await write('dist/app/main.js.map', '{}');
+      const out = await uploadAngularSourcemaps(base({ cwd }), { runPluginUpload: ran() });
+      expect(out.status).toBe('uploaded');
+    });
+
     it('--dist naming a FILE is a misconfiguration said, not a crash', async () => {
       await write('a-file', 'x');
       const notices: string[] = [];
