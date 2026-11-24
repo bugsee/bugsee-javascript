@@ -41,6 +41,20 @@ it('MAX_HTML_BYTES is 8 MiB', () => {
   expect(MAX_HTML_BYTES).toBe(8 * 1024 * 1024);
 });
 
+/**
+ * The reference the linear scanner must agree with: every `<!-- ... -->` removed by the regex it replaced. Spliced from
+ * the match positions (not `String.replace`, which is also what a sanitiser would use: this is a test oracle).
+ */
+const referenceStrip = (text: string): string => {
+  let out = '';
+  let at = 0;
+  for (const match of text.matchAll(HTML_COMMENT)) {
+    out += text.slice(at, match.index);
+    at = (match.index ?? 0) + match[0].length;
+  }
+  return out + text.slice(at);
+};
+
 describe('findTags / stripComments agree with the regexes they replaced', () => {
   const pieces = [
     '<script',
@@ -77,8 +91,8 @@ describe('findTags / stripComments agree with the regexes they replaced', () => 
       for (let i = 0, n = next() % 14; i < n; i++) {
         text += pieces[next() % pieces.length];
       }
-      expect(stripComments(text), JSON.stringify(text)).toBe(text.replace(HTML_COMMENT, ''));
-      const markup = text.replace(HTML_COMMENT, '');
+      const markup = referenceStrip(text);
+      expect(stripComments(text), JSON.stringify(text)).toBe(markup);
       expect(findTags(markup, 'script'), JSON.stringify(text)).toEqual(
         markup.match(SCRIPT_TAG) ?? [],
       );
