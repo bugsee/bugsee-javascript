@@ -346,7 +346,8 @@ export function createNextWebpackPlugin(
         // does. Not on a dry run, which deletes nothing (as the core's own upload never does).
         const wouldDiscard = kind === 'client' && context.forcedMaps === true;
         const discardForcedMaps = async (): Promise<{ removed: boolean; failed: boolean }> => {
-          if (!wouldDiscard || resolved.dryRun) {
+          // Not on a dry run, and not with `deleteMaps: false` (an explicit "keep", as the core's own upload honours).
+          if (!wouldDiscard || resolved.dryRun || resolved.deleteMaps === false) {
             return { removed: false, failed: false };
           }
           const failures: unknown[] = [];
@@ -382,6 +383,10 @@ export function createNextWebpackPlugin(
             context.say(
               'dry run: nothing was deleted, so the browser source maps Bugsee turned on stay in `.next/static`, publicly served.',
             );
+          } else if (wouldDiscard && resolved.deleteMaps === false) {
+            context.say(
+              '`deleteMaps: false` keeps the browser source maps Bugsee turned on in `.next/static`, publicly served.',
+            );
           }
           return;
         }
@@ -393,6 +398,7 @@ export function createNextWebpackPlugin(
           context.say(
             FALLBACK_SRI_NOTICE(kind, removed, {
               dryRun: resolved.dryRun && wouldDiscard,
+              retained: !resolved.dryRun && resolved.deleteMaps === false && wouldDiscard,
               removalFailed: failed,
             }),
           );
@@ -423,6 +429,9 @@ export function createNextWebpackPlugin(
           )(state.failure);
         }
         if (files.scripts.length === 0) {
+          // A later stage may have dropped the last client script and left its map: that map is still public and
+          // nothing will upload it, so the forced ones go (same policy as above: not on a dry run, not when kept).
+          await discardForcedMaps();
           if (state.preStamped && (state.stampedWithMaps ?? 0) > 0) {
             const lost = new Error(
               `${state.stampedWithMaps} bundle(s) stamped inside the ${kind} build have no map left on disk: something removed them after Bugsee stamped them`,
