@@ -16,7 +16,7 @@
 // every dynamic import.
 import { createHash } from 'node:crypto';
 import type { Dirent } from 'node:fs';
-import { readdir, readFile } from 'node:fs/promises';
+import { readdir, readFile, realpath } from 'node:fs/promises';
 import { isAbsolute, join, normalize, resolve, sep } from 'node:path';
 import { readRegularFile } from './safe-read';
 
@@ -124,7 +124,12 @@ const resolveLocalScript = (outDir: string, htmlDir: string, src: string): strin
   return normalize(full).startsWith(rooted) ? full : undefined;
 };
 
-const walkHtml = async (dir: string, fenced: boolean, depth = 0): Promise<string[]> => {
+const walkHtml = async (
+  dir: string,
+  fenced: boolean,
+  links: Set<string>,
+  depth = 0,
+): Promise<string[]> => {
   if (fenced && depth > MAX_DEPTH) {
     return [];
   }
@@ -147,11 +152,14 @@ const walkHtml = async (dir: string, fenced: boolean, depth = 0): Promise<string
       if (skip) {
         continue;
       }
-      for (const page of await walkHtml(full, fenced, depth + 1)) {
+      for (const page of await walkHtml(full, fenced, links, depth + 1)) {
         found.push(page);
       }
-    } else if (entry.isFile() && /\.x?html?$/i.test(entry.name)) {
+    } else if ((entry.isFile() || entry.isSymbolicLink()) && /\.x?html?$/i.test(entry.name)) {
       found.push(full);
+      if (entry.isSymbolicLink()) {
+        links.add(full);
+      }
     }
   }
   return found;
@@ -192,13 +200,26 @@ export async function findSriProtectedScriptsDetailed(
   // absolute resolved script path against a relative root made every `src="main.js"` look like it
   // was outside the output directory, so the guard was silently inert for exactly those builds.
   const outDir = resolve(outDirInput);
-  const pages = await walkHtml(outDir, fenced);
+  const links = new Set<string>();
+  const pages = await walkHtml(outDir, fenced, links);
+  const realOutDir = await realpath(outDir).catch(() => outDir);
   const seen = new Set<string>();
   const found: SriProtectedScript[] = [];
   const skippedPages: SriScan['skippedPages'] = [];
   const unreadablePages: string[] = [];
   for (const html of pages.sort()) {
-    const read = await readRegularFile(html, maxHtmlBytes);
+    // A symlinked page is read through its REAL path, and only if that stays inside the output directory (the
+    // same rule as every other symlinked artifact); one that leads out, or dangles, is a page that was not checked.
+    let readPath = html;
+    if (links.has(html)) {
+      const real = await realpath(html).catch(() => undefined);
+      if (real === undefined || !(real === realOutDir || real.startsWith(realOutDir + sep))) {
+        unreadablePages.push(html);
+        continue;
+      }
+      readPath = real;
+    }
+    const read = await readRegularFile(readPath, maxHtmlBytes);
     if (!read.ok) {
       if (read.tooLarge !== undefined) {
         skippedPages.push({ html, size: read.tooLarge.size });

@@ -1,6 +1,6 @@
 // The HTML scan must be linear and bounded on hostile input, and must find exactly what the regexes it replaced
 // found on ordinary input.
-import { mkdir, mkdtemp, rm, truncate, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, symlink, truncate, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -176,6 +176,25 @@ describe('the page walk fence is optional', () => {
         join(dir, 'ok', 'p.html'),
         join(dir, 'tests', 'p.html'),
       ].sort(),
+    );
+  });
+});
+
+describe('symlinked pages', () => {
+  it('a link inside the directory is scanned; one outside or dangling is listed as unreadable', async () => {
+    const dir = await fixture();
+    const outside = await fixture();
+    const page = '<script src="a.js" integrity="sha384-x"></script>';
+    await mkdir(join(dir, 'tests')); // a directory the (default) fence skips: only the link can reach this page
+    await writeFile(join(dir, 'tests', 'p.html'), page);
+    await symlink(join(dir, 'tests', 'p.html'), join(dir, 'in.html'));
+    await writeFile(join(outside, 'o.html'), page);
+    await symlink(join(outside, 'o.html'), join(dir, 'out.html'));
+    await symlink(join(outside, 'none.html'), join(dir, 'dangling.html'));
+    const scan = await findSriProtectedScriptsDetailed(dir);
+    expect(scan.scripts.map((s) => s.html)).toEqual([join(dir, 'in.html')]);
+    expect(scan.unreadablePages.sort()).toEqual(
+      [join(dir, 'dangling.html'), join(dir, 'out.html')].sort(),
     );
   });
 });

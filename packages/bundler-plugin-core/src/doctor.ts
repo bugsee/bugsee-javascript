@@ -246,34 +246,39 @@ export function mapSources(json: Record<string, unknown>): {
   content: unknown[];
   roots: string[];
 } {
-  if (Array.isArray(json.sources) && json.sources.length > 0) {
-    const root = typeof json.sourceRoot === 'string' ? json.sourceRoot : '';
-    return {
-      sources: json.sources as unknown[],
-      content: Array.isArray(json.sourcesContent) ? (json.sourcesContent as unknown[]) : [],
-      roots: (json.sources as unknown[]).map(() => root),
-    };
-  }
   const sources: unknown[] = [];
   const content: unknown[] = [];
   const roots: string[] = [];
-  for (const section of Array.isArray(json.sections) ? (json.sections as unknown[]) : []) {
-    const map = (section as { map?: Record<string, unknown> } | null)?.map;
-    if (typeof map !== 'object' || map === null || !Array.isArray(map.sources)) {
-      continue;
+  const collect = (map: Record<string, unknown>, depth: number): void => {
+    if (Array.isArray(map.sources) && map.sources.length > 0) {
+      // A leaf map: its content and sourceRoot belong to ITS sources only (aligned by index).
+      const own = map.sources as unknown[];
+      const embedded = Array.isArray(map.sourcesContent) ? (map.sourcesContent as unknown[]) : [];
+      const root = typeof map.sourceRoot === 'string' ? map.sourceRoot : '';
+      own.forEach((source, i) => {
+        sources.push(source);
+        content.push(embedded[i]);
+        roots.push(root);
+      });
+      return;
     }
-    const own = map.sources as unknown[];
-    const embedded = Array.isArray(map.sourcesContent) ? (map.sourcesContent as unknown[]) : [];
-    // A section is a full map: its sources are relative to ITS sourceRoot.
-    const root = typeof map.sourceRoot === 'string' ? map.sourceRoot : '';
-    own.forEach((source, i) => {
-      sources.push(source);
-      content.push(embedded[i]);
-      roots.push(root);
-    });
-  }
+    if (depth >= MAX_INDEX_DEPTH) {
+      return;
+    }
+    // An INDEX map keeps its maps inside `sections[].map`, which may be index maps themselves.
+    for (const section of Array.isArray(map.sections) ? (map.sections as unknown[]) : []) {
+      const inner = (section as { map?: unknown } | null)?.map;
+      if (typeof inner === 'object' && inner !== null) {
+        collect(inner as Record<string, unknown>, depth + 1);
+      }
+    }
+  };
+  collect(json, 0);
   return { sources, content, roots };
 }
+
+/** Nested index maps are followed this deep (a real one is 1-2 levels); a hostile chain must not overflow the stack. */
+const MAX_INDEX_DEPTH = 32;
 
 interface ParsedMap {
   ok: true;
@@ -302,6 +307,9 @@ function parseMap(text: string): ParsedMap | { ok: false; why: string } {
   return { ok: true, json, debugId: typeof id === 'string' ? id.toLowerCase() : undefined };
 }
 
+/** `scheme://...`: a URL, not a directory name. */
+const SCHEME_URL = /^[a-z][a-z0-9+.-]*:\/\//i;
+
 /** Sources that name no file on disk by construction (bundler runtime, virtual modules). */
 const VIRTUAL_SOURCE = /^(webpack\/|\(webpack\)|\0|<|rollup:|vite\/)|\0/;
 
@@ -320,6 +328,15 @@ export function sourcePath(
 ): string | undefined {
   let path = source;
   let fromProject = false;
+  // ECMA-426: the source URL is `sourceRoot + source`. A scheme in the root (`webpack:///` + `src/x.ts`) is the
+  // same URL as the scheme written into `source`, so it takes the same rule below.
+  if (
+    SCHEME_URL.test(sourceRoot) &&
+    !/^[a-z][a-z0-9+.-]*:/i.test(source) &&
+    !api.isAbsolute(source)
+  ) {
+    path = sourceRoot.endsWith('/') ? `${sourceRoot}${source}` : `${sourceRoot}/${source}`;
+  }
   if (/^file:\/\//i.test(path)) {
     try {
       return fileURLToPath(path, api === nodePath.win32 ? { windows: true } : undefined);
@@ -327,7 +344,7 @@ export function sourcePath(
       return undefined;
     }
   }
-  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(path)) {
+  if (SCHEME_URL.test(path)) {
     // `webpack://app/./src/x.ts` and friends: the scheme/namespace is not a directory; drop it.
     path = path.replace(/^[a-z][a-z0-9+.-]*:\/\/[^/]*\//i, '');
     fromProject = true;
@@ -518,15 +535,6 @@ async function diagnose(dirInput: string, options: DoctorOptions): Promise<Docto
       severity: 'info',
       message: `${excluded.length} file(s) matched --exclude and were not checked (${excluded.slice(0, MAX_LISTED).join(', ')}${excluded.length > MAX_LISTED ? ', …' : ''}).`,
       details: listDetails('files', excluded),
-    });
-  }
-  const unmatched = excludeGlobs.filter((_, i) => !matchedPatterns.has(i));
-  if (unmatched.length > 0) {
-    add({
-      id: 'output.exclude-unmatched',
-      severity: 'info',
-      message: `${unmatched.length} --exclude pattern(s) matched no file (${unmatched.join(', ')}); patterns are relative to ${dir} (Vite copies publicDir to its ROOT: write sw.js, not public/sw.js).`,
-      details: { patterns: unmatched },
     });
   }
   if (walked.skipped.length > 0) {
@@ -1009,6 +1017,15 @@ async function diagnose(dirInput: string, options: DoctorOptions): Promise<Docto
   // --- SRI ------------------------------------------------------------------------------------------
   const sriScan = await findSriProtectedScriptsDetailed(dir, MAX_HTML_BYTES, walked.fenced);
   const pinned = sriScan.scripts.filter((pin) => !isExcluded(pin.script));
+  const unmatched = excludeGlobs.filter((_, i) => !matchedPatterns.has(i));
+  if (unmatched.length > 0) {
+    add({
+      id: 'output.exclude-unmatched',
+      severity: 'info',
+      message: `${unmatched.length} --exclude pattern(s) matched no file (${unmatched.join(', ')}); patterns are relative to ${dir} (Vite copies publicDir to its ROOT: write sw.js, not public/sw.js).`,
+      details: { patterns: unmatched },
+    });
+  }
   if (sriScan.skippedPages.length > 0) {
     const names = sriScan.skippedPages.map((page) => rel(dir, page.html));
     add({

@@ -731,6 +731,22 @@ describe('files the build did not emit (round 6)', () => {
     expect(find(report, 'output.excluded')?.details).toEqual({ files: ['maps/a.js.map'] });
   });
 
+  it('a pattern that matches only an SRI pin outside the walked files still counts as matched', async () => {
+    put('package.json', '{"name":"p"}');
+    put('app.js', `a${stamp(ID_A)}`);
+    put('tests/vendor.js', 'v'); // in a fenced (skipped) directory: not in the walk
+    put('index.html', `<script src="tests/vendor.js" integrity="sha384-AAAA"></script>`);
+    const here = process.cwd();
+    process.chdir(dist);
+    try {
+      const report = await run({ exclude: ['tests/vendor.js'] });
+      expect(ids(report)).not.toContain('output.exclude-unmatched');
+      expect(ids(report)).not.toContain('sri.mismatch');
+    } finally {
+      process.chdir(here);
+    }
+  });
+
   it('the new info-only IDs are facts, never "passed"', async () => {
     healthy();
     put('public/x.js', 'x');
@@ -864,7 +880,25 @@ describe('round 7 review findings', () => {
     );
     const report = await run();
     expect(find(report, 'map.invalid')?.message).toContain('mappings');
-    put('a.js.map', mapJson({ debugId: ID_A, mappings: undefined, sections: [] }));
+    const sectioned = {
+      debugId: ID_A,
+      mappings: undefined,
+      sources: undefined,
+      sourcesContent: undefined,
+      sections: [
+        {
+          offset: { line: 0, column: 0 },
+          map: {
+            version: 3,
+            sources: ['a.ts'],
+            sourcesContent: ['x'],
+            names: [],
+            mappings: 'AAAA',
+          },
+        },
+      ],
+    };
+    put('a.js.map', mapJson(sectioned));
     expect(ids(await run())).not.toContain('map.invalid');
     put('a.js.map', mapJson({ debugId: ID_A, mappings: 5 }));
     expect(ids(await run())).toContain('map.invalid');
@@ -975,8 +1009,9 @@ describe('the SRI page walk follows the doctor fence (round 8)', () => {
 
 describe('a pointer with a ?query (webpack / Rspack [name].js?[contenthash]) (round 9)', () => {
   it('pairs the map the query-less path names, and does not call the pointer dangling', async () => {
-    put('main.js', `a\n//# sourceMappingURL=main.js.map?3872346a403b27a7${stamp(ID_A)}`);
-    put('main.js.map', mapJson({ debugId: ID_B })); // a different id: proves the map was PAIRED and read
+    // NOT a sibling: only following the pointer (query cut) can find it, so the mismatch proves the pairing
+    put('main.js', `a\n//# sourceMappingURL=maps/main.js.map?3872346a403b27a7${stamp(ID_A)}`);
+    put('maps/main.js.map', mapJson({ debugId: ID_B }));
     const report = await run();
     expect(ids(report)).not.toContain('map.pointer-dangling');
     expect(ids(report)).toContain('stamp.map-id-mismatch');
@@ -1073,6 +1108,53 @@ describe('index (sectioned) source maps (round 10)', () => {
     expect(ids(await run())).toContain('map.sources-unresolvable');
   });
 
+  it('nested index maps: leaves are found at any depth, each with its own sourceRoot and content', async () => {
+    put('lib/b.ts', 'y');
+    const leaf = (root: string, sources: string[], content?: string[]) => ({
+      offset: { line: 0, column: 0 },
+      map: {
+        version: 3,
+        sourceRoot: root,
+        sources,
+        ...(content ? { sourcesContent: content } : {}),
+        names: [],
+        mappings: 'AAAA',
+      },
+    });
+    const inner = {
+      offset: { line: 5, column: 0 },
+      map: { version: 3, sections: [leaf('lib/', ['b.ts'])] },
+    };
+    pair(index([leaf('', ['a.ts'], ['x']), inner], { debugId: ID_A }));
+    const report = await run();
+    expect(ids(report)).not.toContain('map.no-sources');
+    expect(ids(report)).not.toContain('map.sources-unresolvable'); // b.ts is under lib/, via the leaf's root
+    const wrong = {
+      offset: { line: 5, column: 0 },
+      map: { version: 3, sections: [leaf('nope/', ['b.ts'])] },
+    };
+    pair(index([leaf('', ['a.ts'], ['x']), wrong], { debugId: ID_A }));
+    expect(find(await run(), 'map.sources-unresolvable')?.details).toEqual({
+      unresolved: 1,
+      total: 2,
+    });
+  });
+
+  it('a pathologically deep chain of index maps is bounded, not a stack overflow', async () => {
+    let map: Record<string, unknown> = {
+      version: 3,
+      sources: ['a.ts'],
+      sourcesContent: ['x'],
+      mappings: 'A',
+    };
+    for (let i = 0; i < 5000; i++) {
+      map = { version: 3, sections: [{ offset: { line: 0, column: 0 }, map }] };
+    }
+    pair(JSON.stringify({ ...map, debugId: ID_A }));
+    const report = await run();
+    expect(ids(report)).not.toContain('doctor.internal-error');
+  });
+
   it('top-level sources win over sections', async () => {
     pair(
       index([section(['z.ts'], ['z'])], {
@@ -1085,18 +1167,77 @@ describe('index (sectioned) source maps (round 10)', () => {
   });
 });
 
-describe('a ? in the checked directory path (round 11)', () => {
-  it('the pointer is judged on its own query, not on a ? anywhere in the absolute path', async () => {
-    const weird = join(root, 'we?ird');
-    mkdirSync(weird);
-    const out = join(weird, 'dist');
-    mkdirSync(out);
-    writeFileSync(join(out, 'a.js'), `a\n//# sourceMappingURL=a.js.map${stamp(ID_A)}`);
-    writeFileSync(join(out, 'a.js.map'), mapJson({ debugId: ID_A }));
-    const report = await diagnoseBuildOutput(out, { projectRoot: root, skipEnv: true });
-    expect(ids(report)).not.toContain('map.pointer-outside-dir');
-    expect(ids(report)).not.toContain('map.pointer-dangling');
-    expect(ids(report)).not.toContain('map.hidden'); // the pointer paired a.js.map
-    expect(report.summary.errors + report.summary.warnings).toBe(0);
+// Windows does not allow a `?` in a path component: the fixture cannot be created there
+describe.skipIf(process.platform === 'win32')(
+  'a ? in the checked directory path (round 11)',
+  () => {
+    it('the pointer is judged on its own query, not on a ? anywhere in the absolute path', async () => {
+      const weird = join(root, 'we?ird');
+      mkdirSync(weird);
+      const out = join(weird, 'dist');
+      mkdirSync(out);
+      writeFileSync(join(out, 'a.js'), `a\n//# sourceMappingURL=a.js.map${stamp(ID_A)}`);
+      writeFileSync(join(out, 'a.js.map'), mapJson({ debugId: ID_A }));
+      const report = await diagnoseBuildOutput(out, { projectRoot: root, skipEnv: true });
+      expect(ids(report)).not.toContain('map.pointer-outside-dir');
+      expect(ids(report)).not.toContain('map.pointer-dangling');
+      expect(ids(report)).not.toContain('map.hidden'); // the pointer paired a.js.map
+      expect(report.summary.errors + report.summary.warnings).toBe(0);
+    });
+  },
+);
+
+describe('a scheme in sourceRoot (round 12)', () => {
+  it('sourceRoot + source is one URL: webpack:/// + src/x.ts names <project>/src/x.ts', async () => {
+    put('../src/x.ts', 'x');
+    const body = { debugId: ID_A, sourcesContent: undefined, sources: ['src/x.ts'] };
+    put('a.js', `a\n//# sourceMappingURL=a.js.map${stamp(ID_A)}`);
+    for (const sourceRoot of ['webpack:///', 'webpack://app/', 'webpack://app']) {
+      put('a.js.map', mapJson({ ...body, sourceRoot }));
+      expect(ids(await run()), sourceRoot).not.toContain('map.sources-unresolvable');
+    }
+    put('a.js.map', mapJson({ ...body, sourceRoot: 'webpack:///', sources: ['src/missing.ts'] }));
+    expect(ids(await run())).toContain('map.sources-unresolvable');
+  });
+});
+
+describe('symlinked HTML pages are scanned, or reported, never skipped silently (round 12)', () => {
+  const sri = (bytes: string): string =>
+    `sha384-${createHash('sha384').update(bytes).digest('base64')}`;
+  const stalePage = `<script src="a.js" integrity="${sri('older bytes')}"></script>`;
+
+  it('a link to a page inside the directory is read through its real path (stale pin found)', async () => {
+    put('a.js', `console.log(1);${stamp(ID_A)}`);
+    put('pages/real.html', stalePage.replace('a.js', '../a.js'));
+    symlinkSync(join(dist, 'pages', 'real.html'), join(dist, 'index.html'));
+    const report = await run();
+    expect(ids(report)).toContain('sri.mismatch');
+  });
+
+  it('a link that leads outside the directory (or dangles) is reported as not scanned', async () => {
+    put('a.js', `a${stamp(ID_A)}`);
+    writeFileSync(join(root, 'outside.html'), stalePage);
+    symlinkSync(join(root, 'outside.html'), join(dist, 'out.html'));
+    symlinkSync(join(root, 'nowhere.html'), join(dist, 'dangling.html'));
+    const finding = find(await run(), 'sri.html-skipped');
+    expect(finding).toMatchObject({
+      severity: 'warning',
+      details: { files: ['dangling.html', 'out.html'] },
+    });
+    expect(ids(await run())).not.toContain('sri.mismatch');
+  });
+});
+
+describe('sourcePath with a scheme sourceRoot (unit)', () => {
+  it('a source that already carries its own scheme or is absolute ignores the root', () => {
+    const map = '/p/dist';
+    const proj = '/p';
+    expect(sourcePath(map, 'webpack:///', 'src/x.ts', proj)).toBe('/p/src/x.ts');
+    expect(sourcePath(map, 'webpack:///', 'webpack://app/src/x.ts', proj)).toBe('/p/src/x.ts');
+    expect(sourcePath(map, 'webpack:///', 'file:///tmp/y.ts', proj)).toBe('/tmp/y.ts');
+    expect(sourcePath(map, 'webpack:///', '/abs/z.ts', proj)).toBe('/abs/z.ts');
+    expect(sourcePath(map, 'https://h/r', '/abs/z.ts', proj)).toBe('/abs/z.ts');
+    // a non-URL source with a single-colon scheme is not joined to the root either: it resolves from the map
+    expect(sourcePath(map, 'webpack:///', 'node:fs', proj)).toBe('/p/dist/webpack:/node:fs');
   });
 });
