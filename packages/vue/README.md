@@ -4,16 +4,16 @@ Vue 3 adapter for the Bugsee SDK: reports errors from Vue's error handler and na
 
 Part of the Bugsee JavaScript SDK (public beta, 0.1.0-beta.x).
 
-Install this package directly in Vue 3 apps, together with the `@bugsee/bugsee` umbrella that provides `launch()`.
+Install this package directly in Vue 3 apps, on its own: it depends on `@bugsee/bugsee` and re-exports it, so `launch()` and the adapter API come from this one package.
 
 ## Install
 
 ```sh
-npm install @bugsee/bugsee @bugsee/vue
+npm install @bugsee/vue
 # or
-pnpm add @bugsee/bugsee @bugsee/vue
+pnpm add @bugsee/vue
 # or
-yarn add @bugsee/bugsee @bugsee/vue
+yarn add @bugsee/vue
 ```
 
 Peer dependency: `vue` >= 3 (optional).
@@ -24,8 +24,7 @@ Launch Bugsee as early as possible, at the top of your entry module. In the brow
 
 ```ts
 // main.ts
-import { launch } from "@bugsee/bugsee";
-import { installBugseeErrorHandler } from "@bugsee/vue";
+import { launch, installBugseeErrorHandler } from "@bugsee/vue";
 import { createApp } from "vue";
 import App from "./App.vue";
 
@@ -71,7 +70,7 @@ app.mixin(createBugseeVueComponentMixin());
 - `replay`: session replay settings, or `false` to turn replay off.
 - `captureInteractions`: capture user interactions (default `true`).
 
-This package also re-exports everything from `@bugsee/bugsee`.
+This package installs `@bugsee/bugsee` for you and re-exports everything from it, so you do not install or import it separately.
 
 Nuxt users: use [`@bugsee/nuxt`](https://github.com/bugsee/bugsee-javascript/tree/main/packages/nuxt), which wires this adapter for you.
 

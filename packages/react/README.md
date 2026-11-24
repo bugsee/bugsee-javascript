@@ -4,16 +4,16 @@ React adapter for the Bugsee SDK: an error boundary, React 19 root error handler
 
 Part of the Bugsee JavaScript SDK (public beta, 0.1.0-beta.x).
 
-Install this package directly in React (and Preact) apps, together with the `@bugsee/bugsee` umbrella that provides `launch()`.
+Install this package directly in React (and Preact) apps, on its own: it depends on `@bugsee/bugsee` and re-exports it, so `launch()` and the adapter API come from this one package.
 
 ## Install
 
 ```sh
-npm install @bugsee/bugsee @bugsee/react
+npm install @bugsee/react
 # or
-pnpm add @bugsee/bugsee @bugsee/react
+pnpm add @bugsee/react
 # or
-yarn add @bugsee/bugsee @bugsee/react
+yarn add @bugsee/react
 ```
 
 Peer dependency: `react` >= 18.
@@ -24,7 +24,7 @@ Launch Bugsee as early as possible, at the top of your entry module. In the brow
 
 ```tsx
 // main.tsx
-import { launch } from "@bugsee/bugsee";
+import { launch } from "@bugsee/react";
 
 launch("YOUR_APP_TOKEN");
 ```
@@ -100,7 +100,7 @@ Preact (10+) works through this package via `preact/compat`. Alias `react` and `
 - `replay`: session replay settings, or `false` to turn replay off.
 - `captureInteractions`: capture user interactions.
 
-This package also re-exports everything from `@bugsee/bugsee`.
+This package installs `@bugsee/bugsee` for you and re-exports everything from it, so you do not install or import it separately.
 
 ## Links
 

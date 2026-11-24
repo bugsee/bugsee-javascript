@@ -4,16 +4,16 @@ SolidJS adapter for the Bugsee SDK: reports errors from Solid's error primitives
 
 Part of the Bugsee JavaScript SDK (public beta, 0.1.0-beta.x).
 
-Install this package directly in SolidJS apps, together with the `@bugsee/bugsee` umbrella that provides `launch()`.
+Install this package directly in SolidJS apps, on its own: it depends on `@bugsee/bugsee` and re-exports it, so `launch()` and the adapter API come from this one package.
 
 ## Install
 
 ```sh
-npm install @bugsee/bugsee @bugsee/solid
+npm install @bugsee/solid
 # or
-pnpm add @bugsee/bugsee @bugsee/solid
+pnpm add @bugsee/solid
 # or
-yarn add @bugsee/bugsee @bugsee/solid
+yarn add @bugsee/solid
 ```
 
 Peer dependencies: `solid-js` >= 1.6 and `@solidjs/router` >= 0.10 (both optional).
@@ -24,7 +24,7 @@ Launch Bugsee as early as possible, at the top of your entry module. In the brow
 
 ```tsx
 // index.tsx
-import { launch } from "@bugsee/bugsee";
+import { launch } from "@bugsee/solid";
 
 launch("YOUR_APP_TOKEN");
 ```
@@ -81,7 +81,7 @@ module.exports = {
 - `replay`: session replay settings, or `false` to turn replay off.
 - `captureInteractions`: capture user interactions (default `true`).
 
-This package also re-exports everything from `@bugsee/bugsee`.
+This package installs `@bugsee/bugsee` for you and re-exports everything from it, so you do not install or import it separately.
 
 ## Links
 
