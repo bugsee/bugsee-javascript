@@ -1829,6 +1829,93 @@ describe('catch-up edge cases (pointer search, failed restore of a pinned bundle
     }).catch(() => undefined);
     expect(errors.map(String).join('\n')).toContain('could not restore');
   });
+
+  it('failOnError: a pinned bundle inject changed that cannot be put back is a STRICT failure, even beside a keyed map', async (ctx) => {
+    if (await cannotBlockWrites()) {
+      ctx.skip();
+    }
+    const stamped = `w();\n//# sourceMappingURL=w.js.map\n${STAMP}`;
+    await writeFile(join(dir, 'w.js'), stamped);
+    await writeFile(join(dir, 'w.js.map'), plain);
+    await writeFile(join(dir, 'k.js.map'), JSON.stringify({ version: 3, debugId: ID }));
+    const calls: string[][] = [];
+    const run = vi.fn(async (args: string[]): Promise<SpawnResult> => {
+      calls.push(args);
+      if (args[1] === 'inject') {
+        await writeFile(join(dir, 'w.js'), `${stamped}//x\n`);
+        await writeFile(
+          join(dir, 'w.js.map'),
+          JSON.stringify({ ...JSON.parse(plain), debugId: ID }),
+        );
+        await chmod(dir, 0o555);
+      }
+      return { code: 0, stdout: '', stderr: '' };
+    });
+    const errors: unknown[] = [];
+    await expect(
+      uploadSourcemaps({
+        ...base,
+        outDir: dir,
+        run,
+        preStamped: true,
+        failOnError: true,
+        verifySri: async () => [],
+        onNotice: () => undefined,
+        ownFiles: ['w.js', 'w.js.map', 'k.js.map'],
+        findSri: async () => [
+          { html: join(dir, 'i.html'), script: join(dir, 'w.js'), integrity: 'sha384-X' },
+        ],
+        onError: (e) => errors.push(e),
+      }),
+    ).rejects.toThrow(/Subresource Integrity[\s\S]*could not restore/);
+    expect(calls.some((c) => c[0] === 'debug-files')).toBe(false);
+  });
+});
+
+describe('catch-up: a pinned bundle inject changed that IS restored stays a report, even under failOnError', () => {
+  let dir: string;
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'bugsee-catchup5-'));
+  });
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+  it('restores the pinned bytes and reports; does not throw', async () => {
+    const REG =
+      '!function(){try{var e=globalThis;e._bugseeDebugIds=e._bugseeDebugIds||{}}catch(e){}}();';
+    const plain = '{"version":3,"sources":["w.ts"],"names":[],"mappings":"AAAA"}';
+    const stamped = `w();\n//# sourceMappingURL=w.js.map\n\n;${REG}\n//# debugId=${ID}\n`;
+    await writeFile(join(dir, 'w.js'), stamped);
+    await writeFile(join(dir, 'w.js.map'), plain);
+    await writeFile(join(dir, 'k.js.map'), JSON.stringify({ version: 3, debugId: ID }));
+    const run = vi.fn(async (args: string[]): Promise<SpawnResult> => {
+      if (args[1] === 'inject') {
+        await writeFile(join(dir, 'w.js'), `${stamped}//x\n`);
+        await writeFile(
+          join(dir, 'w.js.map'),
+          JSON.stringify({ ...JSON.parse(plain), debugId: ID }),
+        );
+      }
+      return { code: 0, stdout: '', stderr: '' };
+    });
+    const errors: unknown[] = [];
+    await uploadSourcemaps({
+      ...base,
+      outDir: dir,
+      run,
+      preStamped: true,
+      failOnError: true,
+      verifySri: async () => [],
+      onNotice: () => undefined,
+      ownFiles: ['w.js', 'w.js.map', 'k.js.map'],
+      findSri: async () => [
+        { html: join(dir, 'i.html'), script: join(dir, 'w.js'), integrity: 'sha384-X' },
+      ],
+      onError: (e) => errors.push(e),
+    });
+    expect(await readFile(join(dir, 'w.js'), 'utf8')).toBe(stamped);
+    expect(errors.map(String).join('\n')).toContain('original bytes were restored');
+  });
 });
 
 describe('round-17 hardening: failed restore after a rejected inject, sibling outputs', () => {

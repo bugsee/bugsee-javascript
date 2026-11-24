@@ -524,6 +524,23 @@ describe('a changed map is held to an UNCHANGED stamped bundle', () => {
     expect(issues[0]).toMatchObject({ name: 'a.js.map' });
     expect(issues[0]?.reason).toContain(OTHER_ID);
   });
+  it('flags a changed map that LOST its id beside an unchanged stamped bundle (valid JSON, no debugId)', () => {
+    const code = buf(stampedCode(ID));
+    const issues = verifyStamp(
+      new Map([
+        ['a.js', code],
+        ['a.js.map', buf(stampedMap(ID))],
+      ]),
+      new Map([
+        ['a.js', code],
+        ['a.js.map', buf(mapJson())],
+      ]),
+    );
+    expect(issues).toHaveLength(1);
+    expect(issues[0]).toMatchObject({ name: 'a.js.map' });
+    expect(issues[0]?.reason).toMatch(/no debugId/);
+    expect(issues[0]?.reason).toContain(ID);
+  });
   it('accepts the map that matches it, and a map beside an unstamped bundle (JSON only)', () => {
     const code = buf(stampedCode(ID));
     expect(

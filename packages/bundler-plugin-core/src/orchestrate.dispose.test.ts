@@ -65,3 +65,51 @@ describe('catch-up: a failed spill removal does not mask a strict verification f
     expect(errors.map(String).join('\n')).toContain('EBUSY');
   });
 });
+
+describe('catch-up: a reporter that throws while reporting the removal failure cannot change the strict result', () => {
+  let dir: string;
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'bugsee-dispose2-'));
+    await writeFile(join(dir, 'w.js'), 'w();\n//# sourceMappingURL=w.js.map\n');
+    await writeFile(join(dir, 'w.js.map'), '{"version":3,"sources":[],"mappings":""}');
+    // a separate, already-keyed map that WOULD upload if the strict result were lost
+    await writeFile(join(dir, 'k.js.map'), JSON.stringify({ version: 3, debugId: 'k-id' }));
+  });
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+  const go = (calls: string[][], errors: unknown[]) =>
+    uploadSourcemaps({
+      outDir: dir,
+      appToken: 't',
+      appVersion: '1',
+      appBuild: '1',
+      run: async (args) => {
+        calls.push(args);
+        return { code: 0, stdout: '', stderr: '' };
+      },
+      preStamped: true,
+      verifySri: async () => [],
+      findSri: async () => [],
+      onNotice: () => undefined,
+      onError: (e) => {
+        errors.push(e);
+        if (
+          String(e).startsWith('Error: could not remove the temporary') ||
+          /^Error: EBUSY/.test(String(e))
+        ) {
+          throw new Error('reporter exploded');
+        }
+      },
+      failOnError: true,
+      ownFiles: ['w.js', 'w.js.map', 'k.js.map'],
+    });
+
+  it('failOnError: rejects with the ORIGINAL restore failure, and nothing is uploaded', async () => {
+    const calls: string[][] = [];
+    const errors: unknown[] = [];
+    await expect(go(calls, errors)).rejects.toThrow(/did not verify|could not be restored|EPERM/);
+    expect(errors.map(String).join('\n')).toContain('EBUSY');
+    expect(calls.some((c) => c[0] === 'debug-files')).toBe(false);
+  });
+});

@@ -9,7 +9,11 @@
 // `integrity` the page carries wrong), so stamping afterwards would ship a page whose scripts the browser
 // refuses to run. That build is left exactly as Next wrote it, and the notice says why.
 import { join, resolve } from 'node:path';
-import { type ResolvedPluginOptions, runPluginUpload } from '@bugsee/bundler-plugin-core';
+import {
+  type PluginRunResult,
+  type ResolvedPluginOptions,
+  runPluginUpload,
+} from '@bugsee/bundler-plugin-core';
 import { type BuildFiles, collectBuildFiles } from './build-files';
 import type { BugseeNextContext } from './context';
 import { isFile, SRI_MANIFEST, TURBOPACK_SRI_NOTICE } from './sri';
@@ -115,20 +119,21 @@ async function postBuild(
       dir: string,
       files: BuildFiles,
       options: Partial<ResolvedPluginOptions>,
-    ): Promise<void> => {
+    ): Promise<PluginRunResult | undefined> => {
       if (files.scripts.length === 0) {
-        return;
+        return undefined;
       }
-      await upload({ ...resolved, ...options }, dir, { bundler, files });
+      return upload({ ...resolved, ...options }, dir, { bundler, files });
     };
     // Browser first (it registers the build once); the server and edge output follows its own deletion policy.
-    await runFor(join(distDir, 'static'), client, {});
+    const browser = await runFor(join(distDir, 'static'), client, {});
     if (server !== undefined) {
       await runFor(join(distDir, 'server'), server, {
         deleteMaps: context.deleteServerMaps,
-        // The build is registered once. When the browser run had nothing to upload (the app turned browser maps off),
-        // the server run registers it instead, so the build record is not lost.
-        ...(client.scripts.length === 0 ? {} : { registerBuild: false }),
+        // The build is registered once. When the browser run did not register it (it had nothing to upload because
+        // the app turned browser maps off, or its registration failed without `failOnError`), the server run
+        // registers it instead, so the build record is not lost.
+        ...(browser?.build?.registered === true ? { registerBuild: false } : {}),
       });
     }
   } finally {
