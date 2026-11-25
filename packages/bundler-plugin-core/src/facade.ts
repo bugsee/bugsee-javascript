@@ -26,13 +26,7 @@ const literalString = (n: Node | undefined): boolean =>
 /** Rollup's interop helpers: `_interopDefault`, `_interopNamespaceDefault`, `_interopNamespace`, ... */
 const HELPER_NAME = /^_interop[A-Za-z]*$/;
 /** `Object.<name>(...)` calls a re-export block makes. */
-const OBJECT_CALLS = new Set([
-  'keys',
-  'defineProperty',
-  'getOwnPropertyDescriptor',
-  'create',
-  'freeze',
-]);
+const OBJECT_CALLS = /^(?:keys|defineProperty|getOwnPropertyDescriptor|create|freeze)$/;
 
 /** `Object.prototype.hasOwnProperty.call`, as Rollup's `export *` loop writes it. */
 function isHasOwnCall(callee: Node): boolean {
@@ -79,7 +73,7 @@ function pureCall(call: Node): boolean {
   if (
     name(node(callee, 'object')) === 'Object' &&
     property !== undefined &&
-    OBJECT_CALLS.has(property)
+    OBJECT_CALLS.test(property)
   ) {
     return args.every(pureExpression);
   }
