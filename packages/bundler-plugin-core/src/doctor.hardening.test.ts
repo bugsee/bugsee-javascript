@@ -2008,6 +2008,97 @@ exports.x = _interopDefault(x);
     expect(isFacadeCode('var x = 1;\nexports.x = x;')).toBe(false); // a value of its own
   });
 
+  it("isFacadeCode: Rollup's es2015 output (arrow getters, for-in, const arrow helper) is a facade", () => {
+    const es2015 = `'use strict';
+
+const _interopNamespaceDefault = (e) => {
+  const n = Object.create(null, { [Symbol.toStringTag]: { value: 'Module' } });
+  if (e) {
+    for (const k in e) {
+      if (k !== 'default') {
+        const d = Object.getOwnPropertyDescriptor(e, k);
+        Object.defineProperty(n, k, d.get ? d : {
+          enumerable: true,
+          get: () => e[k]
+        });
+      }
+    }
+  }
+  n.default = e;
+  return Object.freeze(n);
+};
+const _interopDefault = e => e && e.__esModule ? e : { default: e };
+
+const lodash = require('lodash');
+const dep3 = require('dep3');
+const util = require('./util.js');
+const lodash__namespace = /*#__PURE__*/_interopNamespaceDefault(lodash);
+
+exports.u = util.u;
+Object.keys(lodash).forEach((k) => {
+  if (k !== 'default' && !Object.prototype.hasOwnProperty.call(exports, k)) Object.defineProperty(exports, k, {
+    enumerable: true,
+    get: () => lodash[k]
+  });
+});
+Object.defineProperty(exports, 'named', {
+  enumerable: true,
+  get: () => dep3.named
+});
+exports.ns = lodash__namespace;
+exports.d = _interopDefault(dep3);
+`;
+    expect(isFacadeCode(es2015)).toBe(true);
+    expect(
+      isFacadeCode("Object.defineProperty(exports, 'a', { enumerable: true, get: () => x.a });"),
+    ).toBe(true);
+    expect(
+      isFacadeCode('const _interopDefault = e => e && e.__esModule ? e : { default: e };'),
+    ).toBe(true);
+    expect(isFacadeCode('const _interopDefault = function (e) { return e; };')).toBe(true);
+    // look-alikes that DO something
+    expect(isFacadeCode(es2015.replace('get: () => dep3.named', 'get: () => dep3.named()'))).toBe(
+      false,
+    );
+    expect(isFacadeCode(es2015.replace('get: () => lodash[k]', 'get: () => track(k)'))).toBe(false);
+    expect(
+      isFacadeCode(es2015.replace('for (const k in e) {', 'for (const k in track(e)) {')),
+    ).toBe(false);
+    expect(
+      isFacadeCode(es2015.replace("if (k !== 'default') {", "if (k !== 'default') { track(k);")),
+    ).toBe(false);
+    expect(
+      isFacadeCode(es2015.replace('const _interopDefault = e =>', 'const doThing = e =>')),
+    ).toBe(false);
+    expect(isFacadeCode('const _interopDefault = e => track(e);')).toBe(false);
+    expect(isFacadeCode('const _interopDefault = 1;')).toBe(false);
+    expect(isFacadeCode('const doThing = e => e;')).toBe(false);
+    expect(isFacadeCode('exports.a = () => 1;')).toBe(false); // an arrow that is not a getter
+    expect(
+      isFacadeCode("Object.defineProperty(exports, 'a', { enumerable: true, value: () => x });"),
+    ).toBe(false);
+    expect(isFacadeCode('for (const k in x) { exports[k] = x[k]; }')).toBe(false); // a loop at top level is code
+    expect(isFacadeCode('function _interopX(e) { for (var k in e) { k = 1; } return e; }')).toBe(
+      true,
+    );
+    expect(
+      isFacadeCode(
+        'function _interopX(e) { for (k in e) { Object.defineProperty(e, k, {}); } return e; }',
+      ),
+    ).toBe(true);
+    expect(isFacadeCode('function _interopX(e) { for (const [a, b] in e) { } return e; }')).toBe(
+      false,
+    );
+    expect(
+      isFacadeCode(
+        'function _interopX(e) { for (const k in e) { } for (const k of e) { } return e; }',
+      ),
+    ).toBe(false); // for-of
+    expect(isFacadeCode('function _interopX(e) { for (const k, j in e) { } return e; }')).toBe(
+      false,
+    ); // not valid, parse error
+  });
+
   it('isFacadeCode: shapes that look like a re-export but are not', () => {
     const loop = (inner: string, extra = ''): string =>
       `Object.keys(x).forEach(function (k) { ${inner} }${extra});`;

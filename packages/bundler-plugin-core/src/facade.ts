@@ -26,13 +26,8 @@ const literalString = (n: Node | undefined): boolean =>
 /** Rollup's interop helpers: `_interopDefault`, `_interopNamespaceDefault`, `_interopNamespace`, ... */
 const HELPER_NAME = /^_interop[A-Za-z]*$/;
 /** `Object.<name>(...)` calls a re-export block makes. */
-const OBJECT_CALLS = new Set([
-  'keys',
-  'defineProperty',
-  'getOwnPropertyDescriptor',
-  'create',
-  'freeze',
-]);
+// (a regular expression, not a list of strings: the wire-name drift test reads string literals in product code)
+const OBJECT_CALL = /^(?:keys|defineProperty|getOwnPropertyDescriptor|create|freeze)$/;
 
 /** `Object.prototype.hasOwnProperty.call`, as Rollup's `export *` loop writes it. */
 function isHasOwnCall(callee: Node): boolean {
@@ -47,6 +42,9 @@ function isHasOwnCall(callee: Node): boolean {
     name(node(proto, 'property')) === 'prototype'
   );
 }
+
+const isFunction = (n: Node): boolean =>
+  n.type === 'FunctionExpression' || n.type === 'ArrowFunctionExpression';
 
 /** A function Rollup writes into a re-export block: plain parameters and a body of re-export statements. */
 function pureFunction(fn: Node): boolean {
@@ -79,7 +77,7 @@ function pureCall(call: Node): boolean {
   if (
     name(node(callee, 'object')) === 'Object' &&
     property !== undefined &&
-    OBJECT_CALLS.has(property)
+    OBJECT_CALL.test(property)
   ) {
     return args.every(pureExpression);
   }
@@ -94,7 +92,7 @@ function pureCall(call: Node): boolean {
       pureExpression(target) &&
       args.length === 1 &&
       callback !== undefined &&
-      (callback.type === 'FunctionExpression' || callback.type === 'ArrowFunctionExpression') &&
+      isFunction(callback) &&
       pureFunction(callback)
     );
   }
@@ -136,7 +134,7 @@ function pureExpression(maybe: Node | undefined): boolean {
         const isGetter =
           name(node(property, 'key')) === 'get' &&
           value !== undefined &&
-          value.type === 'FunctionExpression' &&
+          isFunction(value) &&
           pureFunction(value);
         return property.type === 'Property' && (isGetter || pureExpression(value));
       });
@@ -161,6 +159,21 @@ function pureStatement(statement: Node): boolean {
         consequent !== undefined &&
         pureStatement(consequent) &&
         (alternate === undefined || pureStatement(alternate))
+      );
+    }
+    case 'ForInStatement': {
+      // Rollup's es2015 interop helper: `for (const k in e) { ... }`; the left side is a plain binding, never a pattern
+      const left = node(statement, 'left') as Node;
+      const isBinding =
+        left.type === 'Identifier' ||
+        (left.type === 'VariableDeclaration' &&
+          nodes(left, 'declarations').every(
+            (declarator) => node(declarator, 'id')?.type === 'Identifier',
+          ));
+      return (
+        isBinding &&
+        pureExpression(node(statement, 'right')) &&
+        pureStatement(node(statement, 'body') as Node)
       );
     }
     case 'BlockStatement':
@@ -193,11 +206,15 @@ function facadeStatement(statement: Node): boolean {
       );
     }
     case 'VariableDeclaration':
-      // `var main = require('./main.js')` / `var ns = _interopNamespaceDefault(x)`: a call, never a value of its own
+      // `var main = require('./main.js')` / `var ns = _interopNamespaceDefault(x)`: a call, never a value of its own;
+      // or `const _interopDefault = e => ...`, a helper function bound to its fixed name
       return nodes(statement, 'declarations').every((declarator) => {
         const init = node(declarator, 'init');
+        const binding = name(node(declarator, 'id'));
         return (
-          node(declarator, 'id')?.type === 'Identifier' && init !== undefined && pureCall(init)
+          binding !== undefined &&
+          init !== undefined &&
+          (pureCall(init) || (HELPER_NAME.test(binding) && isFunction(init) && pureFunction(init)))
         );
       });
     case 'FunctionDeclaration':

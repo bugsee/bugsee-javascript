@@ -22,6 +22,7 @@ import { type Plugin as VitePlugin, build as viteBuild } from 'vite';
 import { build as vite7Build } from 'vite7';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { type DoctorReport, diagnoseBuildOutput, doctorExitCode } from './doctor';
+import { isFacadeCode } from './facade';
 import { bugseeRollupPlugin, bugseeRspackPlugin, bugseeUnplugin } from './plugin';
 import { resolveBugseeCli, runBugseeCli } from './run-cli';
 
@@ -379,5 +380,79 @@ describeReal('doctor on real, problematic build output', () => {
     expect(idsOf(broken)).not.toContain('sri.unstamped-hazard');
     expect(readdirSync(plain.out).length).toBeGreaterThan(0);
     expect(readFileSync(join(plain.out, 'index.html'), 'utf8')).toContain('integrity=');
+  });
+});
+
+// A barrel that re-exports dependencies is a FACADE chunk: Rollup writes `sources: []` and an empty `mappings` for it,
+// and for CommonJS it writes the `export *` loop and the interop helpers in ES5 or (with generatedCode: 'es2015', which
+// Vite 7 library mode uses) arrow form. The doctor must read every one of them as a facade, from the real emitted text.
+describe('facade chunks in real Rollup / Vite output', () => {
+  const sources = (dir: string): void => {
+    mkdirSync(join(dir, 'src'), { recursive: true });
+    writeFileSync(
+      join(dir, 'src', 'index.js'),
+      "export * from 'ext-a';\nexport * as ns from 'ext-b';\nexport { named } from 'ext-c';\nexport { default as dflt } from 'ext-d';\nexport { u } from './util.js';\n",
+    );
+    writeFileSync(
+      join(dir, 'src', 'util.js'),
+      'export const u = () => { throw new Error("u"); };\n',
+    );
+  };
+  const externals = ['ext-a', 'ext-b', 'ext-c', 'ext-d'];
+
+  const check = async (out: string, indexFiles: string[]): Promise<void> => {
+    const report = await diagnoseBuildOutput(out, { skipEnv: true, projectRoot: dirname(out) });
+    for (const file of indexFiles) {
+      const code = readFileSync(join(out, file), 'utf8');
+      expect(isFacadeCode(code), `${file}:\n${code}`).toBe(true);
+      const note = report.findings.find(
+        (f) => f.id === 'map.no-sources' && f.file === `${file}.map`,
+      );
+      expect(note?.severity, `${file}.map`).toBe('info');
+    }
+    // the chunk with real code keeps a real map, and nothing here is an error about maps or sources
+    expect(
+      report.findings.filter((f) => f.id === 'map.no-sources' && f.severity === 'error'),
+    ).toEqual([]);
+  };
+
+  for (const generatedCode of ['es5', 'es2015'] as const) {
+    for (const format of ['es', 'cjs'] as const) {
+      it(`Rollup ${format} with generatedCode ${generatedCode}`, async () => {
+        const dir = join(root, `facade-rollup-${format}-${generatedCode}`);
+        sources(dir);
+        const bundle = await rollup({
+          input: { index: join(dir, 'src', 'index.js'), util: join(dir, 'src', 'util.js') },
+          external: externals,
+        });
+        const out = join(dir, 'dist');
+        await bundle.write({ dir: out, format, sourcemap: true, generatedCode, interop: 'auto' });
+        await bundle.close();
+        await check(out, ['index.js']);
+      });
+    }
+  }
+
+  it('Vite 7 library mode (es + cjs, es2015 output) with a re-export barrel', async () => {
+    const dir = join(root, 'facade-vite7');
+    sources(dir);
+    await vite7Build({
+      root: dir,
+      configFile: false,
+      logLevel: 'silent',
+      build: {
+        lib: {
+          entry: { index: join(dir, 'src', 'index.js'), util: join(dir, 'src', 'util.js') },
+          formats: ['es', 'cjs'],
+        },
+        sourcemap: true,
+        minify: false,
+        outDir: join(dir, 'dist'),
+        rollupOptions: { external: externals },
+      },
+    });
+    const files = readdirSync(join(dir, 'dist')).filter((f) => /^index\.(m?js|cjs)$/.test(f));
+    expect(files.length).toBe(2);
+    await check(join(dir, 'dist'), files);
   });
 });
