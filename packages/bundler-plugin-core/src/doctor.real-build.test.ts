@@ -216,7 +216,17 @@ describeReal('doctor on real, stamped build output', () => {
         output: { path: app.out },
         plugins: [bugseeRspackPlugin(pluginOptions())],
       });
-      compiler.run((err) => compiler.close(() => (err ? reject(err) : resolve())));
+      compiler.run((err, stats) =>
+        compiler.close(() => {
+          if (err) {
+            reject(err);
+          } else if (stats?.hasErrors()) {
+            reject(new Error(stats.toString({ preset: 'errors-warnings' })));
+          } else {
+            resolve();
+          }
+        }),
+      );
     });
     expectHealthyStamped(await doctor(app.out));
   });
@@ -250,7 +260,17 @@ describeReal('doctor on hidden maps the bundler wrote to another path', () => {
         output: { path: app.out, sourceMapFilename: 'maps/[file].map' },
         plugins: stamped ? [bugseeRspackPlugin(pluginOptions())] : [],
       });
-      compiler.run((err) => compiler.close(() => (err ? reject(err) : resolve())));
+      compiler.run((err, stats) =>
+        compiler.close(() => {
+          if (err) {
+            reject(err);
+          } else if (stats?.hasErrors()) {
+            reject(new Error(stats.toString({ preset: 'errors-warnings' })));
+          } else {
+            resolve();
+          }
+        }),
+      );
     });
     return app;
   };
@@ -270,12 +290,10 @@ describeReal('doctor on hidden maps the bundler wrote to another path', () => {
   };
   const mapsOf = (out: string): string[] =>
     readdirSync(join(out, 'maps')).map((file) => join(out, 'maps', file));
-  const breakIds = (out: string): void => {
-    for (const map of mapsOf(out)) {
-      const json = JSON.parse(readFileSync(map, 'utf8')) as { debugId?: string };
-      json.debugId = '00000000-0000-4000-8000-000000000000';
-      writeFileSync(map, JSON.stringify(json));
-    }
+  const breakOne = (map: string): void => {
+    const json = JSON.parse(readFileSync(map, 'utf8')) as { debugId?: string };
+    json.debugId = '00000000-0000-4000-8000-000000000000';
+    writeFileSync(map, JSON.stringify(json));
   };
 
   for (const [label, build] of [
@@ -289,12 +307,24 @@ describeReal('doctor on hidden maps the bundler wrote to another path', () => {
       expect(report.passed).toEqual(expect.arrayContaining(['stamp.map-id-mismatch']));
     });
 
-    it(`${label}: a map whose debugId differs from its bundle's is an error`, async () => {
+    it(`${label}: each map whose debugId differs from its bundle's is an error naming that map`, async () => {
       const app = await build(`moved-bad-${label.slice(0, 3)}`, true);
-      breakIds(app.out);
-      const report = await doctor(app.out);
-      expect(idsOf(report, 'error')).toContain('stamp.map-id-mismatch');
-      expect(doctorExitCode(report, true)).toBe(2);
+      const maps = mapsOf(app.out);
+      expect(maps.length).toBeGreaterThanOrEqual(2); // the entry and the lazy chunk
+      for (const map of maps) {
+        const original = readFileSync(map, 'utf8');
+        breakOne(map);
+        try {
+          const report = await doctor(app.out);
+          const named = report.findings
+            .filter((f) => f.id === 'stamp.map-id-mismatch')
+            .map((f) => f.file);
+          expect(named).toEqual([`maps/${map.split('/').pop()}`]);
+          expect(doctorExitCode(report, true)).toBe(2);
+        } finally {
+          writeFileSync(map, original);
+        }
+      }
     });
 
     it(`${label}: an unstamped build is an error, not a "no map on disk" warning`, async () => {
@@ -304,6 +334,42 @@ describeReal('doctor on hidden maps the bundler wrote to another path', () => {
       expect(report.findings.some((f) => f.message.includes('no map on disk'))).toBe(false);
     });
   }
+});
+
+describeReal('doctor on a two-output Rollup build with sourcemapFileNames', () => {
+  it('every stale map beside its bundle is a mismatch (cjs/maps and esm/maps)', async () => {
+    const app = makeApp('rollup-two-outputs');
+    const bundle = await rollup({
+      input: join(app.dir, 'index.js'),
+      plugins: [bugseeRollupPlugin(pluginOptions())],
+    });
+    for (const [format, sub] of [
+      ['cjs', 'cjs'],
+      ['es', 'esm'],
+    ] as const) {
+      await bundle.write({
+        dir: join(app.out, sub),
+        format,
+        sourcemap: 'hidden',
+        sourcemapFileNames: 'maps/[name].map',
+      });
+    }
+    await bundle.close();
+    expect(idsOf(await doctor(app.out), 'error')).toEqual([]);
+    const maps = ['cjs', 'esm'].flatMap((sub) =>
+      readdirSync(join(app.out, sub, 'maps')).map((file) => join(app.out, sub, 'maps', file)),
+    );
+    for (const map of maps) {
+      const json = JSON.parse(readFileSync(map, 'utf8')) as { debugId?: string };
+      json.debugId = '00000000-0000-4000-8000-000000000000';
+      writeFileSync(map, JSON.stringify(json));
+    }
+    const report = await doctor(app.out);
+    expect(report.findings.filter((f) => f.id === 'stamp.map-id-mismatch')).toHaveLength(
+      maps.length,
+    );
+    expect(idsOf(report)).not.toContain('map.ambiguous');
+  });
 });
 
 describeReal('doctor on Vite worker builds (stamped by the upload catch-up)', () => {

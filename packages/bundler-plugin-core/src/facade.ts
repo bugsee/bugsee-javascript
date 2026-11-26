@@ -118,7 +118,11 @@ function pureFunction(fn: Node): boolean {
     return false;
   }
   const body = node(fn, 'body') as Node; // a function always has a body
-  scopes.push(new Set(params.map((param) => param.name as string)));
+  // a function EXPRESSION's own name is bound inside it (`(function n(e){ return n(e) })` calls itself, not an outer `n`)
+  const own = fn.type === 'FunctionExpression' ? name(node(fn, 'id')) : undefined;
+  scopes.push(
+    new Set([...params.map((param) => param.name as string), ...(own === undefined ? [] : [own])]),
+  );
   try {
     return body.type === 'BlockStatement'
       ? nodes(body, 'body').every(pureStatement)
@@ -928,19 +932,23 @@ function isSystemFacade(statement: Node): boolean {
   }
   // everything before the `return` is a directive or a variable of a pure value (`var _starExcludes = {...}`) that
   // does not shadow the callback
-  const prelude = statements
-    .slice(0, -1)
-    .every(
-      (item) =>
-        (item.type === 'ExpressionStatement' && item.directive !== undefined) ||
-        (item.type === 'VariableDeclaration' &&
-          !(callback !== undefined && declared(item).includes(callback)) &&
-          nodes(item, 'declarations').every(
-            (declarator) =>
-              node(declarator, 'id')?.type === 'Identifier' &&
-              pureExpression(node(declarator, 'init')),
-          )),
-    );
+  // (judged inside the factory's own scope: its parameters and these variables shadow any outer helper)
+  const factoryParams = nodes(factory as Node, 'params').map((param) => name(param) as string);
+  const prelude = withHelperScope(statements.slice(0, -1), factoryParams, () =>
+    statements
+      .slice(0, -1)
+      .every(
+        (item) =>
+          (item.type === 'ExpressionStatement' && item.directive !== undefined) ||
+          (item.type === 'VariableDeclaration' &&
+            !(callback !== undefined && declared(item).includes(callback)) &&
+            nodes(item, 'declarations').every(
+              (declarator) =>
+                node(declarator, 'id')?.type === 'Identifier' &&
+                pureExpression(node(declarator, 'init')),
+            )),
+      ),
+  );
   const result = node(last, 'argument');
   if (!prelude || result?.type !== 'ObjectExpression') {
     return false;
@@ -960,7 +968,7 @@ function isSystemFacade(statement: Node): boolean {
     // the factory's parameters and prelude variables shadow any outer helper of the same name
     return withHelperScope(
       statements.slice(0, -1),
-      nodes(factory as Node, 'params').map((param) => name(param) as string),
+      factoryParams,
       () =>
         nodes(execute as Node, 'params').length === 0 &&
         executeBody.type === 'BlockStatement' &&
