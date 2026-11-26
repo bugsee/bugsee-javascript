@@ -130,7 +130,9 @@ function importMapPins(markup: string): { integrity: string; url: string }[] {
   // which no tag mentions. The browser enforces it exactly like a tag's attribute. Linear: tags come from `findTags`,
   // and each body is the text up to the next `</script`, searched from where the tag ended.
   const pins: { integrity: string; url: string }[] = [];
-  const lower = markup.toLowerCase();
+  // Closing tags are searched case-insensitively IN `markup` (lower-casing a copy can change its length: İ), from
+  // where the opening tag ended.
+  const closing = /<\/script/gi;
   let cursor = 0;
   for (const tag of findTags(markup, 'script')) {
     const at = markup.indexOf(tag, cursor);
@@ -138,7 +140,8 @@ function importMapPins(markup: string): { integrity: string; url: string }[] {
     if (!/\stype\s*=\s*("|')?importmap\1?/i.test(tag)) {
       continue;
     }
-    const end = lower.indexOf('</script', cursor);
+    closing.lastIndex = cursor;
+    const end = closing.exec(markup)?.index ?? -1;
     let table: unknown;
     try {
       table = (
@@ -174,6 +177,21 @@ const isUnder = (root: string, dir: string): boolean => {
   const rel = relative(root, dir);
   return rel === '' || (!rel.startsWith(`..${sep}`) && rel !== '..' && !isAbsolute(rel));
 };
+
+/**
+ * `start` and each of its parents up to `root`, nearest first, each once. Stops at a filesystem root (whose parent is
+ * itself), so a scan rooted at `/` ends. Empty when `start` is not under `root`.
+ */
+export function ancestorDirs(root: string, start: string): string[] {
+  const dirs: string[] = [];
+  for (let d = start; isUnder(root, d); d = dirname(d)) {
+    dirs.push(d);
+    if (dirname(d) === d) {
+      break;
+    }
+  }
+  return dirs;
+}
 
 /** Files under `dir` whose NAME matches `wanted`: for the re-seal, which rewrites real files only (no symlinks followed). */
 const walkFiles = async (dir: string, wanted: RegExp, depth = 0): Promise<string[]> => {
@@ -394,7 +412,7 @@ export async function findSriProtectedScriptsDetailed(
         // A root-relative src is served from the directory the page was built into, which is not the scanned
         // root when that root is an SSR output (browser/ beside server/): look from the page's own directory up.
         const bare = (url.split(/[?#]/)[0] ?? '').trim();
-        for (let d = htmlDir; isUnder(outDir, d); d = dirname(d)) {
+        for (const d of ancestorDirs(outDir, htmlDir)) {
           if (await fileExists(join(d, bare))) {
             script = join(d, bare);
             break;
@@ -582,6 +600,20 @@ export async function resealIntegrity(
         const entry = new RegExp(`(${escapeRegExp(JSON.stringify(url))}\\s*:\\s*")${recorded}(")`);
         after = after.replace(entry, `$1${actual}$2`);
       }
+    }
+    // A key written with a JSON escape ("/main\u002ejs") is the same key but not the same text: any entry the text
+    // swap did not reach is set on the parsed table and the manifest written back with its own indent.
+    const parsed = JSON.parse(after) as { hashTable: Record<string, string> };
+    const missed = manifest.entries.filter(
+      (e) =>
+        e.actual !== undefined && e.actual !== e.recorded && parsed.hashTable[e.url] !== e.actual,
+    );
+    if (missed.length > 0) {
+      for (const { url, actual } of missed) {
+        parsed.hashTable[url] = actual as string;
+      }
+      const indent = /^([ \t]+)"/m.exec(text)?.[1] ?? 2;
+      after = `${JSON.stringify(parsed, null, indent)}${text.endsWith('\n') ? '\n' : ''}`;
     }
     if (after !== text) {
       await writeFile(manifest.path, after, 'utf8');

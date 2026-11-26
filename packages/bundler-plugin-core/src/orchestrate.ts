@@ -592,7 +592,10 @@ export async function uploadSourcemaps(
       // under --base-href/--deploy-url) is then still caught by the CLI.
       const allowSriFlag = resealing && (pinned.length > 0 || needsReseal) ? ['--allow-sri'] : [];
       const digests = needsReseal
-        ? await (options.snapshotDigests ?? snapshotScriptDigests)([outDir])
+        ? // The output directory AND the other re-seal directories: a re-sealed server module is itself pinned.
+          await (options.snapshotDigests ?? snapshotScriptDigests)([
+            ...new Set([outDir, ...sealDirs]),
+          ])
         : undefined;
       const verifyDirs = options.verifyDirs ?? [outDir];
       const verify = options.verifySri ?? findIntegrityMismatches;
@@ -1008,15 +1011,18 @@ export async function uploadSourcemaps(
   } finally {
     // Cleanup must never fail a build whose upload already succeeded, nor mask the error being reported:
     // removing the spill directory can fail (EPERM/EBUSY under antivirus on Windows). Said, not thrown.
-    try {
-      await original?.dispose();
-      await sealOriginal?.dispose();
-    } catch (error) {
-      onError(
-        new Error(
-          `could not remove the temporary spill directory of the originals: ${String(error)}`,
-        ),
-      );
+    // Both spills are attempted whatever happens to the first: one failed removal must not leave a second copy of
+    // every bundle and map behind.
+    for (const spill of [original, sealOriginal]) {
+      try {
+        await spill?.dispose();
+      } catch (error) {
+        onError(
+          new Error(
+            `could not remove the temporary spill directory of the originals: ${String(error)}`,
+          ),
+        );
+      }
     }
   }
 }

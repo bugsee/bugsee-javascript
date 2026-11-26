@@ -20,6 +20,7 @@ import {
   mergeBuildPluginEnv,
   type PluginRunResult,
   type ResolvedPluginOptions,
+  resolveIdentity,
   resolvePluginOptions,
   runPluginUpload,
 } from '@bugsee/bundler-plugin-core';
@@ -121,10 +122,13 @@ export async function uploadAngularSourcemaps(
     say(file.problem);
   }
   const env = mergeBuildPluginEnv(options.env ?? (process.env as EnvRecord), file.values);
-  const resolved = resolvePluginOptions(
-    { ...options, projectRoot: options.projectRoot ?? cwd },
-    env,
-  );
+  const projectOptions = { ...options, projectRoot: options.projectRoot ?? cwd };
+  // The identity (app version / build) is read from the upload's own directory: `resolvePluginOptions` looks from the
+  // process working directory, which is another application's when `cwd` is given.
+  const resolved = {
+    ...resolvePluginOptions(projectOptions, env),
+    ...resolveIdentity(projectOptions, env, cwd),
+  };
 
   if (!resolved.enabled) {
     // Before the output is looked up: a build with no token (a contributor's PR, no secrets) is a no-op, and must
@@ -172,6 +176,15 @@ export async function uploadAngularSourcemaps(
   };
   if (options.dist !== undefined) {
     outDir = resolve(cwd, options.dist);
+    if (looksLikeAngularServer(join(outDir, 'server'))) {
+      // The directory holds an Angular server output: stamping it would stamp the server as browser code.
+      return misconfigured(
+        `${outDir} holds an Angular server output (server/), so it is not a browser output: stamping it would stamp the ` +
+          `server too. Give the browser directory itself.`,
+        outDir,
+        options.configuration,
+      );
+    }
     probeServerRoot();
   } else if (options.outputPath !== undefined) {
     // `ng build --output-path <base>`: the base of an application build (browser/ and server/ below it), or a
@@ -255,7 +268,12 @@ export async function uploadAngularSourcemaps(
     }
     say(unsafeNotice);
   }
-  const isProduction = !(configuration?.split(',').includes('development') ?? false);
+  const isProduction = !(
+    configuration
+      ?.split(',')
+      .map((name) => name.trim())
+      .includes('development') ?? false
+  );
   if (!isProduction && !resolved.uploadInDevelopment) {
     say(
       'development configuration: nothing was uploaded, and any source maps on disk were left in place. Set ' +

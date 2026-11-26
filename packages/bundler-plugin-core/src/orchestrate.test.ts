@@ -929,6 +929,16 @@ describe('uploadSourcemaps with resealSri', () => {
     expect(reseal).toHaveBeenCalledWith(digests, ['/build/dist']);
   });
 
+  it('snapshots the digests of the output directory AND the other re-seal directories (a re-sealed server module is itself pinned)', async () => {
+    const { run } = fakeRun();
+    const snapshotDigests = vi.fn(async (_dirs: readonly string[]) => digests);
+    await uploadSourcemaps({
+      ...sealed({ snapshotDigests, resealDirs: ['/build/dist', '/build/server'] }),
+      run,
+    });
+    expect(snapshotDigests).toHaveBeenCalledWith(['/build/dist', '/build/server']);
+  });
+
   it('re-seals over resealDirs when given (the SSR server modules that embed the page)', async () => {
     const { run } = fakeRun();
     const reseal = vi.fn(async () => ({ files: [] }));

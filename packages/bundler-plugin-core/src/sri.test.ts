@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
+  ancestorDirs,
   findIntegrityMismatches,
   findSriProtectedScripts,
   resealIntegrity,
@@ -344,6 +345,39 @@ describe('findSriProtectedScripts', () => {
     expect((await findSriProtectedScripts(dir)).map((f) => f.script)).toEqual([
       join(dir, 'main.js'),
     ]);
+  });
+
+  it('reads an import map that follows a character whose lower-case form is longer (İ)', async () => {
+    const dir = await fixture();
+    await write(dir, 'a.js', 'a');
+    await write(
+      dir,
+      'index.html',
+      '<p>İİİ</p><script type="importmap">{"integrity":{"./a.js":"sha384-A"}}</script>',
+    );
+    expect((await findSriProtectedScripts(dir)).map((p) => p.script)).toEqual([join(dir, 'a.js')]);
+  });
+
+  it("takes the closing tag that follows the import map, not an earlier script's", async () => {
+    const dir = await fixture();
+    await write(dir, 'a.js', 'a');
+    await write(
+      dir,
+      'index.html',
+      '<script>var x = 1;</script><script type="importmap">{"integrity":{"./a.js":"sha384-A"}}</script>',
+    );
+    expect((await findSriProtectedScripts(dir)).map((p) => p.script)).toEqual([join(dir, 'a.js')]);
+  });
+
+  it('finds the closing </SCRIPT> of an import map whatever its case', async () => {
+    const dir = await fixture();
+    await write(dir, 'a.js', 'a');
+    await write(
+      dir,
+      'index.html',
+      '<SCRIPT type="importmap">{"integrity":{"./a.js":"sha384-A"}}</SCRIPT>',
+    );
+    expect((await findSriProtectedScripts(dir)).map((p) => p.script)).toEqual([join(dir, 'a.js')]);
   });
 
   it('resolves a root-relative src against the directory the page was built into when it is not at the scanned root', async () => {
@@ -784,5 +818,21 @@ describe('snapshotScriptDigests', () => {
       sha384: digest('sha384'),
       sha512: digest('sha512'),
     });
+  });
+});
+
+describe('ancestorDirs', () => {
+  it('lists the directories from the start up to the root, once each', () => {
+    expect(ancestorDirs('/a', '/a/b/c')).toEqual(['/a/b/c', '/a/b', '/a']);
+    expect(ancestorDirs('/a', '/a')).toEqual(['/a']);
+  });
+
+  it('stops at a filesystem root instead of looping (dirname of / is /)', () => {
+    expect(ancestorDirs('/', '/')).toEqual(['/']);
+    expect(ancestorDirs('/', '/x')).toEqual(['/x', '/']);
+  });
+
+  it('is empty when the start is not under the root', () => {
+    expect(ancestorDirs('/a', '/b/c')).toEqual([]);
   });
 });

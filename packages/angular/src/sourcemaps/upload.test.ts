@@ -116,8 +116,48 @@ describe('uploadAngularSourcemaps', () => {
     await uploadAngularSourcemaps(base({ cwd }), { runPluginUpload });
     const own = (runPluginUpload.mock.calls[0]?.[2] as { ownFiles?: string[] }).ownFiles?.sort();
     expect(own).toEqual(
-      ['assets/img/logo.png', 'index.html', 'main-ABC.js', 'main-ABC.js.map'].sort(),
+      [join('assets', 'img', 'logo.png'), 'index.html', 'main-ABC.js', 'main-ABC.js.map'].sort(),
     );
+  });
+
+  it("takes the fallback app version from the upload's own directory, not the process working directory", async () => {
+    await builtApp();
+    await write('package.json', JSON.stringify({ name: 'app', version: '7.8.9' }));
+    const runPluginUpload = ran();
+    await uploadAngularSourcemaps(
+      { cwd, vcs: false, appToken: 'tok', env: {} },
+      { runPluginUpload },
+    );
+    expect(runPluginUpload.mock.calls[0]?.[0]).toMatchObject({ appVersion: '7.8.9' });
+  });
+
+  it('a space around a configuration name does not hide the development configuration', async () => {
+    await builtApp();
+    const runPluginUpload = ran();
+    const out = await uploadAngularSourcemaps(
+      base({ cwd, configuration: 'production, development', onNotice: () => undefined }),
+      { runPluginUpload },
+    );
+    expect(out.status).toBe('skipped');
+    expect(runPluginUpload).not.toHaveBeenCalled();
+  });
+
+  it('--dist holding a server output inside it is refused: it would stamp the server', async () => {
+    await write('x/main.js', 'x();');
+    await write('x/server/server.mjs', '');
+    const runPluginUpload = ran();
+    const out = await uploadAngularSourcemaps(base({ cwd, dist: 'x', onNotice: () => undefined }), {
+      runPluginUpload,
+    });
+    expect(out.status).toBe('misconfigured');
+    expect(runPluginUpload).not.toHaveBeenCalled();
+  });
+
+  it("--dist with a hand-written server/ folder inside it (not Angular's) is left alone", async () => {
+    await write('x/main.js', 'x();');
+    await write('x/server/app.js', '');
+    const out = await uploadAngularSourcemaps(base({ cwd, dist: 'x' }), { runPluginUpload: ran() });
+    expect(out.status).toBe('uploaded');
   });
 
   it('re-seals across the whole output root when the build has a server, which embeds the page', async () => {

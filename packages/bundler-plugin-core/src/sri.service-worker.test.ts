@@ -124,6 +124,21 @@ describe('service worker manifests', () => {
     expect(await findStaleServiceWorkerEntries([root])).toEqual([]);
   });
 
+  it('reconciles an entry whose key is written with a JSON escape, keeping the rest of the file', async () => {
+    await write('main.js', 'a();');
+    const ngsw = await write(
+      'ngsw.json',
+      `{\n    "configVersion": 1,\n    "hashTable": {\n        "/main\\u002ejs": "${sha1('a();')}"\n    }\n}\n`,
+    );
+    await write('main.js', 'a2();');
+    await resealIntegrity(new Map(), [root]);
+    const text = await readFile(ngsw, 'utf8');
+    expect(JSON.parse(text).hashTable['/main.js']).toBe(sha1('a2();'));
+    expect(text).toContain('\n        "'); // the 4-space indent survived the rewrite
+    expect(text.endsWith('\n')).toBe(true);
+    expect(await findStaleServiceWorkerEntries([root])).toEqual([]);
+  });
+
   it('does it for the manifest of every locale', async () => {
     for (const locale of ['en-US', 'fr']) {
       await write(`${locale}/main.js`, `${locale}();`);
