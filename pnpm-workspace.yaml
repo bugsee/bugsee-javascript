@@ -21,3 +21,46 @@ allowBuilds:
   # workerd is the REAL Cloudflare Workers runtime, used by the miniflare e2e that proves Durable Object
   # tenant isolation. Its postinstall downloads the platform binary, so the build must run.
   workerd: true
+
+# Security floors for TRANSITIVE dev/test dependencies (Dependabot alerts). None of these reach a published
+# package's own dependencies, so they only change what this monorepo installs. Each stays within the major
+# its dependents ask for; drop an entry once the upstream dependent requires the patched version itself.
+overrides:
+  # GHSA-4x5r-pxfx-6jf8 (via @stryker-mutator/instrumenter ~7.29.0 and the babel plugins' auto-installed peer); drop when they resolve >=7.29.1.
+  '@babel/core@7': ^7.29.6
+  # GHSA-27r3-jxmh-p828 (via express 5 / @nestjs/platform-express); drop when express requires >=2.4.0.
+  body-parser@2: ^2.4.0
+  # GHSA-c83g-rgw3-j3cx, GHSA-73wf-gq98-2v4g (via @babel/helper-compilation-targets); drop when it requires >=4.28.7.
+  browserslist@4: ^4.28.7
+  # GHSA-q2hr-2g5m-vwhr et al. (via minimatch 10, @stryker-mutator/core); drop when minimatch requires >=5.0.12.
+  brace-expansion@5: ^5.0.12
+  # GHSA-j22f-vq7h-c4qm et al. (via svelte 5); drop when svelte requires >=5.9.3.
+  devalue@5: ^5.9.3
+  # GHSA-qw65-cvwx-89v3 et al. (via ajv 8); drop when ajv requires >=3.1.9.
+  fast-uri@3: ^3.1.9
+  # GHSA-w74x-v6f9-j3xg et al. (via fastify / fast-json-stringify); drop when they require >=4.2.3.
+  fast-uri@4: ^4.2.3
+  # GHSA-2883-xcg3-v3hh et al. (via @changesets/parse, read-yaml-file); drop when they require >=3.15.2.
+  js-yaml@3: ^3.15.2
+  # GHSA-2883-xcg3-v3hh et al. (via @changesets/*); drop when they require >=4.3.2.
+  js-yaml@4: ^4.3.2
+  # GHSA-28wg-ghj8-5hjv (via @size-limit/esbuild); drop when it requires >=5.1.16.
+  nanoid@5: ^5.1.16
+  # GHSA-86w9-cpqp-85rv et al. (via listhen); drop when listhen requires >=1.4.3.
+  node-forge@1: ^1.4.3
+  # GHSA-6g55-p6wh-862q et al. (next 15 pins postcss 8.4.31 exactly); drop when next 15 ships >=8.5.23.
+  next>postcss: ^8.5.23
+  # GHSA-rj75-hqrm-r3gf (via cssnano plugins); drop when they require >=7.1.6.
+  postcss-selector-parser@7: ^7.1.6
+  # GHSA-6pq8-jhm2-2vcw et al. (via express, typed-rest-client); drop when they require >=6.16.1.
+  qs@6: ^6.16.1
+  # GHSA-wq5f-xc86-pv6w, GHSA-rgj7-g3m4-5g8c (miniflare pins sharp 0.35.2); drop when miniflare ships >=0.35.5.
+  sharp@0.35: ^0.35.5
+  # GHSA-68fv-2mgg-jv7q (via magicast, @vitest/coverage-v8); drop when magicast requires >=1.2.2.
+  source-map-js@1: ^1.2.2
+  # GHSA-w27v-7q3p-w38r et al. (via postcss-svgo / cssnano); drop when postcss-svgo requires >=4.1.0.
+  svgo@4: ^4.1.0
+  # GHSA-xjj6-f33q-929c et al. (miniflare pins undici 7.28.0); drop when miniflare ships >=7.30.1.
+  undici@7: ^7.30.1
+  # GHSA-mrhx-c7xc-m3w5 (via mutation-server-protocol, @stryker-mutator/core); drop when it requires >=4.6.6.
+  zod@4: ^4.6.6
