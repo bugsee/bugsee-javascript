@@ -616,10 +616,9 @@ function umdTarget(n: Node | undefined, state: UmdState): boolean {
 function umdNoConflict(call: Node, state: UmdState): boolean {
   const fn = node(call, 'callee');
   if (
-    fn === undefined ||
     !isFunction(fn) ||
     nodes(call, 'arguments').length > 0 ||
-    nodes(fn, 'params').length > 0
+    nodes(fn as Node, 'params').length > 0
   ) {
     return false;
   }
@@ -628,10 +627,10 @@ function umdNoConflict(call: Node, state: UmdState): boolean {
     n?.type === 'Identifier' && locals.has(n.name as string);
   const restorer = (n: Node | undefined): boolean => {
     // `function () { global.Lib = current; return exports; }`; minified: `() => (global.Lib = current, exports)`
-    if (n === undefined || !isFunction(n) || nodes(n, 'params').length > 0) {
+    if (!isFunction(n) || nodes(n as Node, 'params').length > 0) {
       return false;
     }
-    const body = node(n, 'body') as Node;
+    const body = node(n as Node, 'body') as Node;
     const parts = (e: Node | undefined): Node[] =>
       e?.type === 'SequenceExpression' ? nodes(e, 'expressions') : e ? [e] : [];
     let flat: Node[];
@@ -658,6 +657,7 @@ function umdNoConflict(call: Node, state: UmdState): boolean {
         .every(
           (part) =>
             part.type === 'AssignmentExpression' &&
+            part.operator === '=' &&
             umdTarget(node(part, 'left'), state) &&
             local(node(part, 'right')),
         )
@@ -678,7 +678,7 @@ function umdNoConflict(call: Node, state: UmdState): boolean {
       nodes(e, 'arguments').every((arg) => local(arg) || umdExpression(arg, state))
     );
   };
-  const body = node(fn, 'body') as Node;
+  const body = node(fn as Node, 'body') as Node;
   return nodes(body, 'body').every((st) => {
     if (st.type === 'VariableDeclaration') {
       return nodes(st, 'declarations').every((declarator) => {

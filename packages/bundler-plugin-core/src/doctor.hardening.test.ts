@@ -3102,6 +3102,82 @@ exports.d = _interopDefault(dep3);
     ).toBe(false);
   });
 
+  it('isFacadeCode round 21b: near misses of the wrapper readers', () => {
+    // what a wrapper may return after its export writes: a reference chain
+    const ret = (value: string): string => `var Lib=function(e,t){return e.a=t.a,${value}}({},A);`;
+    expect(isFacadeCode(ret('t.b'))).toBe(true);
+    expect(isFacadeCode(ret('t.b.c'))).toBe(true);
+    expect(isFacadeCode(ret('t["b"]'))).toBe(true);
+    expect(isFacadeCode(ret('1'))).toBe(false);
+    expect(isFacadeCode(ret('track().x'))).toBe(false); // a member of a call result is not a reference chain
+    expect(isFacadeCode(ret('t[track()]'))).toBe(false);
+    expect(isFacadeCode(ret('t.b()'))).toBe(false);
+    expect(isFacadeCode(ret('"s"'))).toBe(false);
+    // `this` namespace statements and operators
+    expect(isFacadeCode('this.my += this.my || {};')).toBe(false);
+    expect(isFacadeCode('(function (exports) {})(this.Lib += this.Lib || {});')).toBe(false); // an IIFE argument
+    expect(isFacadeCode('(function (exports) {})(this.Lib = this.Lib || {});')).toBe(true);
+    expect(isFacadeCode('this.my ||= {};')).toBe(false);
+    expect(isFacadeCode('this.my = this.my || {};')).toBe(true);
+    expect(isFacadeCode('this.my;')).toBe(false);
+    expect(isFacadeCode('this.Lib += A;')).toBe(false);
+    expect(isFacadeCode('this.Lib = this.Lib || {};')).toBe(true);
+    expect(isFacadeCode('track(this.my || {});')).toBe(false);
+    // the UMD wrapper's own shape
+    const body = 'typeof exports === "object" ? factory(exports) : factory(global);';
+    const umd = (head: string, preamble = body, args = 'this, function (exports) {}'): string =>
+      `(function (${head}) { ${preamble} })(${args});`;
+    expect(isFacadeCode(umd('global, factory'))).toBe(true);
+    expect(isFacadeCode(umd('global, factory, extra'))).toBe(false);
+    expect(isFacadeCode(umd('global'))).toBe(false);
+    expect(isFacadeCode(umd('{ global }, factory'))).toBe(false);
+    expect(isFacadeCode(umd('global, { factory }'))).toBe(false);
+    expect(isFacadeCode(umd('global, factory', `${body} ${body}`))).toBe(false); // one statement
+    expect(isFacadeCode(umd('global, factory', ''))).toBe(false);
+    expect(isFacadeCode(umd('global, factory', 'var x = 1;'))).toBe(false);
+    // noConflict restorers
+    const nc = (restorer: string): string =>
+      `(function (global, factory) { typeof exports === 'object' ? factory(exports) : (global = globalThis, (function () { var current = global.Lib; var exports = global.Lib = {}; factory(exports); exports.noConflict = ${restorer}; })()); })(this, (function (exports) {}));`;
+    expect(isFacadeCode(nc('function () { global.Lib = current; return exports; }'))).toBe(true);
+    expect(
+      isFacadeCode(
+        nc('function () { global.Lib = current; global.Other = current; return exports; }'),
+      ),
+    ).toBe(true);
+    expect(isFacadeCode(nc('function () { global.Lib = current; track(); return exports; }'))).toBe(
+      false,
+    );
+    expect(
+      isFacadeCode(nc('function () { global.Lib = current; global.Other = 1; return exports; }')),
+    ).toBe(false);
+    expect(isFacadeCode(nc('function () { track(); global.Lib = current; return exports; }'))).toBe(
+      false,
+    );
+    expect(isFacadeCode(nc('function () { global.Lib += current; return exports; }'))).toBe(false);
+    expect(isFacadeCode(nc('function () { global.Lib = current; return track; }'))).toBe(false);
+    expect(isFacadeCode(nc('() => (global.Lib = current, exports)'))).toBe(true);
+    expect(isFacadeCode(nc('() => (global.Lib = current, track())'))).toBe(false);
+    expect(isFacadeCode(nc('() => (track(), exports)'))).toBe(false);
+    expect(isFacadeCode(nc('1'))).toBe(false);
+    expect(isFacadeCode(nc('function (x) { global.Lib = current; return exports; }'))).toBe(false);
+    expect(
+      isFacadeCode(
+        "(function (global, factory) { typeof exports === 'object' ? factory(exports) : (global = globalThis, (function () { var current = global.Lib; var exports = global.Lib = {}; factory(exports); exports.noConflict += function () { global.Lib = current; return exports; }; })()); })(this, (function (exports) {}));",
+      ),
+    ).toBe(false);
+    expect(
+      isFacadeCode(
+        "(function (global, factory) { typeof exports === 'object' ? factory(exports) : (global = globalThis, (function () { var current = global.Lib; var exports = global.Lib = {}; factory(exports); exports.noConflict; })()); })(this, (function (exports) {}));",
+      ),
+    ).toBe(false);
+    // System: an extra property, or the wrong ones
+    const sysProps = (props: string): string =>
+      `System.register([], (function (exports) { return { ${props} }; }));`;
+    expect(isFacadeCode(sysProps('setters: [], execute: (function () {})'))).toBe(true);
+    expect(isFacadeCode(sysProps('setters: [], execute: (function () {}), extra: 1'))).toBe(false);
+    expect(isFacadeCode(sysProps('setters: [], extra: 1'))).toBe(false);
+  });
+
   it('isFacadeCode round 21: a SystemJS export callback shadowed at any depth is not the callback', () => {
     const sys = (setter: string): string =>
       `System.register([], (function (exports) { return { setters: [${setter}], execute: (function () {}) }; }));`;
