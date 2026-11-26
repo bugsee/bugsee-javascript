@@ -227,58 +227,25 @@ function redactJsonPairs(body: string): string {
   );
 }
 
-/** An XML tag name, matched in place (sticky) right after a `<`. */
-const XML_TAG_NAME = /[A-Za-z_][\w.:-]*/y;
-
-/** What may follow a tag name and open its attribute list. Disjoint from the tag-name class. */
-const XML_ATTRIBUTES_START = /[\s/]/;
-
 /**
- * `<tag …>text` — the element-text pass: calls `replace(tag, attrs, text)` for every open tag and the
- * text after it up to the next `<`, and splices in what it returns. No backreference to the closing tag:
- * an open tag plus its text is enough to decide.
+ * `<tag …>text` — the element-text pass. No backreference to the closing tag: it matches an open tag, then
+ * the text up to the next `<`, which is enough to decide.
  *
- * It computes exactly what `body.replace(/<([A-Za-z_][\w.:-]*)((?:[\s/][^>]*)?)>([^<]*)/g, …)` did, in
- * one forward pass. The regex was quadratic (CodeQL js/polynomial-redos): from every `<` that opened an
- * attribute list it scanned `[^>]*` to end-of-string looking for a `>`, so `<A\t` repeated had each
- * of n opens rescan the rest. Here a missing `>` ends the whole scan — no later `<` could reach one either.
+ * The attribute group must START with whitespace or `/`, neither of which is in the tag-name class. That
+ * is load-bearing, not stylistic: with an attribute group that could also match name characters, the two
+ * quantifiers overlap and an unterminated tag (`<aaaa…` with no `>`) makes the name give back one
+ * character at a time, retrying the attributes to end-of-string each time (36 s on a 200 KB input).
  *
- * The attribute list must START with whitespace or `/`, neither of which is in the tag-name class, so a
- * tag name is never split two ways (an earlier overlapping version cost 36 s on 200 KB).
+ * The `|$` alternative is just as load-bearing. Without it a `<` that opens an attribute list with no `>`
+ * after it FAILS after scanning `[^>]*` to end-of-string, and the next `<` scans the same tail again, so
+ * `<A\t` repeated was quadratic (CodeQL js/polynomial-redos). With it, that scan ends in a match that
+ * consumes the rest of the body; its `text` group is undefined, and the caller hands such a match back
+ * unchanged, which is what the regex without `|$` produced for it (no match at all).
  *
- * Accepted limitation: the tag ends at the first `>`, even one inside a quoted attribute value, so
- * `<a b="x>y">` is read as ending early. That UNDER-matches — the pass may skip a redaction, never invent
- * one.
+ * Accepted limitation: `[^>]*` ends the tag at a `>` inside a quoted attribute value, so `<a b="x>y">`
+ * is read as ending early. That UNDER-matches — the pass may skip a redaction, never invent one.
  */
-export function replaceXmlElements(
-  body: string,
-  replace: (tag: string, attrs: string, text: string) => string,
-): string {
-  let out = '';
-  let copied = 0; // body[0, copied) is already in `out`
-  let lt = body.indexOf('<');
-  while (lt !== -1) {
-    XML_TAG_NAME.lastIndex = lt + 1;
-    const tag = XML_TAG_NAME.exec(body)?.[0];
-    const afterTag = lt + 1 + (tag?.length ?? 0);
-    const next = body.charAt(afterTag);
-    if (tag === undefined || (next !== '>' && !XML_ATTRIBUTES_START.test(next))) {
-      lt = body.indexOf('<', lt + 1); // not an open tag
-      continue;
-    }
-    const gt = next === '>' ? afterTag : body.indexOf('>', afterTag);
-    if (gt === -1) {
-      break;
-    }
-    const nextLt = body.indexOf('<', gt + 1);
-    const textEnd = nextLt === -1 ? body.length : nextLt;
-    out +=
-      body.slice(copied, lt) + replace(tag, body.slice(afterTag, gt), body.slice(gt + 1, textEnd));
-    copied = textEnd;
-    lt = nextLt;
-  }
-  return out + body.slice(copied);
-}
+export const XML_ELEMENT = /<([A-Za-z_][\w.:-]*)((?:[\s/][^>]*)?)(?:>([^<]*)|$)/g;
 
 /** ` attr="value"` / ` attr='value'` — the attribute pass. */
 const XML_ATTRIBUTE = /(\s)([A-Za-z_][\w.:-]*)(\s*=\s*)(?:"([^"]*)"|'([^']*)')/g;
@@ -322,7 +289,12 @@ function redactXml(body: string): string | undefined {
   // output instead would destroy every tag in the document.
   const marker = REDACTED.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   let changed = false;
-  const out = replaceXmlElements(body, (tag: string, attrs: string, text: string) => {
+  // `text` is undefined only for an unterminated tag at the end of the body (the `|$` arm of XML_ELEMENT),
+  // which is returned as it was.
+  const out = body.replace(XML_ELEMENT, (match, tag: string, attrs: string, text?: string) => {
+    if (text === undefined) {
+      return match;
+    }
     const scrubbed = attrs.replace(
       XML_ATTRIBUTE,
       // `_sq` is named but unread: which quote style to re-emit is decided by whether the DOUBLE-quoted

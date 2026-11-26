@@ -8,7 +8,17 @@ import {
   sanitizeParams,
 } from './index';
 import { expectLinearIn, LINEARITY_TEST_TIMEOUT_MS } from './linear-time.test-helper';
-import { replaceXmlElements } from './sanitize';
+import { XML_ELEMENT } from './sanitize';
+
+/** How `redactXml` drives XML_ELEMENT: a match with no `text` (an unterminated tail) is handed back unchanged. */
+const replaceXmlElements = (
+  body: string,
+  replace: (tag: string, attrs: string, text: string) => string,
+): string =>
+  body.replace(XML_ELEMENT, (match, tag: string, attrs: string, text?: string) =>
+    text === undefined ? match : replace(tag, attrs, text),
+  );
+
 import type { NetworkEvent } from './wire';
 
 // The linearity guard lives in `./linear-time.test-helper` — see its header for why it asserts a
@@ -588,10 +598,19 @@ describe('sanitizeBody — XML', () => {
       'pre###<1>w<d#<h i',
     );
     // `<1` and `<d<` are not opens; `<e` swallows `<f` as attribute text up to the first `>`, as
-    // `[^>]*` did; `<h i` never reaches a `>`, so nothing after it can match.
+    // `[^>]*` did; `<h i` never reaches a `>`, so it comes back unchanged.
     expect(seen).toEqual(['a| x="1"|t', 'b|/|u', 'c|\u00a0|v', 'e| <f|g']);
     expect(replaceXmlElements('', record)).toBe('');
     expect(replaceXmlElements('no markup', record)).toBe('no markup');
+  });
+
+  it('hands an unterminated trailing tag back unchanged, after redacting what came before it', () => {
+    expect(sanitizeBody('<r><token>hunter2</token><a b="1"', 'application/xml')).toBe(
+      '<r><token>&lt;redacted&gt;</token><a b="1"',
+    );
+    expect(sanitizeBody('<r><token>hunter2</token><password', 'application/xml')).toBe(
+      '<r><token>&lt;redacted&gt;</token><password',
+    );
   });
 
   it('does not read HTML prose as XML fields', () => {

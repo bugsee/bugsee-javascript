@@ -980,35 +980,23 @@ export function templatePathSegment(segment: string): string {
   return segment;
 }
 
-/** A leading `scheme://`. Anchored, and the scheme class excludes `:`, so it cannot backtrack. */
-const SCHEME = /^[a-z][a-z0-9+.-]*:\/\//i;
-
 /**
  * `scheme://host/path` with credentials, query and fragment removed and identifier segments templated.
  *
- * The authority is split off with `indexOf`, not a regex. The former `/^(scheme)(?:[^/]*@)?([^/]*)(.*)$/`
- * retried every authority/path boundary whenever its `(.*)$` tail could not match — a line break in the
- * path does that, since `.` does not cross one — so `a://` plus a long authority went quadratic (CodeQL
- * js/polynomial-redos). The same failure also dropped the whole URL into the bare-path branch, templating
- * the authority as a segment; a line break in the path no longer changes how the authority is read.
+ * The path group is `[\s\S]*`, which accepts ANY rest of the string. It was `(.*)$`, and `.` does not cross a
+ * line terminator: a line break in the path failed the match, the engine then retried every
+ * authority/path boundary, each rescanning the path — quadratic on `a://` plus a long authority (CodeQL
+ * js/polynomial-redos) — and the URL finally fell into the bare-path branch with its authority templated
+ * as a segment. Once the scheme matches, nothing after it can fail now, so there is no retrying; userinfo
+ * still runs to the LAST `@` before the first `/`, so a password containing `@` goes with it.
  */
 export function sanitizeDetectorUrl(raw: string): string {
   if (raw === '') {
     return '';
   }
   const noQuery = raw.split(/[?#]/)[0] ?? '';
-  const scheme = SCHEME.exec(noQuery);
-  if (scheme === null) {
-    return templatePath(noQuery);
-  }
-  const rest = noQuery.slice(scheme[0].length);
-  const slash = rest.indexOf('/');
-  const authority = slash === -1 ? rest : rest.slice(0, slash);
-  // Userinfo runs to the LAST `@` before the path, so a password containing `@` goes with it.
-  const host = authority.slice(authority.lastIndexOf('@') + 1);
-  return scheme[0] + host + (slash === -1 ? '' : templatePath(rest.slice(slash)));
-}
-
-function templatePath(path: string): string {
-  return path.split('/').map(templatePathSegment).join('/');
+  const authority = /^([a-z][a-z0-9+.-]*:\/\/)(?:[^/]*@)?([^/]*)([\s\S]*)$/i.exec(noQuery);
+  const prefix = authority === null ? '' : `${authority[1]}${authority[2]}`;
+  const path = authority === null ? noQuery : (authority[3] ?? '');
+  return prefix + path.split('/').map(templatePathSegment).join('/');
 }
