@@ -80,6 +80,9 @@ importers:
 
   dev-packages/otel3-compat:
     devDependencies:
+      '@bugsee/nextjs':
+        specifier: workspace:*
+        version: link:../../packages/nextjs
       '@bugsee/opentelemetry':
         specifier: workspace:*
         version: link:../../packages/opentelemetry
