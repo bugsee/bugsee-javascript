@@ -606,6 +606,13 @@ const internalTagged = (transport: HttpTransport): HttpTransport =>
 /** Export files older than this at launch are leftovers of a dead run (a live export is deleted within one upload). */
 const EXPORT_FILE_MAX_AGE_MS = 60 * 60 * 1000;
 
+/** The running entry script: Bun's `Bun.main`, else Node's `process.argv[1]`. */
+const runtimeEntryPoint = (): string | undefined => {
+  const main = (globalThis as unknown as { Bun?: { main?: unknown } }).Bun?.main;
+  const entry = typeof main === 'string' && main !== '' ? main : process.argv[1];
+  return typeof entry === 'string' && entry !== '' ? entry : undefined;
+};
+
 /** `process.cwd()` can throw when the working directory has been deleted out from under the process. */
 const safeCwd = (): string | undefined => {
   try {
@@ -677,9 +684,10 @@ function buildLaunch(appToken: string, options: BugseeLaunchOptions = {}): Launc
     [
       bundledAppIdentity,
       ...(options.appIdentitySource !== undefined ? [options.appIdentitySource] : []),
-      createNodeAppIdentitySource(
-        options.appRoot !== undefined ? { appRoot: options.appRoot } : {},
-      ),
+      createNodeAppIdentitySource({
+        ...(options.appRoot !== undefined ? { appRoot: options.appRoot } : {}),
+        entryPoint: runtimeEntryPoint,
+      }),
     ],
     warnToConsole,
     'Pass `appVersion` (and `appBuild`) to launch(), set BUGSEE_APP_VERSION (and BUGSEE_APP_BUILD), or give your package.json a version.',

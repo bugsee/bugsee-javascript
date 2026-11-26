@@ -171,6 +171,15 @@ export class MemoryProducer extends TraceProducerBase {
     this.#off = undefined;
   }
 
+  /**
+   * One live reading on demand, right before a report snapshot: a hidden tab throttles (or freezes) the tracker's polling
+   * timer, but `performance.memory` stays readable, so the report still ends with a real sample. No reading, no emit.
+   */
+  sampleNow(): void {
+    const cur = this.#tracker.currentHeap();
+    if (cur !== undefined) this.#publish(cur);
+  }
+
   #publish(m: HeapState): void {
     this.poll(() => {
       this.emit(TraceName.RAM_JS_HEAP_TOTAL, m.limit);

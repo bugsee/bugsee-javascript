@@ -158,6 +158,7 @@ export type {
   OperationDispatcher,
   OperationObserver,
   OptionsContainer,
+  SnapshotWindow,
   StoredEntry,
 } from './contracts';
 export { CaptureStoreToken } from './contracts';

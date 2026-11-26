@@ -139,8 +139,11 @@ describe.each(
       const env = collector.sessions[0]?.environment as {
         platform: { type: string; version: string };
         runtime: { type: string; version: string };
-        app: { uptime_s?: number };
+        app: { uptime_s?: number; version?: string; build?: string };
       };
+      // The identity the app supplied reaches the session envelope: never the 0.0.0 placeholder.
+      expect(env.app.version).toBe('1.2.3');
+      expect(env.app.version).not.toBe('0.0.0');
       // C14: process uptime at session start is a whole-second snapshot in environment.app (replaces the
       // retired per-second `process_uptime_s` trace); process.uptime() answers on real node and bun.
       expect(Number.isInteger(env.app.uptime_s)).toBe(true);

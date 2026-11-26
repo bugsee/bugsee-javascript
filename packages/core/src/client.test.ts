@@ -1,4 +1,4 @@
-import type { EnvironmentEnvelope, FileType } from '@bugsee/protocol';
+import { BugseeOption, type EnvironmentEnvelope, type FileType } from '@bugsee/protocol';
 import { createServiceContainer, defineService, serviceToken } from '@bugsee/service';
 import { strFromU8, unzipSync } from '@bugsee/util';
 import { describe, expect, it, vi } from 'vitest';
@@ -607,6 +607,132 @@ describe('createClient — streaming export', () => {
       msg: string;
     }>;
     expect(logs.map((l) => l.msg)).toEqual(['new']);
+  });
+
+  it('lets a started provider prepare the snapshot: it gets the recording window, writes land and returned entries ride along as extras', async () => {
+    const t = mutableClock(100_000);
+    const store = createMemoryCaptureStore({ maxRecordingTimeMs: 5000, clock: t.clock });
+    const { uploadPipeline, enqueue } = fakeUpload();
+    const client = createClient({
+      captureStore: store,
+      clock: t.clock,
+      maxRecordingTime: 5,
+      reportSnapshots: [
+        () => [new CaptureDataEntryBase('log', 106_000, { msg: 'snapshot-source' })],
+      ],
+      uploadPipeline,
+      appToken: 'tok',
+      getEnvironment,
+    });
+    const windows: unknown[] = [];
+    client.addCaptureProvider({
+      name: 'seeder',
+      init: () => {},
+      start: () => {},
+      stop: () => {},
+      prepareSnapshot: (w) => {
+        windows.push(w);
+        client.captureAggregator.addEntry(
+          new CaptureDataEntryBase('log', w.end, { msg: 'written' }),
+        );
+        return [new CaptureDataEntryBase('log', w.start, { msg: 'returned' })];
+      },
+    });
+    client.launch();
+    t.set(106_000);
+    await client.logException(new Error('x'));
+    expect(windows).toEqual([{ start: 101_000, end: 106_000 }]);
+    const bundle = enqueue.mock.calls[0]?.[0] as Bundle;
+    const logs = JSON.parse(strFromU8(filesOf(bundle)['logs.json'] as Uint8Array)) as Array<{
+      msg: string;
+    }>;
+    expect(logs.map((l) => l.msg)).toEqual(
+      expect.arrayContaining(['written', 'returned', 'snapshot-source']),
+    );
+  });
+
+  it('keeps a carried seed, clamped to the manifest start, when the clock ticks between the window read and the snapshot', async () => {
+    let now = 100_000;
+    const clock: Clock = { wallNow: () => (now += 1), monotonicNow: () => now }; // every read advances 1 ms
+    const store = createMemoryCaptureStore({ maxRecordingTimeMs: 5000, clock });
+    const { uploadPipeline, enqueue } = fakeUpload();
+    const client = createClient({
+      captureStore: store,
+      clock,
+      maxRecordingTime: 5,
+      uploadPipeline,
+      appToken: 'tok',
+      getEnvironment,
+    });
+    client.addCaptureProvider({
+      name: 'seeder',
+      init: () => {},
+      start: () => {},
+      stop: () => {},
+      prepareSnapshot: (w) => [
+        new CaptureDataEntryBase('traces.system', w.start, {
+          timestamp: w.start,
+          name: 'app_state',
+          value: 'background',
+        }),
+      ],
+    });
+    client.launch();
+    await client.logException(new Error('x'));
+    const bundle = enqueue.mock.calls[0]?.[0] as Bundle;
+    const rows = JSON.parse(
+      strFromU8(filesOf(bundle)['traces.system.json'] as Uint8Array),
+    ) as Array<{
+      timestamp: number;
+      name: string;
+    }>;
+    const seed = rows.find((r) => r.name === 'app_state');
+    expect(seed).toBeDefined();
+    // the store's range starts a ms after the window start (the clock advanced); the seed is moved up to the manifest start
+    expect(seed?.timestamp).toBe(manifestOf(bundle).time.start);
+  });
+
+  it('takes the snapshot window from the resolved Duration option when one is set', async () => {
+    const t = mutableClock(100_000);
+    const { uploadPipeline } = fakeUpload();
+    const client = createClient({
+      clock: t.clock,
+      launchOptions: createOptionsContainer({ [BugseeOption.Duration]: 20 }),
+      uploadPipeline,
+      appToken: 'tok',
+      getEnvironment,
+    });
+    const windows: unknown[] = [];
+    client.addCaptureProvider({
+      name: 'w',
+      init: () => {},
+      start: () => {},
+      stop: () => {},
+      prepareSnapshot: (w) => void windows.push(w),
+    });
+    client.launch();
+    await client.logException(new Error('x'));
+    expect(windows).toEqual([{ start: 80_000, end: 100_000 }]);
+  });
+
+  it('ends the manifest at the snapshot a report dialog froze, not at the later Send', async () => {
+    const t = mutableClock(100_000);
+    const store = createMemoryCaptureStore({ maxRecordingTimeMs: 5000, clock: t.clock });
+    const { uploadPipeline, enqueue } = fakeUpload();
+    const client = createClient({
+      captureStore: store,
+      clock: t.clock,
+      uploadPipeline,
+      appToken: 'tok',
+      getEnvironment,
+    });
+    t.set(102_000);
+    const prepared = client.prepareUpload();
+    await flushMicrotasks();
+    t.set(109_000); // the person sits in the dialog for 7 s
+    await prepared?.send({ summary: 's' });
+    const bundle = enqueue.mock.calls[0]?.[0] as Bundle;
+    expect(manifestOf(bundle).time.end).toBe(102_000);
   });
 
   it('threads streamEncoders, which win over fileEncoders and see the window plan', async () => {

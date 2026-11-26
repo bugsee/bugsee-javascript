@@ -259,6 +259,55 @@ describe('setCarrierLastLaunch', () => {
     expect(retained.scheduler).toBe(scheduler);
   });
 
+  describe('bindings (edge env) retention', () => {
+    const retainedBindings = (bindings: unknown): Record<string, unknown> | undefined => {
+      const g = {};
+      setCarrierLastLaunch('tok', { bindings }, g);
+      const retained = getCarrier(g).lastLaunch?.options as { bindings?: Record<string, unknown> };
+      return retained.bindings;
+    };
+
+    it('keeps only the identity fields and no other binding (secrets, KV/DO/R2 handles, vars)', () => {
+      const secret = { get: () => 'kv' };
+      const env = {
+        BUGSEE_APP_VERSION: '2.4.1',
+        BUGSEE_APP_BUILD: '381',
+        CF_VERSION_METADATA: { tag: 'v9', id: 'abc', timestamp: 't', secretish: 'x' },
+        DB_PASSWORD: 'hunter2',
+        API_KEY: 'k',
+        MY_KV: secret,
+      };
+      const kept = retainedBindings(env);
+      expect(kept).toEqual({
+        BUGSEE_APP_VERSION: '2.4.1',
+        BUGSEE_APP_BUILD: '381',
+        CF_VERSION_METADATA: { tag: 'v9', id: 'abc' },
+      });
+      expect(kept).not.toBe(env);
+      expect(JSON.stringify(kept)).not.toMatch(/hunter2|MY_KV|API_KEY/);
+    });
+
+    it('keeps only the identity keys that are present', () => {
+      expect(retainedBindings({ BUGSEE_APP_VERSION: '1', OTHER: 'x' })).toStrictEqual({
+        BUGSEE_APP_VERSION: '1',
+      });
+      expect(retainedBindings({ OTHER: 'x' })).toStrictEqual({});
+      expect(retainedBindings({ CF_VERSION_METADATA: { tag: 't' } })).toStrictEqual({
+        CF_VERSION_METADATA: { tag: 't' },
+      });
+    });
+
+    it('drops a non-object CF_VERSION_METADATA and ignores a non-object bindings', () => {
+      expect(retainedBindings({ CF_VERSION_METADATA: 'nope' })).toEqual({});
+      expect(retainedBindings({ CF_VERSION_METADATA: null })).toEqual({});
+      const g = {};
+      setCarrierLastLaunch('tok', { bindings: 'str' }, g);
+      expect(getCarrier(g).lastLaunch?.options).toEqual({});
+      setCarrierLastLaunch('tok', { bindings: null }, g);
+      expect(getCarrier(g).lastLaunch?.options).toEqual({});
+    });
+  });
+
   it('remembers a custom carrier host on the default slot, and forgets it on the next default launch', () => {
     const x = {};
     setCarrierLastLaunch('tok', { carrier: x }, x);

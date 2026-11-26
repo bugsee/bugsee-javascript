@@ -38,10 +38,13 @@ import {
 import type { recordOptions } from '@bugsee/rrweb';
 
 /** Media/embedded elements blocked (rendered as same-size placeholders, contents not recorded) when
- * `blockAllMedia`. Includes `iframe`: a blocked iframe is a placeholder and its document is never recorded
+ * `blockAllMedia`. Inline `<svg>` is deliberately NOT here: it is vector DOM (icons, charts), and blocking it
+ * replayed every one as an empty box. Its raster-bearing children `<image>` and `<feImage>` ARE blocked (rrweb tests the selector per
+ * element), and its `<text>` follows the normal text-masking rules. Includes `iframe`: a blocked iframe is a placeholder and its document is never recorded
  * (same-origin or not; see `iframe-guard.ts`). `.bugsee-show` on an iframe opts it back in, and its content is then
  * recorded under the normal masking rules. */
-export const MEDIA_SELECTOR = 'img,svg,image,video,audio,object,picture,embed,map,source,iframe';
+export const MEDIA_SELECTOR =
+  'img,image,feImage,video,audio,object,picture,embed,map,source,iframe';
 
 /** All `<canvas>` elements — blocked (placeholder, contents not recorded) when `blockAllCanvas`, so canvas
  *  recording then captures ONLY canvases explicitly opted in via `.bugsee-show`/`[data-bugsee-show]`. */

@@ -1,6 +1,13 @@
-import { type CaptureProvider, CaptureProviderBase, type Scheduler } from '@bugsee/core';
+import {
+  type CaptureDataEntry,
+  CaptureDataEntryBase,
+  type CaptureProvider,
+  CaptureProviderBase,
+  type Scheduler,
+  type SnapshotWindow,
+} from '@bugsee/core';
 import { BugseeOption } from '@bugsee/protocol';
-import type { TraceProducer, TraceSink } from './trace-producer';
+import { sameValue, type TraceProducer, type TraceSink } from './trace-producer';
 import type { TraceSuppression } from './trace-suppression';
 
 // Runtime-agnostic SYSTEM TRACES provider (Android traces.system parity). A trace is a
@@ -92,6 +99,16 @@ interface Held {
   displayId: number | undefined;
 }
 
+/** The CHANGES of one held trace (oldest first): what lets a report window start with the value that was in force. */
+interface HeldHistory {
+  name: string;
+  displayId: number | undefined;
+  changes: Array<{ timestamp: number; value: unknown }>;
+}
+
+/** A flapping held value keeps at most this many changes; older ones fall off (the seed then simply cannot reach back that far). */
+const MAX_HISTORY = 64;
+
 /**
  * Which running provider owns a producer instance. Producers are stateful (`start()` is a no-op while started, held
  * values live on the instance), so one instance driven by two providers would interleave start/stop. First owner wins;
@@ -116,6 +133,7 @@ class SystemTracesProvider extends CaptureProviderBase {
   readonly #suppression: TraceSuppression | undefined;
   #offSuppression: (() => void) | undefined;
   readonly #held = new Map<string, Held>();
+  readonly #history = new Map<string, HeldHistory>();
   #started: TraceProducer[] = [];
   #running = false;
   #timer: unknown = null;
@@ -151,6 +169,7 @@ class SystemTracesProvider extends CaptureProviderBase {
 
   protected onStart(): void {
     this.#held.clear();
+    this.#history.clear();
     this.#running = true;
     this.#offSuppression = this.#suppression?.subscribe((released) => this.#rerecord(released));
     for (const producer of this.#producers) {
@@ -200,7 +219,63 @@ class SystemTracesProvider extends CaptureProviderBase {
       this.#stopProducers();
       this.#running = false;
       this.#held.clear();
+      this.#history.clear();
     }
+  }
+
+  /**
+   * A report snapshot is about to freeze `window` (CaptureProvider.prepareSnapshot). In a throttled / frozen / hidden runtime
+   * neither the producers' polls nor the held-value refresh ran, and the store has long evicted what they wrote before, so
+   * the window's head (and tail) would be empty and every trace would appear to start mid-way. So, honestly:
+   *  - each producer takes one fresh reading (a hidden tab's heap is still readable; fps, derived from frames, is not and
+   *    stays a gap);
+   *  - every HELD (state) trace is carried to the window start with the value that was in force there, and re-recorded at
+   *    the window end with its last value. A polled value is never carried or refreshed: that would fabricate a flat line.
+   */
+  prepareSnapshot(window: SnapshotWindow): CaptureDataEntry[] {
+    if (!this.#running) return [];
+    for (const producer of this.#started) {
+      try {
+        producer.sampleNow?.();
+      } catch (error) {
+        this.#onError(error);
+      }
+    }
+    // The carried values are RETURNED, not written: the store trims by a range it reads from its own clock (possibly a
+    // millisecond after `window.start`), which would drop a seed stamped exactly at the window start. Returned entries ride
+    // along with the report untrimmed.
+    const seeds: CaptureDataEntry[] = [];
+    for (const history of this.#history.values()) {
+      const { changes } = history;
+      let inForce = -1;
+      while (
+        inForce + 1 < changes.length &&
+        (changes[inForce + 1] as { timestamp: number }).timestamp <= window.start
+      ) {
+        inForce += 1;
+      }
+      if (inForce < 0) continue; // first recorded inside the window (a young session): nothing predates it
+      const base = changes[inForce] as { timestamp: number; value: unknown };
+      changes.splice(0, inForce); // older changes can never be in force again; the base stays for the next report
+      if (base.timestamp < window.start && !this.#suppression?.has(history.name)) {
+        seeds.push(
+          new CaptureDataEntryBase('traces.system', window.start, {
+            timestamp: window.start,
+            name: history.name,
+            value: base.value,
+            ...(history.displayId !== undefined ? { displayId: history.displayId } : {}),
+          }),
+        );
+      }
+    }
+    for (const held of [...this.#held.values()]) {
+      // Only a value the refresh timer would already have re-recorded (older than `refreshMs`, i.e. the timer did not run): a
+      // healthy page keeps a row within `refreshMs` of any instant, and a row a few ms before the end is not worth a twin.
+      if (window.end - held.timestamp >= this.#refreshMs) {
+        this.#record(held.name, held.value, held.displayId, window.end, true);
+      }
+    }
+    return seeds;
   }
 
   #tick(): void {
@@ -236,20 +311,30 @@ class SystemTracesProvider extends CaptureProviderBase {
     timestamp: number,
     hold: boolean,
   ): void {
-    if (!this.#suppression?.has(name)) {
-      this.capture('traces.system', timestamp, {
-        timestamp,
-        name,
-        value,
-        ...(displayId !== undefined ? { displayId } : {}),
-      });
-    }
+    this.#write(name, value, displayId, timestamp);
     if (!hold) return;
-    this.#held.set(displayId === undefined ? name : `${displayId}:${name}`, {
+    const key = displayId === undefined ? name : `${displayId}:${name}`;
+    this.#held.set(key, { name, value, timestamp, displayId });
+    let history = this.#history.get(key);
+    if (history === undefined) {
+      history = { name, displayId, changes: [] };
+      this.#history.set(key, history);
+    }
+    const last = history.changes.at(-1);
+    if (last === undefined || !sameValue(last.value, value)) {
+      history.changes.push({ timestamp, value });
+      if (history.changes.length > MAX_HISTORY) history.changes.shift();
+    }
+  }
+
+  /** Write one entry (unless the name is suppressed) without touching the held / history state. */
+  #write(name: string, value: unknown, displayId: number | undefined, timestamp: number): void {
+    if (this.#suppression?.has(name)) return;
+    this.capture('traces.system', timestamp, {
+      timestamp,
       name,
       value,
-      timestamp,
-      displayId,
+      ...(displayId !== undefined ? { displayId } : {}),
     });
   }
 

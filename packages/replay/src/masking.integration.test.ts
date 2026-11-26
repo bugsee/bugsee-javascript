@@ -326,8 +326,7 @@ describe('attribute masking is fail-CLOSED — an allowlist, not an 11-entry den
   });
 
   it('leaves SVG geometry untouched, so icons still draw', async () => {
-    // `svg` is inside MEDIA_SELECTOR, so it is blocked (and its attributes absent) at defaults — this is
-    // only observable with media un-blocked. Masking `d`/`viewBox` would silently destroy every icon.
+    // Masking `d`/`viewBox` would silently destroy every icon (inline svg is recorded at defaults too — see below).
     const { json } = await drive(
       '<svg viewBox="0 0 24 24"><path d="M4 4 L8 8" fill="#abc"/></svg>',
       {
@@ -337,6 +336,17 @@ describe('attribute masking is fail-CLOSED — an allowlist, not an 11-entry den
     for (const structural of ['0 0 24 24', 'M4 4 L8 8', '#abc']) {
       expect(json, structural).toContain(structural);
     }
+  });
+
+  it('records inline <svg> at DEFAULTS (children + geometry) while an SVG <image> stays blocked', async () => {
+    const { json } = await drive(
+      '<svg viewBox="0 0 24 24"><g><path d="M4 4 L8 8" fill="#abc"/></g>' +
+        '<image href="data:image/png;base64,SECRETPIXELS" width="4" height="4"/></svg>',
+    );
+    for (const structural of ['0 0 24 24', 'M4 4 L8 8', '#abc']) {
+      expect(json, structural).toContain(structural);
+    }
+    expect(json).not.toContain('SECRETPIXELS');
   });
 
   it('masks attributes on DESCENDANTS of a `.bugsee-mask` element', async () => {

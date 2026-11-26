@@ -1,4 +1,10 @@
-import type { CaptureProvider, CaptureProviderInit, OptionsContainer } from './contracts';
+import type {
+  CaptureDataEntry,
+  CaptureProvider,
+  CaptureProviderInit,
+  OptionsContainer,
+  SnapshotWindow,
+} from './contracts';
 
 // Capture-provider lifecycle manager (Android BugseeCaptureCoordinator parity). Holds
 // the capture-pipeline init (hubs/operations/aggregator) and injects it into each provider ONCE at
@@ -24,6 +30,12 @@ export interface CaptureCoordinator {
   start(options: OptionsContainer, isEnabled: OptionGate): void;
   /** Stop all started providers; idempotent. */
   stop(): void;
+  /**
+   * Tell every started provider that a report snapshot over `window` is about to be taken (CaptureProvider.prepareSnapshot).
+   * Isolated like start/stop: a throwing provider is reported and never costs the others. Returns the report-time extras
+   * the providers handed back, in provider order.
+   */
+  prepareSnapshot(window: SnapshotWindow): CaptureDataEntry[];
   /** A copy of the registered providers. */
   readonly providers: readonly CaptureProvider[];
 }
@@ -106,6 +118,19 @@ export function createCaptureCoordinator(
         if (session !== active) break;
         startProvider(provider, active);
       }
+    },
+
+    prepareSnapshot(window: SnapshotWindow): CaptureDataEntry[] {
+      const extras: CaptureDataEntry[] = [];
+      for (const provider of [...started]) {
+        try {
+          const entries = provider.prepareSnapshot?.(window);
+          if (entries !== undefined) extras.push(...entries);
+        } catch (error) {
+          report(error);
+        }
+      }
+      return extras;
     },
 
     stop(): void {

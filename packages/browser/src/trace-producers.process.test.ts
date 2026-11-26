@@ -385,6 +385,39 @@ describe('createBrowserSystemTraceProducers: process traces', () => {
     }
   });
 
+  it('the memory producer takes a fresh heap reading on demand (a hidden tab ran no poll) and never invents one', () => {
+    const memoryInfo = { usedJSHeapSize: 10, totalJSHeapSize: 20, jsHeapSizeLimit: 100 };
+    const win = Object.assign(mkTarget(), { performance: { memory: memoryInfo, now: () => 1 } });
+    try {
+      const memory = createBrowserSystemTraceProducers({
+        ...browserTraceEnvFrom(win, undefined),
+        window: win,
+      }).find((p) => p.name === 'memory') as TraceProducer;
+      const out = start(memory);
+      out.length = 0; // the baseline
+      memoryInfo.usedJSHeapSize = 40;
+      memory.sampleNow?.();
+      expect(out.map((r) => [r.name, r.value])).toEqual([
+        ['ram_js_heap_total', 100],
+        ['ram_js_heap_free', 60],
+        ['ram_js_heap_used', 40],
+      ]);
+      expect(out.every((r) => r.hold === false)).toBe(true); // polled, never held
+      memory.stop();
+      out.length = 0;
+      memory.sampleNow?.(); // stopped: nothing is written
+      expect(out).toEqual([]);
+      // an engine with no reading (Safari/Firefox) emits nothing
+      (win.performance as { memory?: unknown }).memory = undefined;
+      const again = start(memory);
+      again.length = 0;
+      memory.sampleNow?.();
+      expect(again).toEqual([]);
+    } finally {
+      resetProcessTracker({ window: win });
+    }
+  });
+
   it('all process traces share ONE tracker per window and the env seams reach it (idle + user idle)', async () => {
     const win = Object.assign(mkTarget(), {
       performance: {

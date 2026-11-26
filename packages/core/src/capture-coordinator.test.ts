@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createCaptureCoordinator } from './capture-coordinator';
+import { CaptureDataEntryBase } from './capture-data-entry';
 import type { CaptureProvider, CaptureProviderInit, OptionsContainer } from './contracts';
 import { createOptionsContainer } from './options';
 
@@ -357,5 +358,80 @@ describe('createCaptureCoordinator — re-entrant reporters cannot corrupt a ses
     expect(b.stop).toHaveBeenCalledTimes(1); // and the old loop did not stop the fresh session's providers
     co.stop();
     expect(b.stop).toHaveBeenCalledTimes(2); // the relaunched session is still tracked and stops normally
+  });
+});
+
+describe('createCaptureCoordinator — prepareSnapshot', () => {
+  const window = { start: 100, end: 160 };
+
+  it('hands the window to every STARTED provider that implements prepareSnapshot', () => {
+    const co = createCaptureCoordinator(init);
+    const a = { ...makeProvider('a'), prepareSnapshot: vi.fn() };
+    const gatedOff = { ...makeProvider('b', 'captureNetwork'), prepareSnapshot: vi.fn() };
+    const plain = makeProvider('c'); // no hook: skipped without error
+    co.addProvider(a);
+    co.addProvider(gatedOff);
+    co.addProvider(plain);
+    co.start(options, (option) => option !== 'captureNetwork');
+    co.prepareSnapshot(window);
+    expect(a.prepareSnapshot).toHaveBeenCalledWith(window);
+    expect(gatedOff.prepareSnapshot).not.toHaveBeenCalled();
+  });
+
+  it('returns the entries providers hand back (report-time extras), ignoring providers that return nothing', () => {
+    const co = createCaptureCoordinator(init);
+    const e1 = new CaptureDataEntryBase('traces.system', 1, { a: 1 });
+    const e2 = new CaptureDataEntryBase('traces.system', 2, { a: 2 });
+    co.addProvider({ ...makeProvider('a'), prepareSnapshot: () => [e1] });
+    co.addProvider({ ...makeProvider('void'), prepareSnapshot: () => undefined });
+    co.addProvider({ ...makeProvider('b'), prepareSnapshot: () => [e2] });
+    co.addProvider(makeProvider('plain'));
+    co.start(options, enableAll);
+    expect(co.prepareSnapshot(window)).toEqual([e1, e2]);
+  });
+
+  it('does nothing before start and after stop', () => {
+    const co = createCaptureCoordinator(init);
+    const a = { ...makeProvider('a'), prepareSnapshot: vi.fn() };
+    co.addProvider(a);
+    expect(co.prepareSnapshot(window)).toEqual([]);
+    co.start(options, enableAll);
+    co.stop();
+    expect(co.prepareSnapshot(window)).toEqual([]);
+    expect(a.prepareSnapshot).not.toHaveBeenCalled();
+  });
+
+  it('isolates a throwing provider: reported, the others still run', () => {
+    const onError = vi.fn();
+    const co = createCaptureCoordinator(init, onError);
+    const boom = new Error('boom');
+    const bad = {
+      ...makeProvider('bad'),
+      prepareSnapshot: vi.fn(() => {
+        throw boom;
+      }),
+    };
+    const good = { ...makeProvider('good'), prepareSnapshot: vi.fn() };
+    co.addProvider(bad);
+    co.addProvider(good);
+    co.start(options, enableAll);
+    co.prepareSnapshot(window);
+    expect(onError).toHaveBeenCalledWith(boom);
+    expect(good.prepareSnapshot).toHaveBeenCalledWith(window);
+  });
+
+  it('survives a throwing error reporter', () => {
+    const co = createCaptureCoordinator(init, () => {
+      throw new Error('reporter');
+    });
+    const bad = {
+      ...makeProvider('bad'),
+      prepareSnapshot: () => {
+        throw new Error('x');
+      },
+    };
+    co.addProvider(bad);
+    co.start(options, enableAll);
+    expect(() => co.prepareSnapshot(window)).not.toThrow();
   });
 });

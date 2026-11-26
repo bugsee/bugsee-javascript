@@ -1071,6 +1071,17 @@ describe('app identity resolution', () => {
     });
   });
 
+  it('reads the version and build from the `bindings` option (Cloudflare env + version metadata)', async () => {
+    vi.stubEnv('BUGSEE_APP_VERSION', '');
+    vi.stubEnv('BUGSEE_APP_BUILD', '');
+    vi.stubEnv('VERCEL_GIT_COMMIT_SHA', '');
+    expect(
+      await reportedApp({
+        bindings: { BUGSEE_APP_VERSION: '8.1.0', CF_VERSION_METADATA: { id: 'ver-1', tag: 'x' } },
+      }),
+    ).toMatchObject({ version: '8.1.0', build: 'ver-1' });
+  });
+
   it('takes the build from VERCEL_GIT_COMMIT_SHA when nothing else supplies it', async () => {
     vi.stubEnv('VERCEL_GIT_COMMIT_SHA', 'abc123');
     vi.stubGlobal('__BUGSEE_APP_VERSION__', '4.5.6');

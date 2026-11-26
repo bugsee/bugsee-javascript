@@ -42,6 +42,12 @@ export interface TraceProducer {
   start(sink: TraceSink): void;
   /** Unsubscribe from everything start() attached. Idempotent; a no-op before start(). */
   stop(): void;
+  /**
+   * Optional: take ONE fresh reading of the polled values NOW and emit it. The provider calls it right before a report
+   * snapshot, so a runtime whose timers were throttled or frozen (a hidden browser tab) still has a sample at the report's
+   * end. Never fabricate: a producer with nothing readable emits nothing.
+   */
+  sampleNow?(): void;
 }
 
 // BigInt has no JSON form: tag it so it compares by value and is distinct from a string
@@ -50,7 +56,7 @@ const bigintSafe = (_key: string, v: unknown): unknown =>
   typeof v === 'bigint' ? { $bigint: v.toString() } : v;
 
 /** Total: never throws. An uncomparable value (circular, throwing toJSON) counts as CHANGED. */
-const sameValue = (a: unknown, b: unknown): boolean => {
+export const sameValue = (a: unknown, b: unknown): boolean => {
   if (Object.is(a, b)) return true;
   if (typeof a !== 'object' || a === null || typeof b !== 'object' || b === null) return false;
   try {

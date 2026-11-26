@@ -223,6 +223,13 @@ async function buildInto(
   // With a plan the report starts where the plan says (the window), whatever the records are; without one, at the earliest
   // record. The plan also bounds the ROLLING records: older ones (the store keeps up to a second of slack) are dropped.
   let start = plan?.start ?? now;
+  // Where the report ends. Without a plan, the assembly clock. With one, the snapshot's own end: a report dialog freezes the
+  // capture when it OPENS and assembles when Send is pressed, and an end at the clock stretched every trace over an empty
+  // tail. A streamed record may still sit a few ms past the range end (clock skew), so the end never precedes the newest one;
+  // report-time extras are taken at the clock by design and do not count. Never past the assembly clock: an explicitly
+  // future-stamped record (client.trace(…, timestamp)) must not stretch the report into the future.
+  const planEnd = plan === undefined ? now : Math.min(plan.end, now);
+  let end = planEnd;
   const order: string[] = []; // member keys: a type, or `type\0lane` for one visual source of a stream-encoded type
   const streamed = new Map<string, StreamMember>();
   const collected = new Map<string, unknown[]>(); // types with an injected encoder
@@ -241,8 +248,34 @@ async function buildInto(
       member.file.push(chunk, false);
     }
   };
-  const take = (entry: CaptureDataEntry, rolling: boolean): void => {
+  const take = (original: CaptureDataEntry, rolling: boolean): void => {
+    let entry = original;
     const type = entry.type;
+    if (
+      !rolling &&
+      plan !== undefined &&
+      entry.timestamp < plan.start &&
+      context.fileEncoders?.[type] === undefined &&
+      context.streamEncoders?.[type] === undefined
+    ) {
+      // A report-time extra (e.g. a trace value carried to the window start) can be stamped a few ms before the range the
+      // store actually exported; the viewer drops events before the manifest start, so it is moved up to it. The payload's
+      // own timestamp (what the viewer reads) follows when it was the entry's. A copy: the caller's entry is not mutated.
+      const data = entry.data;
+      const restamped =
+        typeof data === 'object' &&
+        data !== null &&
+        (data as { timestamp?: unknown }).timestamp === entry.timestamp
+          ? { ...data, timestamp: plan.start }
+          : data;
+      entry = Object.assign(Object.create(Object.getPrototypeOf(entry)), entry, {
+        timestamp: plan.start,
+        data: restamped,
+      }) as CaptureDataEntry;
+    }
+    if (rolling && plan !== undefined && entry.timestamp > end) {
+      end = Math.min(entry.timestamp, now);
+    }
     if (plan === undefined) {
       if (entry.timestamp < start) {
         start = entry.timestamp;
@@ -266,7 +299,7 @@ async function buildInto(
         encoded.set(key, {
           type,
           lane: entry.lane,
-          session: streamEncoder.begin({ start: plan?.start, end: now }),
+          session: streamEncoder.begin({ start: plan?.start, end: planEnd }),
           file: undefined,
           name: undefined,
         });
@@ -370,7 +403,7 @@ async function buildInto(
     addWhole(member.name, member.data);
   }
   files.push(...reportMembers.files);
-  addWhole(MANIFEST_JSON_FILENAME, JSON.stringify(buildManifest(context, start, now, files)));
+  addWhole(MANIFEST_JSON_FILENAME, JSON.stringify(buildManifest(context, start, end, files)));
   zip.end();
   await done.promise;
   await queue.settle();

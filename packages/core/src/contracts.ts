@@ -274,6 +274,21 @@ export interface CaptureProvider {
   /** (Re)configure from launch options and begin capturing; may be cycled across launches. */
   start(options: OptionsContainer): void;
   stop(): void;
+  /**
+   * Optional: called synchronously right BEFORE a report's capture snapshot is taken, with the wall-clock window that
+   * snapshot will cover. A provider whose values are produced by timers or events that a throttled / frozen / backgrounded
+   * runtime may not have run (a hidden browser tab) uses it to make the window honest. It may WRITE entries (they land in
+   * the snapshot) and/or RETURN entries that ride along with the report as report-time extras: extras are not trimmed by the
+   * window, so a value carried to the window start survives however the store rounds its own range. Must not throw into
+   * the host.
+   */
+  prepareSnapshot?(window: SnapshotWindow): void | readonly CaptureDataEntry[];
+}
+
+/** The wall-clock span (ms) a report's capture snapshot covers. */
+export interface SnapshotWindow {
+  readonly start: number;
+  readonly end: number;
 }
 
 /** Decides when to assemble & upload a report. */

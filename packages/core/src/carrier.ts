@@ -293,6 +293,7 @@ export const RELAUNCH_KEPT_OPTIONS: readonly string[] = [
   'appId',
   'appVersion',
   'appBuild',
+  'bindings', // edge env (version/build source): kept on relaunch, as an identity-only copy (see identityOnlyBindings), else the version falls back to 0.0.0
   'appIdentitySource',
   'platformType',
   'sdkVersion',
@@ -304,6 +305,33 @@ export const RELAUNCH_KEPT_OPTIONS: readonly string[] = [
   'maxTenantPartitions',
 ];
 
+/**
+ * The host's `bindings` (Cloudflare's whole per-deployment `env`: secrets, KV/DO/R2 handles, vars) reduced to the only
+ * keys the SDK reads for the app identity, so a relaunch keeps its version without the carrier (a process-global) holding
+ * every binding. `CF_VERSION_METADATA` is narrowed to its `tag` and `id`.
+ */
+const identityOnlyBindings = (bindings: unknown): Record<string, unknown> | undefined => {
+  if (typeof bindings !== 'object' || bindings === null) {
+    return undefined;
+  }
+  const source = bindings as Record<string, unknown>;
+  const kept: Record<string, unknown> = {};
+  for (const key of ['BUGSEE_APP_VERSION', 'BUGSEE_APP_BUILD']) {
+    if (source[key] !== undefined) {
+      kept[key] = source[key];
+    }
+  }
+  const metadata = source.CF_VERSION_METADATA;
+  if (typeof metadata === 'object' && metadata !== null) {
+    const { tag, id } = metadata as { tag?: unknown; id?: unknown };
+    kept.CF_VERSION_METADATA = {
+      ...(tag !== undefined && { tag }),
+      ...(id !== undefined && { id }),
+    };
+  }
+  return kept;
+};
+
 /** Remember the token and the integration seams of a launch that built a client, for `relaunch()`. */
 export function setCarrierLastLaunch(
   appToken: string,
@@ -313,7 +341,8 @@ export function setCarrierLastLaunch(
   const retained: Record<string, unknown> = {};
   if (typeof options === 'object' && options !== null) {
     for (const key of RELAUNCH_KEPT_OPTIONS) {
-      const value = (options as Record<string, unknown>)[key];
+      const raw = (options as Record<string, unknown>)[key];
+      const value = key === 'bindings' ? identityOnlyBindings(raw) : raw;
       if (value !== undefined) {
         retained[key] = value;
       }

@@ -1,4 +1,5 @@
 import {
+  type CaptureDataEntry,
   type CaptureProviderInit,
   type CaptureStore,
   createCaptureAggregator,
@@ -1272,5 +1273,291 @@ describe('withoutTraceNames', () => {
       { name: 'a', value: 2 },
       { name: 'c', value: 3 },
     ]);
+  });
+});
+
+// A producer driven by hand: `set` is a change-driven (held) value, `read` a polled one; `sampleNow` takes a fresh reading.
+class Manual extends TraceProducerBase {
+  readonly name = 'manual';
+  samples = 0;
+  failSample = false;
+  protected onStart(): void {}
+  set(name: string, value: unknown): void {
+    this.emitIfChanged(name as TraceName, value);
+  }
+  read(name: string, value: unknown): void {
+    this.emit(name as TraceName, value);
+  }
+  sampleNow(): void {
+    this.samples += 1;
+    if (this.failSample) throw new Error('sample failed');
+    this.read('heap', this.samples);
+  }
+}
+
+describe('createSystemTracesProvider — prepareSnapshot (a throttled or frozen runtime)', () => {
+  type Win = { start: number; end: number };
+  type Row = { timestamp: number; name: string; value: unknown; displayId?: number };
+  const rig = (extra: Partial<Parameters<typeof createSystemTracesProvider>[0]> = {}) => {
+    const store = mkStore();
+    const fs = fakeScheduler();
+    const clock = { t: 0 };
+    const producer = new Manual();
+    const errors: unknown[] = [];
+    const provider = createSystemTracesProvider({
+      producers: [producer],
+      scheduler: fs.scheduler,
+      now: () => clock.t,
+      refreshMs: 10_000,
+      onError: (e) => errors.push(e),
+      ...extra,
+    });
+    provider.init(buildInit(store));
+    return { store, fs, clock, producer, provider, errors };
+  };
+  const rows = async (store: CaptureStore): Promise<Row[]> =>
+    ((await drainSystem(store)) ?? []).map((e) => e.data as Row);
+  // The seeds are RETURNED (report-time extras), never written to the store.
+  const prepare = (provider: ReturnType<typeof createSystemTracesProvider>, w: Win): Row[] =>
+    (
+      (
+        provider as { prepareSnapshot?: (w: Win) => CaptureDataEntry[] | undefined }
+      ).prepareSnapshot?.(w) ?? []
+    ).map((e) => {
+      expect(e.type).toBe('traces.system');
+      expect(e.timestamp).toBe((e.data as Row).timestamp);
+      return e.data as Row;
+    });
+
+  it('carries a held value that predates the window to the window start (frozen tab: the refresh never ran)', async () => {
+    const r = rig();
+    r.clock.t = 1_000;
+    r.provider.start(options);
+    r.producer.set('app_state', 'foreground');
+    const seeds = prepare(r.provider, { start: 50_000, end: 110_000 });
+    expect(seeds).toEqual([{ timestamp: 50_000, name: 'app_state', value: 'foreground' }]);
+    expect((await rows(r.store)).filter((x) => x.timestamp === 50_000)).toEqual([]); // returned, not written
+  });
+
+  it('keeps a display id on the carried value', () => {
+    const r = rig();
+    const display = new Fixed('d', [['displays', { w: 1 }, 7]], { held: true });
+    const p = createSystemTracesProvider({
+      producers: [display],
+      scheduler: r.fs.scheduler,
+      now: () => 1_000,
+    });
+    p.init(buildInit(r.store));
+    p.start(options);
+    expect(prepare(p, { start: 50_000, end: 110_000 })).toEqual([
+      { timestamp: 50_000, name: 'displays', value: { w: 1 }, displayId: 7 },
+    ]);
+  });
+
+  it('seeds the value in force at the window start, not the latest one', () => {
+    const r = rig();
+    r.clock.t = 1_000;
+    r.provider.start(options);
+    r.producer.set('app_state', 'foreground');
+    r.clock.t = 20_000;
+    r.producer.set('app_state', 'background'); // before the window start
+    r.clock.t = 70_000;
+    r.producer.set('app_state', 'foreground'); // inside the window
+    expect(prepare(r.provider, { start: 50_000, end: 110_000 })).toEqual([
+      { timestamp: 50_000, name: 'app_state', value: 'background' },
+    ]);
+  });
+
+  it('does not seed a value whose first record is inside the window (a session younger than the window)', () => {
+    const r = rig();
+    r.clock.t = 60_000;
+    r.provider.start(options);
+    r.producer.set('app_state', 'foreground');
+    expect(prepare(r.provider, { start: 50_000, end: 110_000 })).toEqual([]);
+  });
+
+  it('a change recorded exactly at the window start is the value in force there (no older value is seeded)', () => {
+    const r = rig();
+    r.clock.t = 1_000;
+    r.provider.start(options);
+    r.producer.set('app_state', 'background');
+    r.clock.t = 50_000;
+    r.producer.set('app_state', 'foreground');
+    expect(prepare(r.provider, { start: 50_000, end: 110_000 })).toEqual([]);
+  });
+
+  it('re-records every held value at the window end, with its last value', async () => {
+    const r = rig();
+    r.clock.t = 1_000;
+    r.provider.start(options);
+    r.producer.set('connection', { type: 'wifi' });
+    prepare(r.provider, { start: 50_000, end: 110_000 });
+    const end = (await rows(r.store)).filter(
+      (x) => x.timestamp === 110_000 && x.name === 'connection',
+    );
+    expect(end).toEqual([{ timestamp: 110_000, name: 'connection', value: { type: 'wifi' } }]);
+  });
+
+  it('does not re-record a held value whose last row is younger than the refresh interval (a healthy page needs no end row)', async () => {
+    const r = rig(); // refreshMs 10_000
+    r.clock.t = 101_000;
+    r.provider.start(options);
+    r.producer.set('connection', 'x');
+    prepare(r.provider, { start: 50_000, end: 110_000 }); // 9 s old: the refresh would not have fired yet
+    expect((await rows(r.store)).filter((x) => x.name === 'connection')).toHaveLength(1);
+    r.clock.t = 101_000;
+    prepare(r.provider, { start: 50_000, end: 111_000 }); // exactly refreshMs old: due
+    expect(
+      (await rows(r.store)).filter((x) => x.name === 'connection' && x.timestamp === 111_000),
+    ).toHaveLength(1);
+  });
+
+  it('does not re-record a held value that was just recorded at the window end', async () => {
+    const r = rig();
+    r.clock.t = 110_000;
+    r.provider.start(options);
+    r.producer.set('connection', 'x');
+    prepare(r.provider, { start: 50_000, end: 110_000 });
+    expect((await rows(r.store)).filter((x) => x.name === 'connection')).toHaveLength(1);
+  });
+
+  it('asks each producer for a fresh polled reading, and isolates a failing one', async () => {
+    const r = rig();
+    r.clock.t = 110_000;
+    r.provider.start(options);
+    prepare(r.provider, { start: 50_000, end: 110_000 });
+    expect(r.producer.samples).toBe(1);
+    expect((await rows(r.store)).filter((x) => x.name === 'heap')).toEqual([
+      { timestamp: 110_000, name: 'heap', value: 1 },
+    ]);
+    r.producer.failSample = true;
+    prepare(r.provider, { start: 50_000, end: 110_000 });
+    expect(r.errors).toHaveLength(1);
+  });
+
+  it('never fabricates a polled value: a polled trace is not carried or re-recorded', async () => {
+    const r = rig();
+    r.clock.t = 1_000;
+    r.provider.start(options);
+    r.producer.read('fps', 60);
+    expect(prepare(r.provider, { start: 50_000, end: 110_000 })).toEqual([]);
+    expect((await rows(r.store)).filter((x) => x.name === 'fps')).toHaveLength(1);
+  });
+
+  it('does nothing when the provider is stopped, and for a producer without the hook', async () => {
+    const r = rig();
+    r.clock.t = 1_000;
+    r.provider.start(options);
+    r.producer.set('app_state', 'foreground');
+    r.provider.stop();
+    const before = (await rows(r.store)).length;
+    expect(prepare(r.provider, { start: 50_000, end: 110_000 })).toEqual([]);
+    expect((await rows(r.store)).length).toBe(before);
+    const plain = createSystemTracesProvider({
+      producers: [new Fixed('f', [])],
+      scheduler: fakeScheduler().scheduler,
+    });
+    plain.init(buildInit(mkStore()));
+    plain.start(options);
+    expect(prepare(plain, { start: 0, end: 1 })).toEqual([]);
+  });
+
+  it('writes neither the seed nor the end refresh for a name the host owns (suppressed)', async () => {
+    const suppression = createTraceSuppression({ host: ['app_state'] });
+    const r = rig({ suppression });
+    r.clock.t = 1_000;
+    r.provider.start(options);
+    r.producer.set('app_state', 'foreground');
+    expect(prepare(r.provider, { start: 50_000, end: 110_000 })).toEqual([]);
+    expect((await rows(r.store)).filter((x) => x.name === 'app_state')).toEqual([]);
+  });
+
+  it('a flapping value keeps at most 64 changes: the seed cannot reach back past them', () => {
+    const r = rig();
+    r.clock.t = 0;
+    r.provider.start(options);
+    for (let i = 1; i <= 100; i += 1) {
+      r.clock.t = i * 10;
+      r.producer.set('app_state', `v${i}`);
+    }
+    // 100 changes at t=10..1000; only the newest 64 (t=370..1000) are kept, so a window starting at 305 has no value in
+    // force to carry (asked first: choosing a base prunes what is older)…
+    expect(prepare(r.provider, { start: 305, end: 2_000 })).toEqual([]);
+    // …while change 37 (t=370) is the oldest still held, in force at 375.
+    expect(prepare(r.provider, { start: 375, end: 2_000 })).toEqual([
+      { timestamp: 375, name: 'app_state', value: 'v37' },
+    ]);
+  });
+
+  it('re-recording an unchanged value does not add to the history (refreshes must not evict the real base)', () => {
+    const r = rig();
+    r.clock.t = 1;
+    r.provider.start(options);
+    r.producer.set('app_state', 'foreground');
+    for (let i = 1; i <= 100; i += 1) {
+      r.clock.t = 1 + i * 10_000; // each tick finds the held value stale and re-records it
+      r.fs.tick();
+    }
+    expect(prepare(r.provider, { start: 50_000, end: 2_000_000 })).toEqual([
+      { timestamp: 50_000, name: 'app_state', value: 'foreground' },
+    ]);
+  });
+
+  it('drops history that can no longer be in force once a base is chosen', () => {
+    const r = rig();
+    r.clock.t = 1_000;
+    r.provider.start(options);
+    r.producer.set('app_state', 'a');
+    r.clock.t = 2_000;
+    r.producer.set('app_state', 'b');
+    r.clock.t = 3_000;
+    r.producer.set('app_state', 'c');
+    expect(prepare(r.provider, { start: 2_500, end: 9_000 })).toEqual([
+      { timestamp: 2_500, name: 'app_state', value: 'b' },
+    ]);
+    // 'a' was pruned with the first report, so an (impossible) earlier window finds nothing rather than a stale value
+    expect(prepare(r.provider, { start: 1_500, end: 9_000 })).toEqual([]);
+  });
+
+  it('a late tick (timers were throttled) re-records the stale held values at once', async () => {
+    const r = rig();
+    r.clock.t = 1_000;
+    r.provider.start(options);
+    r.producer.set('connection', 'x');
+    r.clock.t = 200_000; // the tab slept; the first tick after the wake-up
+    r.fs.tick();
+    expect(
+      (await rows(r.store)).filter((x) => x.name === 'connection' && x.timestamp === 200_000),
+    ).toHaveLength(1);
+  });
+});
+
+describe('createSystemTracesProvider — through the real coordinator and exporter', () => {
+  it('a window prepared by the coordinator yields the carried seed as an extra and the end refresh in the store', async () => {
+    const store = mkStore();
+    const coordinator = createCaptureCoordinator(buildInit(store));
+    const producer = new Manual();
+    let t = 1_000;
+    coordinator.addProvider(
+      createSystemTracesProvider({
+        producers: [producer],
+        scheduler: fakeScheduler().scheduler,
+        now: () => t,
+      }),
+    );
+    coordinator.start(options, () => true);
+    producer.set('app_state', 'background');
+    t = 120_000; // the tab was frozen the whole time; the report wakes it
+    const extras = coordinator.prepareSnapshot({ start: 60_000, end: 120_000 });
+    expect(extras.map((e) => [e.type, e.timestamp, (e.data as { name: string }).name])).toEqual([
+      ['traces.system', 60_000, 'app_state'],
+    ]);
+    const exported = ((await drainSystem(store)) ?? []).map(
+      (e) => e.data as { timestamp: number; name: string },
+    );
+    expect(exported.filter((e) => e.name === 'app_state').map((e) => e.timestamp)).toEqual([
+      1_000, 120_000,
+    ]);
+    expect(exported.some((e) => e.name === 'heap' && e.timestamp === 120_000)).toBe(true);
   });
 });
