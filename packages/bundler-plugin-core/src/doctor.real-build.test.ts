@@ -16,6 +16,7 @@ import {
 import { createServer, type Server } from 'node:http';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import terser from '@rollup/plugin-terser';
 import { rspack } from '@rspack/core';
 import { rollup } from 'rollup';
 import { type Plugin as VitePlugin, build as viteBuild } from 'vite';
@@ -486,8 +487,11 @@ describe('facade chunks in real Rollup / Vite output', () => {
 
   // Rather than one shape per review: sweep Rollup's output options and require that EVERY emitted chunk whose map
   // has no sources and no segments reads as a facade (the doctor's empty-map rule depends on it).
-  const sweep = async (format: 'cjs' | 'amd' | 'es' | 'system'): Promise<number> => {
-    const dir = join(root, `facade-sweep-${format}`);
+  const sweep = async (
+    format: 'cjs' | 'amd' | 'es' | 'system',
+    minify: boolean,
+  ): Promise<number> => {
+    const dir = join(root, `facade-sweep-${format}${minify ? '-min' : ''}`);
     mkdirSync(join(dir, 'src'), { recursive: true });
     writeFileSync(
       join(dir, 'src', 'index.js'),
@@ -512,16 +516,22 @@ describe('facade chunks in real Rollup / Vite output', () => {
         extdef: join(dir, 'src', 'extdef.js'),
       },
       external: ['ext-a', 'ext-b', 'ext-c', 'ext-d'],
+      plugins: minify ? [terser()] : [], // terser joins statements into sequences and renames every binding
     });
     let facades = 0;
     const failures: string[] = [];
-    const interops = ['auto', 'default', 'esModule', 'compat'] as const;
+    // minified builds are slow: a narrower grid over the same axes
+    const interops = minify
+      ? (['auto', 'default'] as const)
+      : (['auto', 'default', 'esModule', 'compat'] as const);
     for (const interop of interops) {
       for (const preset of ['es5', 'es2015'] as const) {
         for (const symbols of [false, true]) {
           for (const externalLiveBindings of [true, false]) {
-            for (const freeze of [true, false]) {
-              for (const esModule of [true, false, 'if-default-prop'] as const) {
+            for (const freeze of minify ? [true] : [true, false]) {
+              for (const esModule of (minify
+                ? [true, false]
+                : [true, false, 'if-default-prop']) as Array<boolean | 'if-default-prop'>) {
                 const label = JSON.stringify({
                   format,
                   interop,
@@ -565,76 +575,109 @@ describe('facade chunks in real Rollup / Vite output', () => {
   };
 
   for (const format of ['cjs', 'amd', 'es', 'system'] as const) {
-    it(`every empty-map chunk Rollup writes for ${format} (option sweep) is a facade`, async () => {
-      expect(await sweep(format)).toBeGreaterThan(100);
-    }, 120_000);
+    for (const minify of [false, true]) {
+      it(`every empty-map chunk Rollup writes for ${format}${minify ? ' with terser' : ''} (option sweep) is a facade`, async () => {
+        expect(await sweep(format, minify)).toBeGreaterThan(minify ? 20 : 100);
+      }, 300_000);
+    }
   }
 
-  // IIFE / UMD wrap a single entry; a library that is only a barrel over externals gets `sources: []` too.
-  const wrapperSweep = async (format: 'iife' | 'umd'): Promise<number> => {
-    const dir = join(root, `facade-sweep-${format}`);
+  // IIFE / UMD wrap a single entry; a library that is only a barrel over externals gets `sources: []` too. The axes
+  // that change the wrapper itself (default-only entries, `extend`, `noConflict`, `strict`) are swept as well.
+  const wrapperSweep = async (format: 'iife' | 'umd', minify: boolean): Promise<number> => {
+    const dir = join(root, `facade-sweep-${format}${minify ? '-min' : ''}`);
     mkdirSync(join(dir, 'src'), { recursive: true });
     writeFileSync(
       join(dir, 'src', 'lib.js'),
       "export * from 'ext-a';\nexport * as ns from 'ext-b';\nexport { named, default as d } from 'ext-c';\n",
     );
-    const bundle = await rollup({
-      input: join(dir, 'src', 'lib.js'),
-      external: ['ext-a', 'ext-b', 'ext-c'],
-    });
+    writeFileSync(join(dir, 'src', 'libdef.js'), "export { default } from 'ext-a';\n");
     let facades = 0;
     const failures: string[] = [];
+    const run = async (
+      entry: 'lib' | 'libdef',
+      options: Record<string, unknown>,
+      label: string,
+    ): Promise<void> => {
+      const bundle = await rollup({
+        input: join(dir, 'src', `${entry}.js`),
+        external: ['ext-a', 'ext-b', 'ext-c'],
+        plugins: minify ? [terser()] : [],
+      });
+      const { output } = await bundle.generate({
+        format,
+        sourcemap: true,
+        globals: { 'ext-a': 'A', 'ext-b': 'B', 'ext-c': 'C' },
+        ...options,
+      } as never);
+      await bundle.close();
+      for (const chunk of output) {
+        if (chunk.type !== 'chunk' || !chunk.map || chunk.map.sources.length > 0) {
+          continue;
+        }
+        if (/[^;,]/.test(chunk.map.mappings)) {
+          continue;
+        }
+        facades++;
+        if (!isFacadeCode(chunk.code)) {
+          failures.push(`${entry} ${label}\n${chunk.code}`);
+        }
+      }
+    };
     for (const name of ['Lib', 'my.Lib']) {
       for (const preset of ['es5', 'es2015'] as const) {
-        for (const symbols of [false, true]) {
+        for (const esModule of minify ? [true] : [true, false, 'if-default-prop']) {
           for (const externalLiveBindings of [true, false]) {
-            for (const esModule of [true, false, 'if-default-prop'] as const) {
-              for (const interop of ['auto', 'default', 'esModule', 'compat'] as const) {
-                const label = JSON.stringify({
-                  format,
-                  name,
-                  preset,
-                  symbols,
-                  externalLiveBindings,
-                  esModule,
-                  interop,
-                });
-                const { output } = await bundle.generate({
-                  format,
-                  name,
-                  sourcemap: true,
-                  interop,
-                  generatedCode: { preset, symbols },
-                  externalLiveBindings,
-                  esModule,
-                  globals: { 'ext-a': 'A', 'ext-b': 'B', 'ext-c': 'C' },
-                });
-                for (const chunk of output) {
-                  if (chunk.type !== 'chunk' || !chunk.map || chunk.map.sources.length > 0) {
-                    continue;
-                  }
-                  if (/[^;,]/.test(chunk.map.mappings)) {
-                    continue;
-                  }
-                  facades++;
-                  if (!isFacadeCode(chunk.code)) {
-                    failures.push(`${label}\n${chunk.code}`);
-                  }
-                }
+            for (const symbols of minify ? [false] : [false, true]) {
+              for (const interop of minify ? ['auto'] : ['auto', 'default', 'esModule', 'compat']) {
+                await run(
+                  'lib',
+                  {
+                    name,
+                    interop,
+                    generatedCode: { preset, symbols },
+                    externalLiveBindings,
+                    esModule,
+                  },
+                  JSON.stringify({
+                    format,
+                    name,
+                    preset,
+                    symbols,
+                    externalLiveBindings,
+                    esModule,
+                    interop,
+                  }),
+                );
+              }
+            }
+          }
+        }
+        // the wrapper itself: a default-only entry, `extend`, `noConflict`, `strict`
+        for (const entry of ['lib', 'libdef'] as const) {
+          for (const extend of [false, true]) {
+            for (const noConflict of format === 'umd' ? [false, true] : [false]) {
+              for (const strict of [true, false]) {
+                await run(
+                  entry,
+                  { name, extend, noConflict, strict, generatedCode: { preset } },
+                  JSON.stringify({ format, name, preset, entry, extend, noConflict, strict }),
+                );
               }
             }
           }
         }
       }
     }
-    await bundle.close();
     expect(failures.slice(0, 2).join('\n\n')).toBe('');
     return facades;
   };
 
   for (const format of ['iife', 'umd'] as const) {
-    it(`every empty-map chunk Rollup writes for ${format} (option sweep, named and dotted) is a facade`, async () => {
-      expect(await wrapperSweep(format)).toBeGreaterThan(50);
-    }, 120_000);
+    for (const minify of [false, true]) {
+      it(`every empty-map chunk Rollup writes for ${format}${minify ? ' with terser' : ''} (option sweep, named, dotted, default-only, extend, noConflict) is a facade`, async () => {
+        expect(await wrapperSweep(format, minify)).toBeGreaterThan(30);
+      }, 300_000);
+    }
   }
 });

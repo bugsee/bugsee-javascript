@@ -32,6 +32,9 @@ const HELPER_NAME = /^_interop[A-Za-z]*$/;
 const OBJECT_CALL =
   /^(?:keys|defineProperty|defineProperties|getOwnPropertyDescriptor|create|freeze)$/;
 
+/** What an interop helper's body mentions (`__esModule`, or the namespace object it builds). */
+const INTEROP_SHAPE = /__esModule|Object\.(?:create|freeze)\(/;
+
 /** How deep the walk goes before it gives up ("not a facade"): a hostile chain must not exhaust the stack. */
 const MAX_DEPTH = 64;
 let depth = 0;
@@ -39,11 +42,20 @@ let depth = 0;
 let scopes: Array<Set<string>> = [];
 /** Inside a SystemJS setter: the factory's export callback, the one name whose calls are the module system's own. */
 let systemExport: string | undefined;
+/** What a wrapper's factory calls its `exports` parameter (terser renames it to `e`): writes to it are export writes. */
+let exportAlias: string | undefined;
+/** Pure helper functions declared in the facade being read (Rollup's interop helpers, however a minifier renamed them). */
+let helpers = new Set<string>();
+/** The bundle text, for the one textual question the grammar asks (is this function interop-shaped). */
+let source = '';
 
 const reset = (): void => {
   depth = 0;
   scopes = [];
   systemExport = undefined;
+  exportAlias = undefined;
+  helpers = new Set();
+  source = '';
 };
 
 /** Runs `fn` one level deeper, or gives up ("not a facade") past the cap. */
@@ -92,7 +104,11 @@ const declared = (declaration: Node): string[] =>
 /** A function Rollup writes into a re-export block: plain parameters and a body of re-export statements. */
 function pureFunction(fn: Node): boolean {
   const params = nodes(fn, 'params');
-  if (!params.every((param) => param.type === 'Identifier')) {
+  if (
+    !params.every((param) => param.type === 'Identifier') ||
+    // a binding named like the SystemJS export callback shadows it, at any depth
+    params.some((param) => systemExport !== undefined && param.name === systemExport)
+  ) {
     return false;
   }
   const body = node(fn, 'body') as Node; // a function always has a body
@@ -116,11 +132,20 @@ function pureCall(call: Node): boolean {
   if (calleeName === 'require') {
     return args.length === 1 && literalString(args[0]);
   }
+  if (isFunction(callee)) {
+    // `(e => e && e.__esModule ? e : { default: e })(require('x'))`: an interop helper applied where it is written
+    return (
+      args.length === nodes(callee, 'params').length &&
+      INTEROP_SHAPE.test(source.slice(callee.start as number, callee.end as number)) &&
+      pureFunction(callee) &&
+      args.every(pureExpression)
+    );
+  }
   if (calleeName !== undefined && calleeName === systemExport) {
     return args.every(pureExpression);
   }
   if (calleeName !== undefined) {
-    return HELPER_NAME.test(calleeName) && args.every(pureExpression);
+    return (HELPER_NAME.test(calleeName) || helpers.has(calleeName)) && args.every(pureExpression);
   }
   if (callee.type !== 'MemberExpression' || callee.computed === true) {
     return false;
@@ -182,7 +207,8 @@ function isExportTarget(target: Node | undefined): boolean {
       return chainPure(target);
     }
     current = node(current, 'object');
-    if (name(current) === 'exports') {
+    const root = name(current);
+    if (root !== undefined && (root === 'exports' || root === exportAlias)) {
       return chainPure(target);
     }
   }
@@ -230,6 +256,9 @@ function pureExpressionNode(expression: Node | undefined): boolean {
         pureExpression(node(expression, 'consequent')) &&
         pureExpression(node(expression, 'alternate'))
       );
+    case 'SequenceExpression':
+      // terser joins statements with commas: `return e && f(e), r.default = e, Object.freeze(r)`
+      return nodes(expression, 'expressions').every(pureExpression);
     case 'AssignmentExpression':
       // only inside a helper, and only to its own variables or the exports: a top-level write is `facadeExpression`'s
       return (
@@ -290,17 +319,35 @@ function pureStatementNode(statement: Node): boolean {
           nodes(left, 'declarations').every(
             (declarator) => node(declarator, 'id')?.type === 'Identifier',
           ));
+      const bodyStatement = node(statement, 'body') as Node;
+      let shadowed = false;
       if (left.type === 'VariableDeclaration') {
         const scope = scopes.at(-1);
         for (const bound of declared(left)) {
+          if (bound === systemExport) {
+            // block-scoped to the loop (terser reuses the callback's name for `for (const t in e)`): fine in `var`-free
+            // form, but inside the loop that name is NOT the callback, so no call of it counts there
+            if (left.kind === 'var') {
+              return false;
+            }
+            shadowed = true;
+          }
           scope?.add(bound);
         }
       }
-      return (
-        isBinding &&
-        pureExpression(node(statement, 'right')) &&
-        pureStatement(node(statement, 'body') as Node)
-      );
+      if (!isBinding || !pureExpression(node(statement, 'right'))) {
+        return false;
+      }
+      if (!shadowed) {
+        return pureStatement(bodyStatement);
+      }
+      const outer = systemExport;
+      systemExport = undefined;
+      try {
+        return pureStatement(bodyStatement);
+      } finally {
+        systemExport = outer;
+      }
     }
     case 'BlockStatement':
       return nodes(statement, 'body').every(pureStatement);
@@ -308,7 +355,7 @@ function pureStatementNode(statement: Node): boolean {
       const scope = scopes.at(-1);
       return nodes(statement, 'declarations').every((declarator) => {
         const id = name(node(declarator, 'id'));
-        if (id === undefined) {
+        if (id === undefined || id === systemExport) {
           return false;
         }
         scope?.add(id);
@@ -335,6 +382,9 @@ function facadeExpression(expression: Node | undefined): boolean {
       // `has(ext, k) && !has(exports, k) && Object.defineProperty(...)` (externalLiveBindings: false): the chain must
       // END in a call, and every operand is pure
       return node(expression, 'right')?.type === 'CallExpression' && pureExpression(expression);
+    case 'SequenceExpression':
+      // terser: `exports.a = r.a, exports.b = s.b, Object.defineProperty(...)`: every element is a facade expression
+      return nodes(expression, 'expressions').every(facadeExpression);
     default:
       return false;
   }
@@ -361,11 +411,13 @@ function facadeStatement(statement: Node): boolean {
         return (
           binding !== undefined &&
           init !== undefined &&
-          (pureCall(init) || (HELPER_NAME.test(binding) && isFunction(init) && pureFunction(init)))
+          (init.type === 'Identifier' || // `var Lib = A;` (an IIFE of a default-only entry)
+            pureCall(init) ||
+            (isFunction(init) && helpers.has(binding)))
         );
       });
     case 'FunctionDeclaration':
-      return HELPER_NAME.test(name(node(statement, 'id')) ?? '') && pureFunction(statement);
+      return helpers.has(name(node(statement, 'id')) ?? '');
     default:
       return false;
   }
@@ -379,11 +431,58 @@ function pureReference(n: Node | undefined): boolean {
   return n?.type === 'MemberExpression' && chainPure(n) && chainRoot(n) !== undefined;
 }
 
+/** What a wrapper returns: a reference, or (minified) `exports.a = x, exports.b = y, exports`: facade writes, then a reference. */
+function returnedValue(n: Node | undefined): boolean {
+  if (n?.type === 'MemberExpression' || n?.type === 'CallExpression') {
+    return pureExpression(n); // `main.default`, or (minified AMD default mode) `helper(main).default`
+  }
+  if (n?.type !== 'SequenceExpression') {
+    return pureReference(n);
+  }
+  const parts = nodes(n, 'expressions');
+  return parts.slice(0, -1).every(facadeExpression) && pureReference(parts.at(-1));
+}
+
+/**
+ * Declares the pure helper functions among `statements` (Rollup's interop helpers, `_interopDefault` and friends, or what
+ * a minifier renamed them to): a function whose body is made of the re-export language and that is shaped like an
+ * interop helper (named `_interop*`, or touching `__esModule` / `Object.create` / `Object.freeze`). Calls to a declared
+ * helper are then facade calls. Hoisting: they are declared before any statement is judged.
+ */
+function declareHelpers(statements: Node[]): void {
+  for (const statement of statements) {
+    const functions: Array<[string | undefined, Node]> =
+      statement.type === 'FunctionDeclaration'
+        ? [[name(node(statement, 'id')), statement]]
+        : statement.type === 'VariableDeclaration'
+          ? nodes(statement, 'declarations').flatMap(
+              (declarator): Array<[string | undefined, Node]> => {
+                const init = node(declarator, 'init');
+                return init !== undefined && isFunction(init)
+                  ? [[name(node(declarator, 'id')), init]]
+                  : [];
+              },
+            )
+          : [];
+    for (const [id, fn] of functions) {
+      const text = source.slice(fn.start as number, fn.end as number);
+      if (
+        id !== undefined &&
+        (HELPER_NAME.test(id) || INTEROP_SHAPE.test(text)) &&
+        pureFunction(fn)
+      ) {
+        helpers.add(id);
+      }
+    }
+  }
+}
+
 /**
  * The factory of a wrapper (AMD / IIFE / UMD): plain parameters and a body of facade statements, optionally ending in
- * a `return <reference>` (default-export mode, or an IIFE returning its `exports`).
+ * a `return <value>` (default-export mode, or an IIFE returning its `exports`). `exportsFirst`: the first parameter
+ * is the `exports` object (a minifier renames it), so writes to it are export writes.
  */
-function factoryBody(factory: Node | undefined): boolean {
+function factoryBody(factory: Node | undefined, exportsFirst: boolean): boolean {
   if (
     !isFunction(factory) ||
     !nodes(factory as Node, 'params').every((param) => param.type === 'Identifier')
@@ -394,13 +493,20 @@ function factoryBody(factory: Node | undefined): boolean {
   if (body.type !== 'BlockStatement') {
     return false;
   }
-  const statements = nodes(body, 'body');
-  const last = statements.at(-1);
-  const returns = last?.type === 'ReturnStatement';
-  return (
-    (!returns || pureReference(node(last as Node, 'argument'))) &&
-    (returns ? statements.slice(0, -1) : statements).every(facadeStatement)
-  );
+  const previous = exportAlias;
+  exportAlias = exportsFirst ? name(nodes(factory as Node, 'params')[0]) : undefined;
+  try {
+    const statements = nodes(body, 'body');
+    const last = statements.at(-1);
+    const returns = last?.type === 'ReturnStatement';
+    declareHelpers(statements);
+    return (
+      (!returns || returnedValue(node(last as Node, 'argument'))) &&
+      (returns ? statements.slice(0, -1) : statements).every(facadeStatement)
+    );
+  } finally {
+    exportAlias = previous;
+  }
 }
 
 /**
@@ -422,7 +528,7 @@ function isAmdFacade(statement: Node): boolean {
     args.length === 2 &&
     dependencies?.type === 'ArrayExpression' &&
     nodes(dependencies, 'elements').every((element) => literalString(element)) &&
-    factoryBody(factory)
+    factoryBody(factory, nodes(dependencies, 'elements')[0]?.value === 'exports')
   );
 }
 
@@ -441,6 +547,23 @@ function thisChain(n: Node | undefined): string | undefined {
   return current?.type === 'ThisExpression' ? parts.join('.') : undefined;
 }
 
+/** `this.my = this.my || {}`: a dotted `output.name`'s namespace, or an IIFE's `extend` argument. */
+function isThisNamespaceInit(n: Node | undefined): boolean {
+  const target =
+    n?.type === 'AssignmentExpression' && n.operator === '='
+      ? thisChain(node(n, 'left'))
+      : undefined;
+  const right = n === undefined ? undefined : node(n, 'right');
+  return (
+    target !== undefined &&
+    right?.type === 'LogicalExpression' &&
+    right.operator === '||' &&
+    thisChain(node(right, 'left')) === target &&
+    node(right, 'right')?.type === 'ObjectExpression' &&
+    nodes(node(right, 'right') as Node, 'properties').length === 0
+  );
+}
+
 /** `(function (exports, extA) { ...facade body... return exports; })({}, A)`: Rollup's IIFE. */
 function isIifeCall(call: Node | undefined): boolean {
   const callee = call?.type === 'CallExpression' ? node(call, 'callee') : undefined;
@@ -448,22 +571,131 @@ function isIifeCall(call: Node | undefined): boolean {
     return false;
   }
   const args = nodes(call, 'arguments');
+  const first = args[0];
   return (
     args.length === nodes(callee, 'params').length &&
     args.every(
-      (arg) => arg.type === 'ThisExpression' || pureExpression(arg), // (`{}` is pure)
+      (arg) => arg.type === 'ThisExpression' || isThisNamespaceInit(arg) || pureExpression(arg), // (`{}` is pure)
     ) &&
-    factoryBody(callee)
+    factoryBody(
+      callee,
+      first !== undefined &&
+        (isThisNamespaceInit(first) ||
+          (first.type === 'ObjectExpression' && nodes(first, 'properties').length === 0)),
+    )
   );
 }
 
+type UmdState = { global: string; factory: string; exports: boolean };
+
 /** The UMD preamble's expression: `typeof exports === 'object' ? factory(...) : define(...) : (global = ..., factory(...))`. */
-function umdExpression(expression: Node | undefined, global: string, factory: string): boolean {
-  return bounded(() => umdNode(expression, global, factory));
+function umdExpression(expression: Node | undefined, state: UmdState): boolean {
+  return bounded(() => umdNode(expression, state));
 }
 
-function umdNode(expression: Node | undefined, global: string, factory: string): boolean {
-  const recurse = (n: Node | undefined): boolean => umdExpression(n, global, factory);
+/** `global`, `global.Lib`, `(global = ...).Lib`: where the UMD preamble writes the library. */
+function umdTarget(n: Node | undefined, state: UmdState): boolean {
+  if (n?.type === 'Identifier') {
+    return n.name === state.global;
+  }
+  if (n?.type === 'MemberExpression') {
+    return chainPure(n) && umdTarget(node(n, 'object'), state);
+  }
+  return (
+    n?.type === 'AssignmentExpression' &&
+    n.operator === '=' &&
+    name(node(n, 'left')) === state.global &&
+    umdExpression(node(n, 'right'), state)
+  );
+}
+
+/**
+ * Rollup's `noConflict` preamble: `(function () { var current = global.Lib; var exports = global.Lib = {};
+ * factory(exports, global.A); exports.noConflict = function () { global.Lib = current; return exports; }; })()`.
+ */
+function umdNoConflict(call: Node, state: UmdState): boolean {
+  const fn = node(call, 'callee');
+  if (
+    fn === undefined ||
+    !isFunction(fn) ||
+    nodes(call, 'arguments').length > 0 ||
+    nodes(fn, 'params').length > 0
+  ) {
+    return false;
+  }
+  const locals = new Set<string>();
+  const local = (n: Node | undefined): boolean =>
+    n?.type === 'Identifier' && locals.has(n.name as string);
+  const restorer = (n: Node | undefined): boolean => {
+    // `function () { global.Lib = current; return exports; }`; minified: `() => (global.Lib = current, exports)`
+    if (n === undefined || !isFunction(n) || nodes(n, 'params').length > 0) {
+      return false;
+    }
+    const body = node(n, 'body') as Node;
+    const parts = (e: Node | undefined): Node[] =>
+      e?.type === 'SequenceExpression' ? nodes(e, 'expressions') : e ? [e] : [];
+    let flat: Node[];
+    if (body.type === 'BlockStatement') {
+      const statements = nodes(body, 'body');
+      if (statements.at(-1)?.type !== 'ReturnStatement') {
+        return false;
+      }
+      flat = statements.flatMap((st) =>
+        st.type === 'ExpressionStatement'
+          ? parts(node(st, 'expression'))
+          : st.type === 'ReturnStatement'
+            ? parts(node(st, 'argument'))
+            : [st],
+      );
+    } else {
+      flat = parts(body);
+    }
+    return (
+      flat.length > 1 && // at least one restore, then the returned `exports`
+      local(flat.at(-1)) &&
+      flat
+        .slice(0, -1)
+        .every(
+          (part) =>
+            part.type === 'AssignmentExpression' &&
+            umdTarget(node(part, 'left'), state) &&
+            local(node(part, 'right')),
+        )
+    );
+  };
+  const expressionOk = (e: Node | undefined): boolean => {
+    if (e?.type === 'SequenceExpression') {
+      return nodes(e, 'expressions').every(expressionOk);
+    }
+    if (e?.type === 'AssignmentExpression' && e.operator === '=') {
+      const left = node(e, 'left');
+      const right = node(e, 'right');
+      return left?.type === 'MemberExpression' && local(node(left, 'object')) && restorer(right);
+    }
+    return (
+      e?.type === 'CallExpression' &&
+      name(node(e, 'callee')) === state.factory &&
+      nodes(e, 'arguments').every((arg) => local(arg) || umdExpression(arg, state))
+    );
+  };
+  const body = node(fn, 'body') as Node;
+  return nodes(body, 'body').every((st) => {
+    if (st.type === 'VariableDeclaration') {
+      return nodes(st, 'declarations').every((declarator) => {
+        const id = name(node(declarator, 'id'));
+        const init = node(declarator, 'init');
+        if (id !== undefined) {
+          locals.add(id);
+        }
+        return id !== undefined && init !== undefined && umdExpression(init, state);
+      });
+    }
+    return st.type === 'ExpressionStatement' && expressionOk(node(st, 'expression'));
+  });
+}
+
+function umdNode(expression: Node | undefined, state: UmdState): boolean {
+  const recurse = (n: Node | undefined): boolean => umdExpression(n, state);
   switch (expression?.type) {
     case 'ConditionalExpression':
       return (
@@ -479,13 +711,12 @@ function umdNode(expression: Node | undefined, global: string, factory: string):
     case 'SequenceExpression':
       return nodes(expression, 'expressions').every(recurse);
     case 'AssignmentExpression': {
-      // `global = typeof globalThis !== ... : global || self`, and `global.Lib = {}` as a factory argument
+      // `global = typeof globalThis !== ... : global || self`, `global.Lib = {}` as a factory argument, and in
+      // default-export mode `module.exports = factory(...)` / `global.Lib = factory(...)`
       const left = node(expression, 'left');
       return (
         expression.operator === '=' &&
-        (name(left) === global ||
-          (left?.type === 'MemberExpression' && chainRoot(left) === global)) &&
-        chainPure(left) &&
+        (umdTarget(left, state) || isExportTarget(left)) &&
         recurse(node(expression, 'right'))
       );
     }
@@ -494,18 +725,22 @@ function umdNode(expression: Node | undefined, global: string, factory: string):
     case 'CallExpression': {
       const callee = name(node(expression, 'callee'));
       const args = nodes(expression, 'arguments');
-      if (callee === factory) {
+      if (callee === state.factory) {
         return args.every(recurse);
       }
       if (callee === 'define') {
+        const dependencies = args[0];
+        state.exports = nodes(dependencies as Node, 'elements')[0]?.value === 'exports';
         return (
           args.length === 2 &&
-          args[0]?.type === 'ArrayExpression' &&
-          nodes(args[0], 'elements').every((element) => literalString(element)) &&
-          name(args[1]) === factory
+          dependencies?.type === 'ArrayExpression' &&
+          nodes(dependencies, 'elements').every((element) => literalString(element)) &&
+          name(args[1]) === state.factory
         );
       }
-      return pureCall(expression);
+      return isFunction(node(expression, 'callee'))
+        ? umdNoConflict(expression, state)
+        : pureCall(expression);
     }
     default:
       return pureExpression(expression);
@@ -523,18 +758,49 @@ function isUmdCall(call: Node | undefined): boolean {
   const [global, factory] = params.map(name);
   const wrapper = node(callee, 'body') as Node;
   const preamble = nodes(wrapper, 'body');
+  if (
+    params.length !== 2 ||
+    global === undefined ||
+    factory === undefined ||
+    args.length !== 2 ||
+    !(args[0]?.type === 'ThisExpression' || pureExpression(args[0])) ||
+    preamble.length !== 1 ||
+    preamble[0]?.type !== 'ExpressionStatement' ||
+    !/^(?:Conditional|Sequence|Call)Expression$/.test(node(preamble[0], 'expression')?.type ?? '')
+  ) {
+    return false;
+  }
+  const state: UmdState = { global, factory, exports: false };
   return (
-    params.length === 2 &&
-    global !== undefined &&
-    factory !== undefined &&
-    args.length === 2 &&
-    (args[0]?.type === 'ThisExpression' || pureExpression(args[0])) &&
-    preamble.length === 1 &&
-    preamble[0]?.type === 'ExpressionStatement' &&
-    /^(?:Conditional|Sequence|Call)Expression$/.test(node(preamble[0], 'expression')?.type ?? '') &&
-    umdExpression(node(preamble[0], 'expression'), global, factory) &&
-    factoryBody(args[1])
+    umdExpression(node(preamble[0], 'expression'), state) && factoryBody(args[1], state.exports)
   );
+}
+
+/** One expression of an IIFE / UMD wrapper statement (terser joins several with commas). */
+function wrapperExpression(expression: Node | undefined): boolean {
+  return bounded(() => {
+    let current = expression;
+    if (current?.type === 'UnaryExpression' && /^(?:!|void)$/.test(current.operator as string)) {
+      current = node(current, 'argument'); // terser: `!function (e) { ... }(...)`
+    }
+    if (current?.type === 'SequenceExpression') {
+      return nodes(current, 'expressions').every(wrapperExpression);
+    }
+    if (current?.type === 'CallExpression') {
+      return isIifeCall(current) || isUmdCall(current);
+    }
+    if (current?.type !== 'AssignmentExpression' || current.operator !== '=') {
+      return false;
+    }
+    // `this.my = this.my || {};` (a dotted `output.name`'s namespace), `this.my.Lib = (function () {...})({})`, or (a
+    // default-only entry) `this.Lib = A;`
+    return (
+      thisChain(node(current, 'left')) !== undefined &&
+      (isThisNamespaceInit(current) ||
+        isIifeCall(node(current, 'right')) ||
+        node(current, 'right')?.type === 'Identifier')
+    );
+  });
 }
 
 /** IIFE and UMD wrappers, bound to a name or a `this.X` namespace, or bare. */
@@ -547,49 +813,9 @@ function isWrapperFacade(statement: Node): boolean {
       isIifeCall(node(declarations[0] as Node, 'init'))
     );
   }
-  const expression =
-    statement.type === 'ExpressionStatement' ? node(statement, 'expression') : undefined;
-  if (expression?.type === 'CallExpression') {
-    return isIifeCall(expression) || isUmdCall(expression);
-  }
-  if (expression?.type !== 'AssignmentExpression' || expression.operator !== '=') {
-    return false;
-  }
-  const target = thisChain(node(expression, 'left'));
-  const right = node(expression, 'right');
-  if (target === undefined) {
-    return false;
-  }
-  // `this.my = this.my || {};` (a dotted `output.name`'s namespace) or `this.my.Lib = (function () {...})({})`
-  return right?.type === 'LogicalExpression'
-    ? right.operator === '||' &&
-        thisChain(node(right, 'left')) === target &&
-        node(right, 'right')?.type === 'ObjectExpression' &&
-        nodes(node(right, 'right') as Node, 'properties').length === 0
-    : isIifeCall(right);
-}
-
-/** Whether a setter declares `callback` (as a parameter or a variable anywhere in its body): that shadows the export callback. */
-function shadows(fn: Node, callback: string): boolean {
-  if (nodes(fn, 'params').some((param) => name(param) === callback)) {
-    return true;
-  }
-  const visit = (statement: Node | undefined): boolean => {
-    switch (statement?.type) {
-      case 'VariableDeclaration':
-        return declared(statement).includes(callback);
-      case 'BlockStatement':
-        return nodes(statement, 'body').some(visit);
-      case 'IfStatement':
-        return visit(node(statement, 'consequent')) || visit(node(statement, 'alternate'));
-      case 'ForInStatement':
-        return visit(node(statement, 'left')) || visit(node(statement, 'body'));
-      default:
-        return false;
-    }
-  };
-  const body = node(fn, 'body');
-  return body?.type === 'BlockStatement' ? visit(body) : false;
+  return (
+    statement.type === 'ExpressionStatement' && wrapperExpression(node(statement, 'expression'))
+  );
 }
 
 /**
@@ -668,12 +894,7 @@ function isSystemFacade(statement: Node): boolean {
       executeBody.type === 'BlockStatement' &&
       nodes(executeBody, 'body').every((item) => item.type === 'EmptyStatement') &&
       setterFunctions.length === (setters.elements as unknown[]).length &&
-      setterFunctions.every(
-        (setter) =>
-          isFunction(setter) &&
-          !(callback !== undefined && shadows(setter, callback)) &&
-          pureFunction(setter),
-      )
+      setterFunctions.every((setter) => isFunction(setter) && pureFunction(setter))
     );
   } finally {
     systemExport = undefined;
@@ -817,7 +1038,9 @@ export function isFacadeCode(code: string): boolean {
       sourceType: 'module',
       onComment: comments as never,
     }) as unknown as Node;
+    source = code;
     const body = nodes(program, 'body');
+    declareHelpers(body);
     const last = body.at(-1);
     const isStub =
       last !== undefined &&
