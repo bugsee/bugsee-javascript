@@ -961,38 +961,93 @@ async function diagnose(dirInput: string, options: DoctorOptions): Promise<Docto
     }
   }
 
-  // Bundles with no pointer and no sibling map: pair each with a map nothing claimed, by the debugId it carries, else
-  // by a `file` field that names it (only when exactly one map does).
+  // Bundles with no pointer and no sibling map: a hidden map the bundler wrote elsewhere. The pairing is resolved
+  // for the whole build, never in walk order: first every stamped bundle whose debugId matches exactly one free map,
+  // then, for the bundles left, a map whose `file` names the bundle (exactly one candidate, and not a map that
+  // belongs to another stamped bundle's id). Ambiguity pairs nothing.
   if (unpaired.length > 0) {
-    const index = new Map<string, { debugId?: string; file?: string }>();
+    const byDebugId = new Map<string, string[]>();
+    const byFile = new Map<string, Array<{ map: string; debugId?: string }>>();
+    const push = <T>(table: Map<string, T[]>, key: string, value: T): void => {
+      const list = table.get(key);
+      if (list === undefined) {
+        table.set(key, [value]);
+      } else {
+        list.push(value);
+      }
+    };
     for (const map of maps) {
       if (!claimedMaps.has(map)) {
         const read = await loadMap(map);
         if (read.ok && read.parsed.ok) {
           const file = read.parsed.json.file;
-          index.set(map, {
-            debugId: read.parsed.debugId,
-            file: typeof file === 'string' ? nodePath.basename(file) : undefined,
-          });
+          if (read.parsed.debugId !== undefined) {
+            push(byDebugId, read.parsed.debugId, map);
+          }
+          if (typeof file === 'string') {
+            push(byFile, nodePath.basename(file), { map, debugId: read.parsed.debugId });
+          }
         }
       }
     }
+    const pair = async (entry: (typeof unpaired)[number], map: string): Promise<void> => {
+      const reread = await readInside(entry.bundle, maxBundleBytes, realDir);
+      await pairMap(
+        map,
+        entry.name,
+        /* v8 ignore next -- the bundle was read a moment ago; failing now means it changed under us (a race), and null keeps it from being judged a facade */
+        reread.ok ? reread.bytes.toString('utf8') : null,
+        entry.id,
+      );
+    };
+    // The free candidates of a lookup, up to two (more than one is ambiguous).
+    const free = <T>(
+      list: T[] | undefined,
+      map: (item: T) => string,
+      keep: (item: T) => boolean,
+    ): T[] => {
+      const found: T[] = [];
+      for (const item of list ?? []) {
+        if (!claimedMaps.has(map(item)) && keep(item)) {
+          found.push(item);
+          if (found.length === 2) {
+            break;
+          }
+        }
+      }
+      return found;
+    };
+    const ambiguous = new Set<(typeof unpaired)[number]>();
+    const left: typeof unpaired = [];
     for (const entry of unpaired) {
-      const free = [...index].filter(([map]) => !claimedMaps.has(map));
-      const byId =
-        entry.id === undefined ? [] : free.filter(([, info]) => info.debugId === entry.id);
-      const byFile = free.filter(([, info]) => info.file === nodePath.basename(entry.bundle));
-      const match =
-        byId.length === 1 ? byId : byId.length === 0 && byFile.length === 1 ? byFile : [];
-      if (match.length === 1) {
-        const reread = await readInside(entry.bundle, maxBundleBytes, realDir);
-        await pairMap(
-          (match[0] as [string, unknown])[0],
-          entry.name,
-          /* v8 ignore next -- the bundle was read a moment ago; failing now means it changed under us (a race), and null keeps it from being judged a facade */
-          reread.ok ? reread.bytes.toString('utf8') : null,
-          entry.id,
-        );
+      if (entry.id === undefined) {
+        left.push(entry);
+        continue;
+      }
+      const hits = free(
+        byDebugId.get(entry.id),
+        (map) => map,
+        () => true,
+      );
+      if (hits.length === 1) {
+        await pair(entry, hits[0] as string);
+      } else {
+        if (hits.length > 1) {
+          ambiguous.add(entry);
+        }
+        left.push(entry);
+      }
+    }
+    for (const entry of left) {
+      const hits = ambiguous.has(entry)
+        ? []
+        : free(
+            byFile.get(nodePath.basename(entry.bundle)),
+            (item) => item.map,
+            (item) => item.debugId === undefined || !stampedIds.has(item.debugId),
+          );
+      if (hits.length === 1) {
+        await pair(entry, (hits[0] as { map: string }).map);
       } else if (entry.id === undefined) {
         unstampedWithoutMap.push(entry.name);
       }

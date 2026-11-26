@@ -33,6 +33,7 @@ import { listOutputMaps } from './stamp-files';
 
 const ID_A = '11111111-1111-4111-8111-111111111111';
 const ID_B = '22222222-2222-4222-8222-222222222222';
+const ID_C = '33333333-3333-4333-8333-333333333333';
 
 let root: string;
 let dist: string;
@@ -296,6 +297,85 @@ describe('reads', () => {
       put('maps/main.js.map', mapJson({ file: 'main.js', debugId: ID_B }));
       expect(find(await run(), 'stamp.map-id-mismatch')).toBeUndefined();
     });
+
+    for (const [cjs, esm] of [
+      ['cjs', 'esm'],
+      ['esm', 'cjs'],
+    ] as const) {
+      it(`the pairing does not depend on walk order (${cjs} before ${esm}): a stale map is a mismatch`, async () => {
+        put(`${cjs}/index.js`, `a${stamp(ID_A)}`);
+        put(`maps/${cjs}/index.js.map`, mapJson({ file: 'index.js', debugId: ID_C }));
+        put(`${esm}/index.js`, `b${stamp(ID_B)}`);
+        put(`maps/${esm}/index.js.map`, mapJson({ file: 'index.js', debugId: ID_B }));
+        const report = await run();
+        expect(find(report, 'stamp.map-id-mismatch')?.file).toBe(`maps/${cjs}/index.js.map`);
+      });
+
+      it(`an unstamped copy does not take another bundle's map (${cjs} before ${esm})`, async () => {
+        put(`${cjs}/index.js`, 'vendor');
+        put(`${esm}/index.js`, `b${stamp(ID_B)}`);
+        put(`maps/${esm}/index.js.map`, mapJson({ file: 'index.js', debugId: ID_B }));
+        const report = await run();
+        expect(lostStamp(report)).toHaveLength(0);
+        expect(report.findings.some((f) => f.message.includes('no map on disk'))).toBe(true);
+      });
+    }
+
+    it('a map that belongs to another stamped bundle is not taken by `file`', async () => {
+      put('r.js', `r${stamp(ID_A)}`);
+      put('maps/x.map', mapJson({ file: 'x.js', debugId: ID_A }));
+      put('maps/y.map', mapJson({ file: 'y.js', debugId: ID_A }));
+      put('s.js', `s${stamp(ID_B)}`);
+      put('maps/s.map', mapJson({ file: 's.js', debugId: ID_A }));
+      expect(find(await run(), 'stamp.map-id-mismatch')).toBeUndefined();
+    });
+
+    it('an ambiguous debugId pairs nothing (an empty map stays an orphan note)', async () => {
+      put('r.js', `console.log(1)${stamp(ID_A)}`);
+      const empty = JSON.stringify({
+        version: 3,
+        sources: [],
+        names: [],
+        mappings: '',
+        debugId: ID_A,
+      });
+      put('maps/x.map', empty);
+      put('maps/y.map', empty.replace('"names"', '"file":"y.js","names"'));
+      const report = await run();
+      expect(
+        report.findings.filter((f) => f.id === 'map.no-sources' && f.severity === 'error'),
+      ).toHaveLength(0);
+    });
+
+    it('costs about as much as the sibling layout: pairing is not quadratic', async () => {
+      const n = 6000;
+      const make = (sub: string, moved: boolean): string => {
+        for (let i = 0; i < n; i++) {
+          const id = `${String(i).padStart(8, '0')}-0000-4000-8000-${sub.padStart(12, '0')}`;
+          put(
+            `${sub}/c${i}.js`,
+            `x${moved ? '' : `\n//# sourceMappingURL=c${i}.js.map`}${stamp(id)}`,
+          );
+          put(
+            moved ? `${sub}/maps/c${i}.js.map` : `${sub}/c${i}.js.map`,
+            mapJson({ file: `c${i}.js`, debugId: id }),
+          );
+        }
+        return join(dist, sub);
+      };
+      const time = async (sub: string): Promise<number> => {
+        const started = performance.now();
+        await diagnoseBuildOutput(join(dist, sub), { projectRoot: root, skipEnv: true });
+        return performance.now() - started;
+      };
+      make('sib', false);
+      make('mov', true);
+      await time('sib'); // warm up
+      const sibling = await time('sib');
+      const moved = await time('mov');
+      // measured: ~2x (each map is read to index it and again to validate it); the old per-bundle scan was ~5x and growing
+      expect(moved / sibling).toBeLessThan(3);
+    }, 300000);
 
     it('a map is paired with one bundle only', async () => {
       put('a/main.js', 'a');
