@@ -957,12 +957,16 @@ function isSystemFacade(statement: Node): boolean {
   const setterFunctions = (setters.elements as unknown[]).filter(isNode);
   systemExport = callback;
   try {
-    return (
-      nodes(execute as Node, 'params').length === 0 &&
-      executeBody.type === 'BlockStatement' &&
-      nodes(executeBody, 'body').every((item) => item.type === 'EmptyStatement') &&
-      setterFunctions.length === (setters.elements as unknown[]).length &&
-      setterFunctions.every((setter) => isFunction(setter) && pureFunction(setter))
+    // the factory's parameters and prelude variables shadow any outer helper of the same name
+    return withHelperScope(
+      statements.slice(0, -1),
+      nodes(factory as Node, 'params').map((param) => name(param) as string),
+      () =>
+        nodes(execute as Node, 'params').length === 0 &&
+        executeBody.type === 'BlockStatement' &&
+        nodes(executeBody, 'body').every((item) => item.type === 'EmptyStatement') &&
+        setterFunctions.length === (setters.elements as unknown[]).length &&
+        setterFunctions.every((setter) => isFunction(setter) && pureFunction(setter)),
     );
   } finally {
     systemExport = undefined;

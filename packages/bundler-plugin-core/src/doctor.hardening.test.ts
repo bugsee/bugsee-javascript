@@ -236,6 +236,26 @@ describe('reads', () => {
     }
   });
 
+  it('round 23: a SystemJS factory parameter or prelude variable shadows an outer helper', () => {
+    const helper = 'function n(e){return e&&e.__esModule?e:{default:e}}\n';
+    expect(
+      isFacadeCode(
+        `${helper}System.register(["dep"],function(exports){"use strict";var n=globalThis.fetch;return{setters:[function(m){exports("a",n("https://x"))}],execute:function(){}}});`,
+      ),
+    ).toBe(false);
+    expect(
+      isFacadeCode(
+        `${helper}System.register(["dep"],function(exports,n){return{setters:[function(m){exports("a",n(m))}],execute:function(){}}});`,
+      ),
+    ).toBe(false);
+    // unshadowed, the outer helper is still a helper
+    expect(
+      isFacadeCode(
+        `${helper}System.register(["dep"],function(exports){return{setters:[function(m){exports("a",n(m))}],execute:function(){}}});`,
+      ),
+    ).toBe(true);
+  });
+
   it.skipIf(process.getuid?.() === 0)(
     'round 22: an empty map whose bundle could not be read is an error, not a facade note',
     async () => {
