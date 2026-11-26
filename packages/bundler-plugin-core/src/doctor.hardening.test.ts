@@ -1781,6 +1781,13 @@ describe('round 16 review findings', () => {
     expect(hasOriginalPosition('AEAA;AFAA', 2)).toBe(true); // +2 then -2: the second segment lands on index 0
     // an unusable segment (bad character) does not move the running source index
     expect(hasOriginalPosition('AEA$,AAAA', 2)).toBe(true);
+    // a segment whose generated column is negative is skipped before its source delta applies (ECMA-426)
+    expect(hasOriginalPosition('DCAA;ADAA', 1)).toBe(false);
+    expect(hasOriginalPosition('DCAA;ACAA', 3)).toBe(true); // the second line's own column is fine: index 1 of 3
+    expect(hasOriginalPosition('DAAA;AAAA', 1)).toBe(true); // the generated column resets at `;`
+    expect(hasOriginalPosition('EAAA,DAAA', 1)).toBe(true); // 2 then 1: both non-negative
+    expect(hasOriginalPosition('DAAA', 1)).toBe(false);
+    expect(hasOriginalPosition('EAAA,HAAA', 1)).toBe(true); // 2 then 2-3=-1: the first is already fine
     // only a segment with an original line and column moves the running source index (ECMA-426)
     expect(hasOriginalPosition('AC,EDAA', 1)).toBe(false); // AC (2 values) must not commit +1
     expect(hasOriginalPosition('AEAA$,AAAA', 2)).toBe(true); // a segment with a bad character commits nothing
@@ -2154,6 +2161,252 @@ exports.d = _interopDefault(dep3);
     expect(isFacadeCode('exports.a = Object.keys(x);')).toBe(true);
     expect(isFacadeCode('export default 1;')).toBe(false);
     expect(isFacadeCode('class A {}')).toBe(false);
+  });
+
+  it('isFacadeCode round 19: forEach only on Object.keys(...), assignments only to CommonJS exports', () => {
+    expect(isFacadeCode("const plugins = require('./plugins'); plugins.forEach(() => {});")).toBe(
+      false,
+    );
+    expect(isFacadeCode('Object.keys(x).forEach(() => {});')).toBe(true);
+    expect(isFacadeCode('Object.values(x).forEach(() => {});')).toBe(false);
+    expect(isFacadeCode("require('./x').forEach(() => {});")).toBe(false);
+    expect(isFacadeCode('globalThis.appReady = true;')).toBe(false);
+    expect(isFacadeCode('x.a = main.a;')).toBe(false);
+    expect(isFacadeCode('exports = main;')).toBe(false);
+    expect(isFacadeCode("exports['a'] = main.a;")).toBe(true);
+    expect(isFacadeCode('module.exports.a = main.a;')).toBe(true);
+    expect(isFacadeCode("module.exports = require('./m.cjs');")).toBe(true);
+    expect(isFacadeCode('module.x = main.a;')).toBe(false);
+    expect(isFacadeCode('exports.a = exports.b = main.a;')).toBe(false); // a chained assignment is not Rollup's
+    expect(isFacadeCode('ok && (globalThis.x = 1);')).toBe(false);
+    expect(isFacadeCode('exports.a = (globalThis.x = 1);')).toBe(false);
+  });
+
+  it("isFacadeCode round 19: Rollup's `&&` chain (externalLiveBindings: false) and defineProperties", () => {
+    const chain = `Object.prototype.hasOwnProperty.call(ext, '__proto__') &&
+  !Object.prototype.hasOwnProperty.call(exports, '__proto__') &&
+  Object.defineProperty(exports, '__proto__', { enumerable: true, value: ext['__proto__'] });`;
+    expect(isFacadeCode(chain)).toBe(true);
+    expect(isFacadeCode(chain.replace('Object.defineProperty(exports', 'track(exports'))).toBe(
+      false,
+    );
+    expect(isFacadeCode(chain.replace('Object.prototype.hasOwnProperty.call(ext', 'has(ext'))).toBe(
+      false,
+    );
+    expect(isFacadeCode('x && y;')).toBe(false); // a bare reference chain does nothing a facade needs
+    expect(isFacadeCode('ok && track();')).toBe(false);
+    expect(isFacadeCode("ok || Object.defineProperty(exports, 'a', {});")).toBe(true);
+    expect(
+      isFacadeCode(
+        "Object.defineProperties(exports, { __esModule: { value: true }, [Symbol.toStringTag]: { value: 'Module' } });",
+      ),
+    ).toBe(true);
+    expect(isFacadeCode('Object.defineProperties(exports, { [track()]: { value: true } });')).toBe(
+      false,
+    );
+    // computed property keys are code too
+    expect(
+      isFacadeCode("Object.defineProperty(exports, 'a', { [track()]: true, get: () => dep.a });"),
+    ).toBe(false);
+    expect(
+      isFacadeCode(
+        "Object.defineProperty(exports, 'a', { [Symbol.toStringTag]: 'Module', get: () => dep.a });",
+      ),
+    ).toBe(true);
+  });
+
+  it('isFacadeCode round 19: AMD define(...) wrapping a facade body', () => {
+    const star =
+      "Object.keys(ext).forEach(function (k) { if (k !== 'default' && !Object.prototype.hasOwnProperty.call(exports, k)) Object.defineProperty(exports, k, { enumerable: true, get: function () { return ext[k]; } }); });";
+    const amd = (body: string, head = "['exports', './main.js', 'ext']"): string =>
+      `define(${head}, (function (exports, main, ext) { 'use strict'; ${body} }));`;
+    expect(isFacadeCode(amd(`exports.a = main.a; ${star}`))).toBe(true);
+    expect(isFacadeCode(amd('exports.a = main.a;', "'id', ['exports', './main.js', 'ext']"))).toBe(
+      true,
+    );
+    expect(isFacadeCode(amd('exports.a = main.a;', "['exports', './main.js']"))).toBe(true);
+    expect(isFacadeCode(amd('exports.a = main.a; track();'))).toBe(false);
+    expect(isFacadeCode(amd('globalThis.x = 1;'))).toBe(false);
+    expect(isFacadeCode(amd('define([], function () {});'))).toBe(false); // no nesting
+    expect(isFacadeCode(amd('exports.a = main.a;', 'deps'))).toBe(false); // not an array of literals
+    expect(isFacadeCode(amd('exports.a = main.a;', '[dep]'))).toBe(false);
+    expect(isFacadeCode("define(['exports'], 1);")).toBe(false);
+    expect(isFacadeCode("define(['exports'], function ({ a }) {});")).toBe(false);
+    expect(isFacadeCode("define(['exports'], function (exports) { return track(); });")).toBe(
+      false,
+    );
+    expect(isFacadeCode("define(['exports']);")).toBe(false);
+    expect(isFacadeCode("define(1, ['exports'], function (exports) {});")).toBe(false);
+    expect(isFacadeCode("define(['exports'], (exports) => { exports.a = main.a; });")).toBe(true);
+    expect(isFacadeCode("define(['exports'], (exports) => exports);")).toBe(false); // an expression body is not a facade body
+    expect(isFacadeCode("other(['exports'], function (exports) {});")).toBe(false);
+  });
+
+  it('isFacadeCode round 19: SystemJS System.register(...) wrapping a facade', () => {
+    const es5 = `System.register(['./main-C2NTlNLS.js', 'ext-a', 'ext-b', 'ext-c'], (function (exports) {
+	'use strict';
+	var _starExcludes = {
+		__proto__: null,
+		default: 1,
+		a: 1,
+		named: 1
+	};
+	return {
+		setters: [function (module) {
+			exports("a", module.a);
+		}, function (module) {
+			var setter = { __proto__: null };
+			for (var name in module) {
+				if (!_starExcludes[name]) setter[name] = module[name];
+			}
+			exports(setter);
+		}, function (module) {
+			exports("ns", module);
+		}, function (module) {
+			exports({ d: module.default, named: module.named });
+		}],
+		execute: (function () {
+
+
+
+		})
+	};
+}));
+//# sourceMappingURL=index.js.map
+`;
+    const es2015 = `System.register(['./main.js', 'ext-a'], (function (exports) {
+	'use strict';
+	const _starExcludes = { __proto__: null, default: 1 };
+	return {
+		setters: [module => {
+			exports("a", module.a);
+		}, module => {
+			const setter = { __proto__: null };
+			for (const name in module) {
+				if (!_starExcludes[name]) setter[name] = module[name];
+			}
+			exports(setter);
+		}],
+		execute: (function () {})
+	};
+}));`;
+    expect(isFacadeCode(es5)).toBe(true);
+    expect(
+      isFacadeCode(
+        "System.register('id', [], (function (exports) { return { setters: [], execute: (function () {}) }; }));",
+      ),
+    ).toBe(true); // with a module id
+    expect(isFacadeCode(es2015)).toBe(true);
+    expect(
+      isFacadeCode(
+        es5
+          .replace("'./main-C2NTlNLS.js', ", "'id', ['./main-C2NTlNLS.js'], ")
+          .replace("'ext-a', 'ext-b', 'ext-c'], (", ''),
+      ),
+    ).toBe(false); // malformed head
+    // anything that DOES something is not a facade
+    expect(
+      isFacadeCode(es5.replace('execute: (function () {', 'execute: (function () { track();')),
+    ).toBe(false);
+    expect(
+      isFacadeCode(
+        es5.replace('exports("a", module.a);', 'track(module); exports("a", module.a);'),
+      ),
+    ).toBe(false);
+    expect(isFacadeCode(es5.replace("'use strict';", "'use strict'; track();"))).toBe(false);
+    expect(isFacadeCode(es5.replace('return {', 'track(); return {'))).toBe(false);
+    expect(isFacadeCode(es5.replace('setters: [', 'other: 1, setters: ['))).toBe(false);
+    expect(isFacadeCode(es5.replace('execute:', 'run:'))).toBe(false);
+    expect(isFacadeCode(es5.replace('setters:', 'listeners:'))).toBe(false);
+    expect(isFacadeCode(es5.replace('(function () {\n\n\n\n\t\t})', '1'))).toBe(false);
+    expect(isFacadeCode(es5.replace('function (exports)', 'function ({ exports })'))).toBe(false);
+    expect(isFacadeCode(es5.replace('var _starExcludes = {', 'var _starExcludes = track({'))).toBe(
+      false,
+    );
+    expect(
+      isFacadeCode(
+        'System.register([], (function (exports) { return { setters: [1], execute: (function () {}) }; }));',
+      ),
+    ).toBe(false);
+    expect(isFacadeCode("System.register([], (function (exports) { exports('a', 1); }));")).toBe(
+      false,
+    ); // exports() outside a setter
+    expect(isFacadeCode("exports('a', 1);")).toBe(false);
+    expect(
+      isFacadeCode(
+        'System.other([], (function (exports) { return { setters: [], execute: (function () {}) }; }));',
+      ),
+    ).toBe(false);
+    expect(
+      isFacadeCode(
+        'Other.register([], (function (exports) { return { setters: [], execute: (function () {}) }; }));',
+      ),
+    ).toBe(false);
+    expect(
+      isFacadeCode(
+        'System.register([], (function (exports) { return { setters: [], execute: (function () {}) }; }));',
+      ),
+    ).toBe(true);
+    expect(
+      isFacadeCode('System.register([], (exports) => ({ setters: [], execute: () => {} }));'),
+    ).toBe(false); // an expression body
+    expect(
+      isFacadeCode(
+        'System.register(deps, (function (exports) { return { setters: [], execute: (function () {}) }; }));',
+      ),
+    ).toBe(false);
+  });
+
+  it('isFacadeCode round 19: empty statements and comment boundaries', () => {
+    expect(isFacadeCode(";export { a } from './a.js';")).toBe(true);
+    expect(isFacadeCode("export{a}from'./a.js';;")).toBe(true);
+    expect(isFacadeCode('function _interopX(e) { ; return e; }')).toBe(true);
+    expect(isFacadeCode("export { a } from './a.js';\n/*\n// end */")).toBe(true);
+    expect(isFacadeCode("/* x */ export{a}from'./a.js' // trailing")).toBe(true);
+    expect(isFacadeCode("export{a}from'./a.js'; // _bugseeDebugIds")).toBe(true);
+    expect(isFacadeCode("export{a}from'./a.js';\n/* open")).toBe(false); // unreadable
+    // the stamp's stub is a STATEMENT followed by the debugId comment, wherever the comments are
+    const stub = `\n!function(){var g=globalThis;g._bugseeDebugIds=g._bugseeDebugIds||{};g._bugseeDebugIds["x"]="${ID_A}"}();\n//# debugId=${ID_A}\n`;
+    expect(isFacadeCode(`export{a}from'./m.js';${stub}/* trailing\n// block */`)).toBe(true);
+    expect(isFacadeCode(`export{a}from'./m.js';/* a\n// b */${stub}`)).toBe(true);
+    expect(
+      isFacadeCode(`var d=globalThis._bugseeDebugIds;export function f(){return d}${stub}`),
+    ).toBe(false);
+    expect(isFacadeCode(`var d=globalThis._bugseeDebugIds;${stub}`)).toBe(false); // the var is real code
+    expect(isFacadeCode(`export{a}from'./m.js';\n!function(){g._bugseeDebugIds={}}();`)).toBe(
+      false,
+    ); // no debugId comment: not the stub
+  });
+
+  it('isFacadeCode round 19: a hostile depth is "not a facade", never an exception', () => {
+    const chain = `exports.a = x${'.p'.repeat(5000)};`;
+    expect(() => isFacadeCode(chain)).not.toThrow();
+    expect(isFacadeCode(chain)).toBe(false);
+    expect(isFacadeCode(`ok${' && ok'.repeat(5000)} && Object.keys(x);`)).toBe(false);
+    expect(isFacadeCode(`${'('.repeat(20000)}x${')'.repeat(20000)};`)).toBe(false);
+    expect(isFacadeCode(`exports.a = ${'!'.repeat(5000)}x;`)).toBe(false);
+    // statements nest too: a helper whose body is blocks inside blocks
+    expect(
+      isFacadeCode(`function _interopX(e) { ${'{'.repeat(100)}${'}'.repeat(100)} return e; }`),
+    ).toBe(false);
+    expect(
+      isFacadeCode(`function _interopX(e) { ${'{'.repeat(10)}${'}'.repeat(10)} return e; }`),
+    ).toBe(true);
+    // a normal-depth chain is fine
+    expect(isFacadeCode('exports.a = main.p.q.r.s;')).toBe(true);
+  });
+
+  it('a hostile bundle with an empty map costs one finding, not the whole report', async () => {
+    put('a.js', `exports.a = x${'.p'.repeat(5000)};\n//# sourceMappingURL=a.js.map${stamp(ID_A)}`);
+    put(
+      'a.js.map',
+      JSON.stringify({ version: 3, sources: [], names: [], mappings: ';', debugId: ID_A }),
+    );
+    put('b.js', 'b');
+    const report = await run();
+    expect(ids(report)).not.toContain('doctor.internal-error');
+    expect(find(report, 'map.no-sources')?.severity).toBe('error');
+    expect(ids(report)).toContain('stamp.missing-debug-id'); // the rest of the audit is there
   });
 
   it('isFacadeCode: comments are stripped outside quoted module specifiers only', () => {

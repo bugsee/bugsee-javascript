@@ -21,7 +21,12 @@ import { rollup } from 'rollup';
 import { type Plugin as VitePlugin, build as viteBuild } from 'vite';
 import { build as vite7Build } from 'vite7';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { type DoctorReport, diagnoseBuildOutput, doctorExitCode } from './doctor';
+import {
+  type DoctorReport,
+  diagnoseBuildOutput,
+  doctorExitCode,
+  hasOriginalPosition,
+} from './doctor';
 import { isFacadeCode } from './facade';
 import { bugseeRollupPlugin, bugseeRspackPlugin, bugseeUnplugin } from './plugin';
 import { resolveBugseeCli, runBugseeCli } from './run-cli';
@@ -410,10 +415,33 @@ describe('facade chunks in real Rollup / Vite output', () => {
       );
       expect(note?.severity, `${file}.map`).toBe('info');
     }
-    // the chunk with real code keeps a real map, and nothing here is an error about maps or sources
+    // the chunk with real code keeps a REAL map: it exists, it maps to original positions, and the doctor has
+    // nothing to say against it
+    const utilFiles = readdirSync(out).filter((f) => /^util\.(m?js|cjs)$/.test(f));
+    expect(utilFiles.length, `util chunks in ${out}`).toBeGreaterThanOrEqual(1);
+    for (const file of utilFiles) {
+      const map = JSON.parse(readFileSync(join(out, `${file}.map`), 'utf8')) as {
+        sources: string[];
+        mappings: string;
+      };
+      expect(map.sources.length, `${file}.map sources`).toBeGreaterThan(0);
+      expect(hasOriginalPosition(map.mappings, map.sources.length), `${file}.map mappings`).toBe(
+        true,
+      );
+      expect(
+        report.findings
+          .filter((f) => f.file === `${file}.map` && f.id.startsWith('map.'))
+          .map((f) => f.id),
+      ).not.toContain('map.invalid');
+      expect(
+        report.findings.some((f) => f.id === 'map.no-sources' && f.file === `${file}.map`),
+      ).toBe(false);
+    }
+    // and nothing here is an error about maps or sources
     expect(
       report.findings.filter((f) => f.id === 'map.no-sources' && f.severity === 'error'),
     ).toEqual([]);
+    expect(report.findings.filter((f) => f.id === 'map.invalid')).toEqual([]);
   };
 
   for (const generatedCode of ['es5', 'es2015'] as const) {
@@ -455,4 +483,82 @@ describe('facade chunks in real Rollup / Vite output', () => {
     expect(files.length).toBe(2);
     await check(join(dir, 'dist'), files);
   });
+
+  // Rather than one shape per review: sweep Rollup's output options and require that EVERY emitted chunk whose map
+  // has no sources and no segments reads as a facade (the doctor's empty-map rule depends on it).
+  const sweep = async (format: 'cjs' | 'amd' | 'es' | 'system'): Promise<number> => {
+    const dir = join(root, `facade-sweep-${format}`);
+    mkdirSync(join(dir, 'src'), { recursive: true });
+    writeFileSync(
+      join(dir, 'src', 'index.js'),
+      "export { a } from './main.js';\nexport * from 'ext-a';\nexport * as ns from 'ext-b';\nexport { default as d, named } from 'ext-c';\n",
+    );
+    writeFileSync(
+      join(dir, 'src', 'other.js'),
+      "import { a } from './main.js';\nconsole.log(a);\n",
+    );
+    writeFileSync(
+      join(dir, 'src', 'main.js'),
+      'export const a = () => { throw new Error("a"); };\n',
+    );
+    const bundle = await rollup({
+      input: { index: join(dir, 'src', 'index.js'), other: join(dir, 'src', 'other.js') },
+      external: ['ext-a', 'ext-b', 'ext-c'],
+    });
+    let facades = 0;
+    const failures: string[] = [];
+    const interops = ['auto', 'default', 'esModule', 'compat'] as const;
+    for (const interop of interops) {
+      for (const preset of ['es5', 'es2015'] as const) {
+        for (const symbols of [false, true]) {
+          for (const externalLiveBindings of [true, false]) {
+            for (const freeze of [true, false]) {
+              for (const esModule of [true, false, 'if-default-prop'] as const) {
+                const label = JSON.stringify({
+                  format,
+                  interop,
+                  preset,
+                  symbols,
+                  externalLiveBindings,
+                  freeze,
+                  esModule,
+                });
+                const { output } = await bundle.generate({
+                  format,
+                  sourcemap: true,
+                  interop,
+                  generatedCode: { preset, symbols },
+                  externalLiveBindings,
+                  freeze,
+                  esModule,
+                });
+                for (const chunk of output) {
+                  if (chunk.type !== 'chunk' || chunk.map === null || chunk.map === undefined) {
+                    continue;
+                  }
+                  const empty = chunk.map.sources.length === 0 && !/[^;,]/.test(chunk.map.mappings);
+                  if (!empty) {
+                    continue;
+                  }
+                  facades++;
+                  if (!isFacadeCode(chunk.code)) {
+                    failures.push(`${label} ${chunk.fileName}:\n${chunk.code}`);
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    await bundle.close();
+    expect(failures.slice(0, 2).join('\n\n')).toBe('');
+    return facades;
+  };
+
+  for (const format of ['cjs', 'amd', 'es', 'system'] as const) {
+    it(`every empty-map chunk Rollup writes for ${format} (option sweep) is a facade`, async () => {
+      expect(await sweep(format)).toBeGreaterThan(100);
+    }, 120_000);
+  }
 });

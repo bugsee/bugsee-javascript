@@ -371,7 +371,8 @@ const BASE64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/
  * (generated column, source index, original line, original column) whose source index points at a real entry of
  * `sourceCount` sources. Source indexes are DELTAS against the previous segment's, so they are accumulated across the
  * whole string. A map made only of generated-position segments, or empty, or pointing at no source, cannot map a frame
- * back to your code. A segment with a character outside the base64 alphabet is unusable and does not count.
+ * back to your code. A segment with a character outside the base64 alphabet, or a negative generated column, is
+ * unusable and does not count.
  * One pass, no split: the first usable segment answers.
  */
 export function hasOriginalPosition(
@@ -379,6 +380,7 @@ export function hasOriginalPosition(
   sourceCount: number = Number.POSITIVE_INFINITY,
 ): boolean {
   let source = 0; // the running source index (deltas accumulate over the whole string)
+  let column = 0; // the running generated column, reset at each line
   let values = 0;
   let usable = true;
   let value = 0; // the VLQ value being decoded
@@ -394,6 +396,9 @@ export function hasOriginalPosition(
       }
       if (usable && values >= 4) {
         source = segmentSource; // only a segment with an original line and column moves it; the next segment's delta is against this one
+      }
+      if (ch === ';') {
+        column = 0;
       }
       values = 0;
       usable = true;
@@ -414,6 +419,12 @@ export function hasOriginalPosition(
     // a value ends here: bit 0 is the sign
     const decoded = value % 2 === 1 ? -(value - 1) / 2 : value / 2;
     values++;
+    if (values === 1) {
+      column += decoded;
+      if (column < 0) {
+        usable = false; // a negative generated column: ECMA-426 skips the segment before any of its other fields apply
+      }
+    }
     if (values === 2) {
       segmentSource = source + decoded;
     }
