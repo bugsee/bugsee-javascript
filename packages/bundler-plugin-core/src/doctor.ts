@@ -978,16 +978,18 @@ async function diagnose(dirInput: string, options: DoctorOptions): Promise<Docto
       }
     };
     const byDebugId = new Map<string, string[]>();
-    const infoOf = new Map<string, { file: string; debugId?: string; real: string; key: string }>();
+    const infoOf = new Map<string, { file: string; debugId?: string; key: string }>();
     const byFile = new Map<string, string[]>();
     const bySuffix = new Map<string, string[]>(); // `maps/cjs/index.js` -> `cjs/index.js`, `index.js`
     const byDirFile = new Map<string, string[]>(); // `<ancestor directory>\0<file>` -> maps below that directory
     const aliases = new Map<string, string[]>(); // real path -> every name it is reached by
+    const realOf = new Map<string, string>(); // for every parsed map, with or without a `file` field
     for (const map of maps) {
       if (!claimedMaps.has(map)) {
         const read = await loadMap(map);
         if (read.ok && read.parsed.ok) {
           push(aliases, read.real, map);
+          realOf.set(map, read.real);
           const file = read.parsed.json.file;
           if (read.parsed.debugId !== undefined) {
             push(byDebugId, read.parsed.debugId, map);
@@ -995,7 +997,7 @@ async function diagnose(dirInput: string, options: DoctorOptions): Promise<Docto
           if (typeof file === 'string') {
             const base = nodePath.basename(file);
             const key = rel(dir, map).replace(/\.map$/i, '');
-            infoOf.set(map, { file: base, debugId: read.parsed.debugId, real: read.real, key });
+            infoOf.set(map, { file: base, debugId: read.parsed.debugId, key });
             push(byFile, base, map);
             const segments = key.split('/');
             for (let at = 0; at < segments.length; at++) {
@@ -1011,7 +1013,7 @@ async function diagnose(dirInput: string, options: DoctorOptions): Promise<Docto
       }
     }
     const claim = (map: string): void => {
-      for (const alias of aliases.get(infoOf.get(map)?.real ?? '') ?? [map]) {
+      for (const alias of aliases.get(realOf.get(map) ?? '') ?? [map]) {
         claimedMaps.add(alias);
       }
     };
@@ -1029,7 +1031,7 @@ async function diagnose(dirInput: string, options: DoctorOptions): Promise<Docto
       const found: string[] = [];
       const reals = new Set<string>();
       for (const map of list ?? []) {
-        const real = infoOf.get(map)?.real ?? map;
+        const real = realOf.get(map) ?? map;
         if (!claimedMaps.has(map) && !reals.has(real) && keep(map)) {
           found.push(map);
           reals.add(real);
@@ -1073,27 +1075,30 @@ async function diagnose(dirInput: string, options: DoctorOptions): Promise<Docto
       byId: boolean;
     };
     const unsettled: Unsettled[] = [];
+    // Both groups are visible to the matching (a map belongs to the bundle that fits it best, stamped or not); the
+    // groups only decide who settles first.
+    const contenders = left.filter((entry) => !ambiguous.has(entry));
+    const open = new Set(contenders);
+    const segmentsOf = (path: string): string[] => {
+      const parts = nodePath.dirname(path).split('/');
+      return parts;
+    };
+    const bundleByName = new Map<string, Entry>();
+    const bundleByDirBase = new Map<string, Entry[]>();
+    const bundleByBase = new Map<string, Entry[]>();
+    for (const entry of contenders) {
+      const base = nodePath.basename(entry.bundle);
+      bundleByName.set(entry.name, entry);
+      push(bundleByBase, base, entry);
+      const segments = segmentsOf(entry.name);
+      for (let at = 1; at <= segments.length; at++) {
+        push(bundleByDirBase, `${segments.slice(0, at).join('/')}\0${base}`, entry);
+      }
+    }
     for (const stampedGroup of [true, false]) {
       const group = left.filter(
         (entry) => (entry.id !== undefined) === stampedGroup && !ambiguous.has(entry),
       );
-      const open = new Set(group);
-      const segmentsOf = (path: string): string[] => {
-        const parts = nodePath.dirname(path).split('/');
-        return parts;
-      };
-      const bundleByName = new Map<string, Entry>();
-      const bundleByDirBase = new Map<string, Entry[]>();
-      const bundleByBase = new Map<string, Entry[]>();
-      for (const entry of group) {
-        const base = nodePath.basename(entry.bundle);
-        bundleByName.set(entry.name, entry);
-        push(bundleByBase, base, entry);
-        const segments = segmentsOf(entry.name);
-        for (let at = 1; at <= segments.length; at++) {
-          push(bundleByDirBase, `${segments.slice(0, at).join('/')}\0${base}`, entry);
-        }
-      }
       const liveBundles = (list: Entry[] | undefined): Entry[] => {
         const found: Entry[] = [];
         for (const entry of list ?? []) {
@@ -1150,7 +1155,10 @@ async function diagnose(dirInput: string, options: DoctorOptions): Promise<Docto
       };
       for (let round = 0; round < 16; round++) {
         const proposals: Array<[Entry, string]> = [];
-        for (const entry of open) {
+        for (const entry of group) {
+          if (!open.has(entry)) {
+            continue;
+          }
           const best = bestMaps(entry);
           if (best !== undefined && best.maps.length === 1) {
             const map = best.maps[0] as string;
@@ -1173,7 +1181,13 @@ async function diagnose(dirInput: string, options: DoctorOptions): Promise<Docto
           continue;
         }
         const best = bestMaps(entry);
-        if (best === undefined) {
+        // Its best map fits another bundle better: this bundle has no map (the normal state of a stamped build whose
+        // maps were deleted), whichever bundle ends up with that map.
+        const lost =
+          best !== undefined &&
+          best.maps.length === 1 &&
+          bestBundles(best.maps[0] as string)?.bundles.includes(entry) !== true;
+        if (best === undefined || lost) {
           if (entry.id === undefined) {
             unstampedWithoutMap.push(entry.name);
           }

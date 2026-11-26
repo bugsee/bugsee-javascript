@@ -559,6 +559,30 @@ describe('reads', () => {
       expect(find(await run(), 'stamp.map-id-mismatch')?.file).toBe('maps/cjs/index.js.map');
     });
 
+    it('a symlink alias of a map without a `file` field is the same map too (debugId pairing)', async () => {
+      put('main.js', `a${stamp(ID_A)}`);
+      put('maps/main.js.map', mapJson({ debugId: ID_A }));
+      symlinkSync(join(dist, 'maps/main.js.map'), join(dist, 'maps/z-alias.map'));
+      expect(find(await run(), 'map.ambiguous')).toBeUndefined();
+    });
+
+    it('a stamped bundle with no map does not take the moved map of an unstamped bundle of the same name', async () => {
+      put('assets/index.js', `a${stamp(ID_A)}`);
+      put('vendor/index.js', 'vendor');
+      put('maps/vendor/index.js.map', mapJson({ file: 'index.js' }));
+      const report = await run({ ignore: ['stamp.missing-debug-id'] });
+      expect(find(report, 'stamp.map-no-debug-id')).toBeUndefined();
+      expect(report.findings.filter((f) => f.severity === 'error').map((f) => f.id)).toEqual([]);
+    });
+
+    it('and the unstamped bundle, which owns that map, gets the precise error', async () => {
+      put('assets/index.js', `a${stamp(ID_A)}`);
+      put('vendor/index.js', 'vendor');
+      put('maps/vendor/index.js.map', mapJson({ file: 'index.js', debugId: ID_C }));
+      const report = await run();
+      expect(lostStamp(report).map((f) => f.file)).toEqual(['vendor/index.js']);
+    });
+
     it('an alias that sorts first does not hide the real path of a map from its bundle', async () => {
       put('a/index.js', `a${stamp(ID_A)}`);
       put('b/index.js', `b${stamp(ID_B)}`);
