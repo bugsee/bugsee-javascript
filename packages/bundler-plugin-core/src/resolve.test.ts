@@ -1215,3 +1215,41 @@ describe('runPluginUpload — in-build stamping', () => {
     expect(uploadSourcemaps).toHaveBeenCalledWith(expect.objectContaining({ preStamped: true }));
   });
 });
+
+describe('runPluginUpload — re-sealing', () => {
+  const stubs = () => ({
+    uploadSourcemaps: vi.fn(async (_options: unknown) => ({
+      injected: true,
+      uploaded: true,
+      deletedMaps: [] as string[],
+    })),
+    registerJsBuild: async () => ({ registered: false as const, reason: 'not-release' as const }),
+    ...noVcs,
+  });
+
+  it('forwards resealSri and resealDirs to the orchestrator', async () => {
+    const deps = stubs();
+    await runPluginUpload(resolvePluginOptions({ appToken: 't' }, {}), '/out', {
+      ...deps,
+      resealSri: true,
+      resealDirs: ['/out', '/server'],
+      verifyDirs: ['/'],
+    });
+    expect(deps.uploadSourcemaps).toHaveBeenCalledWith(
+      expect.objectContaining({
+        resealSri: true,
+        resealDirs: ['/out', '/server'],
+        verifyDirs: ['/'],
+      }),
+    );
+  });
+
+  it('sends neither when not asked, so every other caller is unchanged', async () => {
+    const deps = stubs();
+    await runPluginUpload(resolvePluginOptions({ appToken: 't' }, {}), '/out', deps);
+    const sent = deps.uploadSourcemaps.mock.calls[0]?.[0] as unknown as Record<string, unknown>;
+    expect('resealSri' in sent).toBe(false);
+    expect('resealDirs' in sent).toBe(false);
+    expect('verifyDirs' in sent).toBe(false);
+  });
+});

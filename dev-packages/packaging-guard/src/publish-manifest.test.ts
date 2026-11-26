@@ -57,6 +57,9 @@ function referencedPaths(value: unknown, out: string[] = []): string[] {
 function isPacked(path: string, files: string[] | undefined): boolean {
   if (files === undefined) return true; // no allowlist: everything not ignored is packed
   const rel = path.replace(/^\.\//, '');
+  // npm always packs package.json, whatever `files` says (as the doc comment above says). The Angular CLI resolves
+  // `<pkg>/package.json` through `exports` for `ng add`, so a package may legitimately export it.
+  if (rel === 'package.json') return true;
   return files.some((entry) => {
     const clean = entry.replace(/^\.\//, '').replace(/\/$/, '');
     return rel === clean || rel.startsWith(`${clean}/`);

@@ -872,3 +872,191 @@ describe("a run over the build's own files", () => {
     expect(onError).toHaveBeenCalledTimes(1);
   });
 });
+
+// A build whose only copies of its script hashes are in its HTML (Angular's esbuild builder) can be stamped
+// after emit, if the hashes are then re-written to match: inject runs with `--allow-sri`, the pages are
+// re-sealed, and the result is verified. The guard that refuses a hashed build stays for every other caller.
+/** Clean before the stamp (first call), reports `pins` afterwards. */
+const afterStamp = (pins: { html: string; script: string; integrity: string }[]) => {
+  let calls = 0;
+  return async () => (calls++ === 0 ? [] : pins);
+};
+
+describe('uploadSourcemaps with resealSri', () => {
+  const pin = {
+    html: '/build/dist/index.html',
+    script: '/build/dist/main.js',
+    integrity: 'sha384-OLD',
+  };
+  const digests = new Map([['/build/dist/main.js', { sha256: 'a', sha384: 'b', sha512: 'c' }]]);
+  const sealed = (over: Record<string, unknown> = {}) => ({
+    ...base,
+    resealSri: true,
+    findSri: async () => [pin],
+    snapshotDigests: async () => digests,
+    reseal: vi.fn(async () => ({ files: ['/build/dist/index.html'] })),
+    verifySri: async () => [],
+    deleteMapFiles: async () => [] as string[],
+    ...over,
+  });
+
+  it('does not refuse a hashed build: inject runs with --allow-sri, then upload', async () => {
+    const { run, calls } = fakeRun();
+    const result = await uploadSourcemaps({ ...sealed(), run });
+    expect(calls.map((c) => c.args[0])).toEqual(['sourcemaps', 'debug-files']);
+    expect(calls[0]?.args).toEqual(['sourcemaps', 'inject', '/build/dist', '--allow-sri']);
+    expect(result.injected).toBe(true);
+    expect(result.uploaded).toBe(true);
+  });
+
+  it('re-seals with the digests taken BEFORE the inject, over the output directory by default', async () => {
+    const order: string[] = [];
+    const run = vi.fn(async (args: string[]): Promise<SpawnResult> => {
+      order.push(args[0] ?? '');
+      return { code: 0, stdout: '', stderr: '' };
+    });
+    const reseal = vi.fn(async () => {
+      order.push('reseal');
+      return { files: [] };
+    });
+    const snapshotDigests = vi.fn(async (_dirs: readonly string[]) => {
+      order.push('snapshot');
+      return digests;
+    });
+    await uploadSourcemaps({ ...sealed({ reseal, snapshotDigests }), run });
+    expect(order).toEqual(['snapshot', 'sourcemaps', 'reseal', 'debug-files']);
+    expect(snapshotDigests).toHaveBeenCalledWith(['/build/dist']);
+    expect(reseal).toHaveBeenCalledWith(digests, ['/build/dist']);
+  });
+
+  it('snapshots the digests of the output directory AND the other re-seal directories (a re-sealed server module is itself pinned)', async () => {
+    const { run } = fakeRun();
+    const snapshotDigests = vi.fn(async (_dirs: readonly string[]) => digests);
+    await uploadSourcemaps({
+      ...sealed({ snapshotDigests, resealDirs: ['/build/dist', '/build/server'] }),
+      run,
+    });
+    expect(snapshotDigests).toHaveBeenCalledWith(['/build/dist', '/build/server']);
+  });
+
+  it('re-seals over resealDirs when given (the SSR server modules that embed the page)', async () => {
+    const { run } = fakeRun();
+    const reseal = vi.fn(async () => ({ files: [] }));
+    await uploadSourcemaps({
+      ...sealed({ reseal, resealDirs: ['/build/dist', '/build/server'] }),
+      run,
+    });
+    expect(reseal).toHaveBeenCalledWith(digests, ['/build/dist', '/build/server']);
+  });
+
+  it('passes --allow-sri to every batch of a file run', async () => {
+    const { run, calls } = fakeRun();
+    await uploadSourcemaps({
+      ...sealed({
+        files: { scripts: ['/build/dist/main.js'], maps: ['/build/dist/main.js.map'] },
+      }),
+      run,
+    });
+    expect(calls[0]?.args).toEqual([
+      'sourcemaps',
+      'inject',
+      '/build/dist/main.js',
+      '/build/dist/main.js.map',
+      '--allow-sri',
+    ]);
+  });
+
+  it('reports a page that still does not verify, restores, and uploads nothing', async () => {
+    const { run, calls } = fakeRun();
+    const onError = vi.fn();
+    await uploadSourcemaps({ ...sealed({ verifySri: afterStamp([pin]) }), run, onError });
+    expect(String(onError.mock.calls[0]?.[0])).toContain('index.html');
+    expect(String(onError.mock.calls[0]?.[0])).toContain('main.js');
+    expect(calls.map((c) => c.args[0])).not.toContain('debug-files');
+  });
+
+  it('throws under failOnError when a page still does not verify', async () => {
+    const { run } = fakeRun();
+    await expect(
+      uploadSourcemaps({
+        ...sealed({ verifySri: afterStamp([pin, pin]) }),
+        run,
+        failOnError: true,
+      }),
+    ).rejects.toThrow(/\(and 1 more\)/);
+  });
+
+  it('does not re-seal on a dry run: nothing was written', async () => {
+    const { run, calls } = fakeRun();
+    const reseal = vi.fn(async () => ({ files: [] }));
+    const snapshotDigests = vi.fn(async () => digests);
+    await uploadSourcemaps({ ...sealed({ reseal, snapshotDigests }), run, dryRun: true });
+    expect(reseal).not.toHaveBeenCalled();
+    expect(snapshotDigests).not.toHaveBeenCalled();
+    expect(calls[0]?.args).toEqual([
+      'sourcemaps',
+      'inject',
+      '/build/dist',
+      '--dry-run',
+      '--allow-sri',
+    ]);
+  });
+
+  // The CLI's own SRI refusal is the safety net for pins OUR scanner cannot resolve (a scheme-less //host, a root-relative
+  // path under --base-href/--deploy-url): --allow-sri is passed only when a re-seal will actually happen.
+  it('leaves the CLI refusal ON when resealSri is set but nothing pins a hash and no manifest exists', async () => {
+    const { run, calls } = fakeRun();
+    await uploadSourcemaps({
+      ...sealed({ findSri: async () => [], hasServiceWorker: async () => false }),
+      run,
+    });
+    expect(calls[0]?.args).toEqual(['sourcemaps', 'inject', '/build/dist']);
+  });
+
+  it('leaves it on for every batch of a file run too', async () => {
+    const { run, calls } = fakeRun();
+    await uploadSourcemaps({
+      ...sealed({
+        findSri: async () => [],
+        hasServiceWorker: async () => false,
+        files: { scripts: ['/build/dist/main.js'], maps: ['/build/dist/main.js.map'] },
+      }),
+      run,
+    });
+    expect(calls[0]?.args).not.toContain('--allow-sri');
+  });
+
+  it('passes it when only a service worker manifest needs the re-seal', async () => {
+    const { run, calls } = fakeRun();
+    await uploadSourcemaps({
+      ...sealed({ findSri: async () => [], hasServiceWorker: async () => true }),
+      run,
+    });
+    expect(calls[0]?.args).toContain('--allow-sri');
+  });
+
+  it('passes it when a server module holds a digest', async () => {
+    const { run, calls } = fakeRun();
+    await uploadSourcemaps({
+      ...sealed({
+        findSri: async () => [],
+        hasServiceWorker: async () => false,
+        resealDirs: ['/build/dist', '/build/server'],
+        hasDigestTokens: async () => true,
+      }),
+      run,
+    });
+    expect(calls[0]?.args).toContain('--allow-sri');
+  });
+
+  it('adds no flag at all when resealSri is off (the refusal path is unchanged)', async () => {
+    const { run, calls } = fakeRun();
+    await uploadSourcemaps({
+      ...base,
+      findSri: async () => [],
+      run,
+      deleteMapFiles: async () => [],
+    });
+    expect(calls[0]?.args).toEqual(['sourcemaps', 'inject', '/build/dist']);
+  });
+});

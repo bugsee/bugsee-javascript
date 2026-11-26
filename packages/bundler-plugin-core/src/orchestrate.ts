@@ -1,11 +1,23 @@
 // SM-A2 — orchestrate a source-map upload by driving `bugsee-cli`: inject debug-IDs, upload the maps, then
 // delete the client `.map` files (privacy). Each side-effecting step is behind an injectable seam so the
 // orchestration is unit-tested without a real binary or filesystem.
+import { createHash } from 'node:crypto';
 import { access, readdir, readFile, unlink } from 'node:fs/promises';
 import path, { join, relative, resolve } from 'node:path';
 import { readDebugId } from './debug-ids';
 import { type RunBugseeCliOptions, runBugseeCli, type SpawnResult } from './run-cli';
-import { findIntegrityMismatches, findSriProtectedScripts, type SriProtectedScript } from './sri';
+import {
+  findIntegrityMismatches,
+  findSriProtectedScripts,
+  findStaleDigests,
+  findStaleServiceWorkerEntries,
+  hasDigestTokens,
+  hasServiceWorkerManifest,
+  listResealFiles,
+  resealIntegrity,
+  type SriProtectedScript,
+  snapshotScriptDigests,
+} from './sri';
 import {
   isFencedPath,
   isProjectRootOrAbove,
@@ -15,6 +27,7 @@ import {
   NEVER_WALK,
   ownedBy,
   partitionByKeyed,
+  restoreAtomically,
   restorePaths,
   type SnapshotTarget,
   type StampSnapshot,
@@ -115,8 +128,36 @@ export interface UploadSourcemapsOptions {
   listUploadMaps?: (dir: string) => Promise<string[]>;
   /** Where the pre-inject originals are spilled (default: the OS temp directory). A test seam. */
   spillRoot?: string;
-  /** Injectable integrity check for the pre-stamped path (default {@link findIntegrityMismatches}). */
+  /** Injectable integrity check for the pre-stamped and re-seal paths (default {@link findIntegrityMismatches}). */
   verifySri?: (dir: string) => Promise<SriProtectedScript[]>;
+  /**
+   * Stamp a build that pins its script hashes, then RE-WRITE the hashes to match, instead of refusing.
+   *
+   * For a build whose copies of those hashes are literals in its HTML pages (tags and import maps), the
+   * server modules that embed them and a runtime table of chunk hashes — Angular's builders. `sourcemaps inject` runs with `--allow-sri`, the stale
+   * digests are replaced in {@link resealDirs}, and the result is verified; a page that still does not
+   * verify is reported (or thrown under `failOnError`), never silent. Not for a hash computed at run time.
+   * Ignored on a dry run (nothing is written).
+   */
+  resealSri?: boolean;
+  /** Directories whose HTML / `.mjs` carry a copy of the hashes. Default: `[outDir]`. */
+  resealDirs?: readonly string[];
+  /** Directories whose page pins are verified after the re-seal (default: `[outDir]`): the whole output root of an SSR build. */
+  verifyDirs?: readonly string[];
+  /** Injectable: does any directory hold a service worker manifest (default {@link hasServiceWorkerManifest}). */
+  hasServiceWorker?: (dirs: readonly string[]) => Promise<boolean>;
+  /** Injectable: does any file under these directories hold an SRI digest (default {@link hasDigestTokens}). */
+  hasDigestTokens?: (dirs: readonly string[]) => Promise<boolean>;
+  /** Injectable re-sealer (default {@link resealIntegrity}). */
+  reseal?: typeof resealIntegrity;
+  /** Injectable restore of one file from its spilled original, for the re-seal rollback (default: write temp, then rename). */
+  restoreFile?: (spill: string, target: string) => Promise<void>;
+  /** Injectable script-digest snapshot taken before the stamp (default {@link snapshotScriptDigests}). */
+  snapshotDigests?: typeof snapshotScriptDigests;
+  /** Injectable check that service worker manifests match their files after the re-seal (default {@link findStaleServiceWorkerEntries}). */
+  verifyServiceWorker?: typeof findStaleServiceWorkerEntries;
+  /** Injectable check that no old digest survives anywhere the re-seal covers (default {@link findStaleDigests}). */
+  verifyDigests?: typeof findStaleDigests;
   /**
    * FAIL the build when `bugsee-cli` fails. Default `false`.
    *
@@ -237,6 +278,8 @@ export async function uploadSourcemaps(
   const files = options.files;
   const deleteMaps = options.deleteMaps ?? true;
   const dryFlag = dryRun ? ['--dry-run'] : [];
+  // `inject` refuses a hashed build unless told the hashes are re-written afterwards, which resealSri does.
+  const resealing = options.resealSri === true;
   const cliOptions: RunBugseeCliOptions = { token: appToken, endpoint };
   const onError = options.onError ?? defaultUploadErrorHandler;
 
@@ -425,6 +468,7 @@ export async function uploadSourcemaps(
   };
 
   let original: StampSnapshot | undefined;
+  let sealOriginal: StampSnapshot | undefined;
   let restoredAny = false;
   try {
     if (options.preStamped === true) {
@@ -511,7 +555,7 @@ export async function uploadSourcemaps(
       //    survivable; shipping a page that does not load is not. Checked BEFORE anything is written,
       //    so a refusal leaves the build exactly as the bundler emitted it.
       const pinned = await (options.findSri ?? findSriProtectedScripts)(outDir);
-      if (pinned.length > 0) {
+      if (pinned.length > 0 && !resealing) {
         const [first] = pinned as [SriProtectedScript, ...SriProtectedScript[]];
         throw new Error(
           `refusing to stamp debug-IDs: this build uses Subresource Integrity — ${first.html} pins a ` +
@@ -524,6 +568,59 @@ export async function uploadSourcemaps(
             `\`bugsee-cli sourcemaps inject\` BEFORE the step that computes the hashes. See ` +
             `https://github.com/bugsee/bugsee-javascript/blob/main/docs/design/source-maps.md#subresource-integrity`,
         );
+      }
+
+      // 0a. The digest of every script as the build emitted it, for the re-seal: the stale hashes are found by
+      //     what the files WERE, wherever a copy sits (a tag, an import map, a table in the runtime chunk). Not
+      //     on a dry run: nothing is written.
+      //     Only when something can need it: a page that pins a hash (`pinned`), or a service worker manifest.
+      //     Without either, the snapshot, the second spill, the swap walk and the verify would be pure cost.
+      const sealDirs = options.resealDirs ?? [outDir];
+      const needsReseal =
+        resealing &&
+        !dryRun &&
+        // A re-seal that covers more than the output directory (an SSR build's server modules) cannot be skipped on
+        // what the output directory's HTML shows alone: a server module may embed a pinned page, so those directories
+        // are scanned (cheaply, for a digest-shaped token) rather than assumed to need it.
+        (pinned.length > 0 ||
+          (await (options.hasDigestTokens ?? hasDigestTokens)(
+            sealDirs.filter((dir) => resolve(dir) !== resolve(outDir)),
+          )) ||
+          (await (options.hasServiceWorker ?? hasServiceWorkerManifest)(sealDirs)));
+      // `--allow-sri` switches off the CLI's own refusal of a hashed build, so it is passed only when the pins were
+      // found here and will be re-written. A pin this scanner cannot resolve (a scheme-less //host, a root-relative path
+      // under --base-href/--deploy-url) is then still caught by the CLI.
+      const allowSriFlag = resealing && (pinned.length > 0 || needsReseal) ? ['--allow-sri'] : [];
+      const digests = needsReseal
+        ? // The output directory AND the other re-seal directories: a re-sealed server module is itself pinned.
+          await (options.snapshotDigests ?? snapshotScriptDigests)([
+            ...new Set([outDir, ...sealDirs]),
+          ])
+        : undefined;
+      const verifyDirs = options.verifyDirs ?? [outDir];
+      const verify = options.verifySri ?? findIntegrityMismatches;
+      const pinKey = (pin: SriProtectedScript): string => `${pin.html}\0${pin.script}`;
+      // Pins that were wrong BEFORE we touched anything are not ours to fail on.
+      const preExisting = new Set<string>();
+      if (digests !== undefined) {
+        for (const dir of verifyDirs) {
+          for (const pin of await verify(dir)) {
+            preExisting.add(pinKey(pin));
+          }
+        }
+      }
+
+      // 0a'. Everything the stamp AND the re-seal may write — scripts, maps, pages, server modules — so a re-seal
+      //      that fails can put the build back exactly as the bundler emitted it (the stamp's own snapshot below
+      //      does not cover pages or server modules).
+      if (digests !== undefined) {
+        const sealPaths = new Set([
+          ...(await listResealFiles(options.resealDirs ?? [outDir])),
+          ...(files === undefined
+            ? await (options.listMapFiles ?? listMapFiles)(outDir)
+            : [...files.scripts, ...files.maps]),
+        ]);
+        sealOriginal = await snapshotStampFiles({ files: [...sealPaths] }, options.spillRoot);
       }
 
       // 0b. Take the originals, so a stamp that does not verify can be undone (see below). Not on a dry run:
@@ -547,27 +644,43 @@ export async function uploadSourcemaps(
       // 1. Inject debug-IDs (rewrites the built .js + .map in place).
       try {
         if (files === undefined) {
-          await run(['sourcemaps', 'inject', outDir, ...dryFlag], cliOptions);
+          await run(['sourcemaps', 'inject', outDir, ...dryFlag, ...allowSriFlag], cliOptions);
         } else {
           // A script and its map may land in different batches: harmless, the debug-id is derived from the
           // bundle's content, so each side stamps the same id (measured with 250 entries, none mismatched).
           for (const batch of inBatches([...files.scripts, ...files.maps])) {
-            await run(['sourcemaps', 'inject', ...batch, ...dryFlag], cliOptions);
+            await run(['sourcemaps', 'inject', ...batch, ...dryFlag, ...allowSriFlag], cliOptions);
           }
         }
       } catch (error) {
         // A rejected inject may already have rewritten files (an earlier batch, or a partial write): verify and
         // restore them BEFORE the failure propagates, so no unverified stamp stays on disk.
-        if (original !== undefined) {
-          let note: string | undefined;
-          try {
-            const { issues, restored, failed } = await verifyAndRestore(original);
-            if (failed.length > 0) {
-              // Files still carry the unverified rewrite: that must not go unmentioned.
-              note = verifyFailure(issues, restored, failed).message;
+        // When the pages were meant to be re-sealed, a stamp that stays on disk would sit against pages still pinning
+        // the old hashes (a blocked page): put EVERYTHING the stamp or the re-seal could write back first.
+        let sealNote: string | undefined;
+        if (sealOriginal !== undefined) {
+          const undone = await restoreChanged(sealOriginal, options.restoreFile); // never throws: failures come back listed
+          if (undone.failed.length > 0) {
+            sealNote = `COULD NOT restore ${undone.failed.map((f) => `${f.path} (${f.error})`).join(', ')}, which are still stamped against integrity hashes that were not updated`;
+          }
+        }
+        {
+          let note: string | undefined = sealNote;
+          const addNote = (text: string): void => {
+            note = note === undefined ? text : `${note}; ${text}`;
+          };
+          if (original !== undefined) {
+            try {
+              const { issues, restored, failed } = await verifyAndRestore(original);
+              if (failed.length > 0) {
+                // Files still carry the unverified rewrite: that must not go unmentioned.
+                addNote(verifyFailure(issues, restored, failed).message);
+              }
+            } catch (restoreError) {
+              addNote(
+                `restoring the originals also failed: ${restoreError instanceof Error ? restoreError.message : String(restoreError)}`,
+              );
             }
-          } catch (restoreError) {
-            note = `restoring the originals also failed: ${restoreError instanceof Error ? restoreError.message : String(restoreError)}`;
           }
           if (note !== undefined) {
             // The ORIGINAL error object is kept (a BugseeCliError stays one); the restore problem is appended.
@@ -602,6 +715,93 @@ export async function uploadSourcemaps(
             throw failure;
           }
           onError(failure);
+        }
+      }
+
+      // 1c. Re-seal: the bundles changed after the build hashed them, so write the new hashes where the old ones
+      //     are, then check. After 1b, so the bytes sealed are the bytes that stayed on disk (a restored file
+      //     still matches its original hash and is left alone). Not on a dry run: nothing was written.
+      if (digests !== undefined) {
+        let sealFailure: Error | undefined;
+        try {
+          await (options.reseal ?? resealIntegrity)(digests, options.resealDirs ?? [outDir]);
+          const broken: SriProtectedScript[] = [];
+          const already: SriProtectedScript[] = [];
+          for (const dir of verifyDirs) {
+            for (const pin of await verify(dir)) {
+              (preExisting.has(pinKey(pin)) ? already : broken).push(pin);
+            }
+          }
+          if (already.length > 0) {
+            (options.onNotice ?? ((m: string) => console.warn(`[bugsee] ${m}`)))(
+              `${already.length} integrity pin(s) did not match their file even before the stamp (for example ` +
+                `${already[0]?.html} pins ${already[0]?.script}), so they were left as they were and are not a result of this step`,
+            );
+          }
+          if (broken.length > 0) {
+            const [first] = broken as [SriProtectedScript, ...SriProtectedScript[]];
+            sealFailure = new Error(
+              `${first.script} still does not match the integrity hash ${first.html} pins` +
+                (broken.length > 1 ? ` (and ${broken.length - 1} more)` : '') +
+                ` after the hashes were re-written, so the browser would refuse to run it. A copy of that hash is held in ` +
+                `a form this step does not rewrite (one computed at run time, or a file outside the directories it covers), ` +
+                `which it cannot see. Turn Subresource Integrity off for this build, or do not stamp it.`,
+            );
+          } else {
+            // A service worker manifest (Angular's ngsw.json) pins a SHA-1 of every file it caches; the worker
+            // treats a file that no longer matches as corrupt and stops serving the app.
+            const stale = await (options.verifyServiceWorker ?? findStaleServiceWorkerEntries)(
+              options.resealDirs ?? [outDir],
+            );
+            if (stale.length > 0) {
+              const [first] = stale as [
+                { manifest: string; url: string },
+                ...{ manifest: string; url: string }[],
+              ];
+              sealFailure = new Error(
+                `${first.manifest} still lists a hash for ${first.url} that is not the file's` +
+                  (stale.length > 1 ? ` (and ${stale.length - 1} more)` : '') +
+                  ` after the hashes were re-written, so the service worker would treat the app as corrupt and stop serving it`,
+              );
+            } else {
+              // Every directory the re-seal covers, not only the one the pages are scanned in: an SSR build's server
+              // modules hold a copy of the page that findIntegrityMismatches (HTML under outDir) cannot see.
+              const left = await (options.verifyDigests ?? findStaleDigests)(
+                digests,
+                options.resealDirs ?? [outDir],
+              );
+              if (left.length > 0) {
+                sealFailure = new Error(
+                  `${left[0]?.file} still holds the old integrity hash of ${left[0]?.script}` +
+                    (left.length > 1 ? ` (and ${left.length - 1} more file(s))` : '') +
+                    ` after the hashes were re-written, so a page served from it would be blocked by the browser`,
+                );
+              }
+            }
+          }
+        } catch (error) {
+          sealFailure = error instanceof Error ? error : new Error(String(error));
+        }
+        if (sealFailure !== undefined) {
+          // A page that is blocked, or a build half-sealed, is worse than no source maps. Put every file the stamp
+          // and the re-seal touched back to what the bundler emitted, and upload nothing: the maps belong to bundles
+          // that no longer carry the debug-ID they were keyed by.
+          const { restored, failed } = await restoreChanged(
+            sealOriginal as StampSnapshot,
+            options.restoreFile,
+          );
+          const failure = new Error(
+            `${sealFailure.message}. The build was restored to the bundler's original bytes (${restored.length} file(s)) ` +
+              `and nothing was uploaded` +
+              (failed.length > 0
+                ? `; COULD NOT restore ${failed.map((f) => `${f.path} (${f.error})`).join(', ')}, which are still stamped or half-sealed`
+                : ''),
+          );
+          if (options.failOnError === true) {
+            throw failure;
+          }
+          onError(failure);
+          return { injected: false, uploaded: false, deletedMaps: [], ...vcsEcho };
         }
       }
     }
@@ -811,14 +1011,43 @@ export async function uploadSourcemaps(
   } finally {
     // Cleanup must never fail a build whose upload already succeeded, nor mask the error being reported:
     // removing the spill directory can fail (EPERM/EBUSY under antivirus on Windows). Said, not thrown.
-    try {
-      await original?.dispose();
-    } catch (error) {
-      onError(
-        new Error(
-          `could not remove the temporary spill directory of the originals: ${String(error)}`,
-        ),
-      );
+    // Both spills are attempted whatever happens to the first: one failed removal must not leave a second copy of
+    // every bundle and map behind.
+    for (const spill of [original, sealOriginal]) {
+      try {
+        await spill?.dispose();
+      } catch (error) {
+        onError(
+          new Error(
+            `could not remove the temporary spill directory of the originals: ${String(error)}`,
+          ),
+        );
+      }
     }
   }
+}
+
+/** Put back, atomically, every snapshotted file whose bytes are not the original's. Never throws: failures are returned. */
+async function restoreChanged(
+  snapshot: StampSnapshot,
+  restoreFile: (spill: string, target: string) => Promise<void> = restoreAtomically,
+): Promise<{ restored: string[]; failed: { path: string; error: string }[] }> {
+  const restored: string[] = [];
+  const failed: { path: string; error: string }[] = [];
+  for (const [path, entry] of snapshot.entries) {
+    const now = await readFile(path).then(
+      (bytes) => createHash('sha1').update(bytes).digest('hex'),
+      () => undefined,
+    );
+    if (now === entry.hash) {
+      continue;
+    }
+    try {
+      await restoreFile(entry.spill, path);
+      restored.push(path);
+    } catch (error) {
+      failed.push({ path, error: String(error) });
+    }
+  }
+  return { restored, failed };
 }

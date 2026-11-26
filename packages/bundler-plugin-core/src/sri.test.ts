@@ -1,9 +1,15 @@
 import { createHash } from 'node:crypto';
-import { chmod, mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { findIntegrityMismatches, findSriProtectedScripts } from './sri';
+import {
+  ancestorDirs,
+  findIntegrityMismatches,
+  findSriProtectedScripts,
+  resealIntegrity,
+  snapshotScriptDigests,
+} from './sri';
 
 // Measured, 2026-09-18: a real webpack 5.111 build with `webpack-subresource-integrity` +
 // `html-webpack-plugin`, served over HTTP and loaded in Chromium 151. Before `sourcemaps inject` the
@@ -341,6 +347,74 @@ describe('findSriProtectedScripts', () => {
     ]);
   });
 
+  it('reads an import map that follows a character whose lower-case form is longer (İ)', async () => {
+    const dir = await fixture();
+    await write(dir, 'a.js', 'a');
+    await write(
+      dir,
+      'index.html',
+      '<p>İİİ</p><script type="importmap">{"integrity":{"./a.js":"sha384-A"}}</script>',
+    );
+    expect((await findSriProtectedScripts(dir)).map((p) => p.script)).toEqual([join(dir, 'a.js')]);
+  });
+
+  it("takes the closing tag that follows the import map, not an earlier script's", async () => {
+    const dir = await fixture();
+    await write(dir, 'a.js', 'a');
+    await write(
+      dir,
+      'index.html',
+      '<script>var x = 1;</script><script type="importmap">{"integrity":{"./a.js":"sha384-A"}}</script>',
+    );
+    expect((await findSriProtectedScripts(dir)).map((p) => p.script)).toEqual([join(dir, 'a.js')]);
+  });
+
+  it('finds the closing </SCRIPT> of an import map whatever its case', async () => {
+    const dir = await fixture();
+    await write(dir, 'a.js', 'a');
+    await write(
+      dir,
+      'index.html',
+      '<SCRIPT type="importmap">{"integrity":{"./a.js":"sha384-A"}}</SCRIPT>',
+    );
+    expect((await findSriProtectedScripts(dir)).map((p) => p.script)).toEqual([join(dir, 'a.js')]);
+  });
+
+  it('resolves a root-relative src against the directory the page was built into when it is not at the scanned root', async () => {
+    // Scanning an SSR output root: browser/index.html says `/main.js`, which is browser/main.js, not <root>/main.js.
+    const dir = await fixture();
+    await write(dir, 'browser/main.js', 'a');
+    await write(dir, 'browser/fr/chunk.js', 'b');
+    await write(dir, 'browser/index.html', '<script src="/main.js" integrity="sha384-A"></script>');
+    await write(
+      dir,
+      'browser/fr/index.html',
+      '<script src="/chunk.js" integrity="sha384-B"></script>',
+    );
+    await write(dir, 'top.html', '<script src="/main.js" integrity="sha384-C"></script>');
+    const scripts = (await findSriProtectedScripts(dir)).map((p) => p.script).sort();
+    // top.html's `/main.js` is the scanned root's own (absent) file; the two nested pages find theirs by looking up.
+    expect(scripts).toEqual(
+      [join(dir, 'browser/fr/chunk.js'), join(dir, 'browser/main.js'), join(dir, 'main.js')].sort(),
+    );
+  });
+
+  it('never looks above the scanned root for a root-relative src', async () => {
+    const dir = await fixture();
+    await write(dir, 'main.js', 'outside the scanned directory');
+    await write(dir, 'browser/index.html', '<script src="/main.js" integrity="sha384-A"></script>');
+    const found = await findSriProtectedScripts(join(dir, 'browser'));
+    expect(found.map((p) => p.script)).toEqual([join(dir, 'browser', 'main.js')]);
+  });
+
+  it('a root-relative src that exists nowhere keeps its scanned-root path (a stale pin, as before)', async () => {
+    const dir = await fixture();
+    await write(dir, 'browser/index.html', '<script src="/gone.js" integrity="sha384-A"></script>');
+    expect((await findSriProtectedScripts(dir)).map((p) => p.script)).toEqual([
+      join(dir, 'gone.js'),
+    ]);
+  });
+
   it('does not treat a SIBLING directory with a shared prefix as inside the output', async () => {
     const root = await fixture();
     const outDir = join(root, 'dist');
@@ -372,6 +446,80 @@ describe('findSriProtectedScripts', () => {
     // The scan runs before anything else, on a path the caller supplied: a wrong path must surface as
     // the CLI's own "path does not exist", not as an unhandled error from a guard.
     expect(await findSriProtectedScripts(join(await fixture(), 'nope'))).toEqual([]);
+  });
+
+  // Angular's esbuild builder (v21+) pins its LAZY chunks through an import map's `integrity` table, not through
+  // a tag: measured on @angular/build 22.3 in Chromium, a stamped lazy chunk was blocked ("Failed to find a valid
+  // digest in the 'integrity' attribute ... The resource has been blocked") while the page's entry scripts ran.
+  describe('an import map integrity table', () => {
+    const importMap = (table: unknown, attrs = 'type="importmap"') =>
+      `<script ${attrs}>${typeof table === 'string' ? table : JSON.stringify({ integrity: table })}</script>`;
+
+    it('finds the scripts it pins, resolving relative and root-relative keys', async () => {
+      const dir = await fixture();
+      await write(dir, 'chunk-a.js', 'a');
+      await write(dir, 'assets/chunk-b.mjs', 'b');
+      await write(
+        dir,
+        'index.html',
+        importMap({ './chunk-a.js': 'sha384-A', '/assets/chunk-b.mjs': 'sha384-B' }),
+      );
+      expect(await findSriProtectedScripts(dir)).toEqual([
+        { html: join(dir, 'index.html'), script: join(dir, 'chunk-a.js'), integrity: 'sha384-A' },
+        {
+          html: join(dir, 'index.html'),
+          script: join(dir, 'assets', 'chunk-b.mjs'),
+          integrity: 'sha384-B',
+        },
+      ]);
+    });
+
+    it('lists a script pinned both by a tag and by the map once', async () => {
+      const dir = await fixture();
+      await write(dir, 'main.js', 'a');
+      await write(
+        dir,
+        'index.html',
+        `${importMap({ './main.js': 'sha384-M' })}<script src="main.js" integrity="sha384-M"></script>`,
+      );
+      expect(await findSriProtectedScripts(dir)).toHaveLength(1);
+    });
+
+    it('ignores a map that is not JSON, has no integrity table, or pins something that is not ours', async () => {
+      const dir = await fixture();
+      await write(dir, 'a.js', 'a');
+      await write(dir, 'data.json', '{}');
+      await write(dir, 'index.html', importMap('{ not json'));
+      await write(dir, 'two.html', importMap({ imports: { x: './a.js' } }.imports));
+      await write(
+        dir,
+        'three.html',
+        '<script type="importmap">{"imports":{"x":"./a.js"}}</script>',
+      );
+      await write(dir, 'four.html', '<script type="importmap">{"integrity":[1]}</script>');
+      await write(
+        dir,
+        'five.html',
+        importMap({
+          'https://cdn.test/x.js': 'sha384-X',
+          './data.json': 'sha384-D',
+          './a.js': '',
+          './b.js': 42,
+        }),
+      );
+      expect(await findSriProtectedScripts(dir)).toEqual([]);
+    });
+
+    it('does not read a script that is not an import map, or one inside a comment', async () => {
+      const dir = await fixture();
+      await write(dir, 'a.js', 'a');
+      await write(
+        dir,
+        'index.html',
+        `${importMap({ './a.js': 'sha384-A' }, 'type="application/json"')}${importMap({ './a.js': 'sha384-A' }, 'data-type="importmap"')}<!-- ${importMap({ './a.js': 'sha384-A' })} -->`,
+      );
+      expect(await findSriProtectedScripts(dir)).toEqual([]);
+    });
   });
 });
 
@@ -453,5 +601,238 @@ describe('findIntegrityMismatches', () => {
     // A stale page pinning a deleted bundle is broken, but not by anything this build did.
     await page(digest('sha384', 'x();'), 'gone.js');
     expect(await findIntegrityMismatches(root)).toEqual([]);
+  });
+});
+
+describe('resealIntegrity', () => {
+  const sha = (alg: string, text: string) =>
+    `${alg}-${createHash(alg).update(text).digest('base64')}`;
+  let root: string;
+  beforeEach(async () => {
+    root = await fixture();
+  });
+
+  /** An Angular-shaped page (script + modulepreload) hashed over the ORIGINAL bytes, then the script is stamped. */
+  const hashedThenStamped = async () => {
+    await write(root, 'main.js', 'a();');
+    await write(root, 'chunk.js', 'b();');
+    const html = await write(
+      root,
+      'index.html',
+      `<link rel="modulepreload" href="chunk.js" integrity="${sha('sha384', 'b();')}">` +
+        `<script src="main.js" integrity="${sha('sha384', 'a();')}"></script>`,
+    );
+    const before = await snapshotScriptDigests([root]);
+    await write(root, 'main.js', 'a();\n//# debugId=x');
+    return { html, before };
+  };
+
+  it('rewrites the pinned hash of a changed script, so the page verifies again', async () => {
+    const { html, before } = await hashedThenStamped();
+    await write(root, 'about.html', '<p>no hashes here</p>');
+    const { files } = await resealIntegrity(before, [root]);
+    expect(files).toEqual([html]);
+    expect(await findIntegrityMismatches(root)).toEqual([]);
+    const page = await readFile(html, 'utf8');
+    expect(page).toContain(sha('sha384', 'a();\n//# debugId=x'));
+    expect(page).not.toContain(sha('sha384', 'a();'));
+  });
+
+  it('leaves a script that did not change, and its page, alone', async () => {
+    const { html, before } = await hashedThenStamped();
+    const page = await readFile(html, 'utf8');
+    await write(root, 'main.js', 'a();'); // back to the hashed bytes
+    expect((await resealIntegrity(before, [root])).files).toEqual([]);
+    expect(await readFile(html, 'utf8')).toBe(page);
+  });
+
+  it('rewrites every algorithm in the value, and keeps the ones it cannot compute', async () => {
+    await write(root, 'main.js', 'a();');
+    const html = await write(
+      root,
+      'index.html',
+      `<script src="main.js" integrity="${sha('sha256', 'a();')}   ${sha('sha512', 'a();')} md5-zzz"></script>`,
+    );
+    const before = await snapshotScriptDigests([root]);
+    await write(root, 'main.js', 'a2();');
+    await resealIntegrity(before, [root]);
+    const page = await readFile(html, 'utf8');
+    expect(page).toContain(sha('sha256', 'a2();'));
+    expect(page).toContain(sha('sha512', 'a2();'));
+    expect(page).toContain('md5-zzz');
+    expect(await findIntegrityMismatches(root)).toEqual([]);
+  });
+
+  it('keeps the ?options suffix of a token', async () => {
+    await write(root, 'main.js', 'a();');
+    const html = await write(
+      root,
+      'index.html',
+      `<script src="main.js" integrity="${sha('sha384', 'a();')}?ct=x"></script>`,
+    );
+    const before = await snapshotScriptDigests([root]);
+    await write(root, 'main.js', 'a2();');
+    await resealIntegrity(before, [root]);
+    expect(await readFile(html, 'utf8')).toContain(`${sha('sha384', 'a2();')}?ct=x`);
+  });
+
+  it('also rewrites the copies of the page embedded in server modules, in every directory given', async () => {
+    const { before } = await hashedThenStamped();
+    const server = await fixture();
+    const embedded = await write(
+      server,
+      'assets-chunks/index.html.mjs',
+      `export default "<script src=\\"main.js\\" integrity=\\"${sha('sha384', 'a();')}\\"></script>";`,
+    );
+    const untouched = await write(server, 'notes.txt', sha('sha384', 'a();'));
+    const { files } = await resealIntegrity(before, [root, server]);
+    expect(files).toContain(embedded);
+    expect(files).not.toContain(untouched);
+    expect(await readFile(embedded, 'utf8')).toContain(sha('sha384', 'a();\n//# debugId=x'));
+    expect(await readFile(untouched, 'utf8')).toBe(sha('sha384', 'a();'));
+  });
+
+  it('rewrites a hash held in an import map, which no tag mentions', async () => {
+    await write(root, 'lazy.js', 'lazy();');
+    const html = await write(
+      root,
+      'index.html',
+      `<script type="importmap">{"integrity":{"./lazy.js":"${sha('sha384', 'lazy();')}"}}</script>`,
+    );
+    const before = await snapshotScriptDigests([root]);
+    await write(root, 'lazy.js', 'lazy();\n//# debugId=x');
+    expect((await resealIntegrity(before, [root])).files).toEqual([html]);
+    expect(await findIntegrityMismatches(root)).toEqual([]);
+  });
+
+  // What the webpack builder does with `subresourceIntegrity` (measured on @angular-devkit/build-angular 19, Chromium):
+  // the page pins runtime/main/polyfills, and the RUNTIME script carries the hashes of the lazy chunks, which no page
+  // pins. A stamped lazy chunk was blocked while the entry scripts ran. The runtime's own bytes change when its table is
+  // rewritten, so its pin in the page needs a second round.
+  it("rewrites a hash table held in a script, and then that script's own pin", async () => {
+    await write(root, 'lazy.js', 'lazy();');
+    const table = (lazy: string) => `var t={"lazy":"${lazy}"};run(t);`;
+    await write(root, 'runtime.js', table(sha('sha384', 'lazy();')));
+    const html = await write(
+      root,
+      'index.html',
+      `<script src="runtime.js" integrity="${sha('sha384', table(sha('sha384', 'lazy();')))}"></script>`,
+    );
+    const before = await snapshotScriptDigests([root]);
+    await write(root, 'lazy.js', 'lazy();\n//# debugId=x'); // stamped after it was hashed
+
+    const { files } = await resealIntegrity(before, [root]);
+
+    const fresh = sha('sha384', 'lazy();\n//# debugId=x');
+    expect(await readFile(join(root, 'runtime.js'), 'utf8')).toBe(table(fresh));
+    expect(await readFile(html, 'utf8')).toContain(sha('sha384', table(fresh)));
+    expect(files.sort()).toEqual([html, join(root, 'runtime.js')].sort());
+    expect(await findIntegrityMismatches(root)).toEqual([]);
+  });
+
+  it('re-seals a script that was stamped AND had its table rewritten, once for each change', async () => {
+    // The runtime chunk is both: the stamp appends to it, and the lazy chunk's new hash goes in it.
+    await write(root, 'lazy.js', 'lazy();');
+    const table = (lazy: string) => `var t={"lazy":"${lazy}"};run(t);`;
+    const original = table(sha('sha384', 'lazy();'));
+    await write(root, 'runtime.js', original);
+    const html = await write(
+      root,
+      'index.html',
+      `<script src="runtime.js" integrity="${sha('sha384', original)}"></script>`,
+    );
+    const before = await snapshotScriptDigests([root]);
+    await write(root, 'lazy.js', 'lazy();\n//# debugId=x');
+    await write(root, 'runtime.js', `${original}\n//# debugId=y`);
+
+    await resealIntegrity(before, [root]);
+
+    expect(await findIntegrityMismatches(root)).toEqual([]);
+    const runtime = await readFile(join(root, 'runtime.js'), 'utf8');
+    expect(runtime).toContain(sha('sha384', 'lazy();\n//# debugId=x'));
+    expect(await readFile(html, 'utf8')).toContain(sha('sha384', runtime));
+  });
+
+  it("gives up rather than loop when two scripts hold each other's hash", async () => {
+    // Content-addressed hashes cannot form a cycle in a real build; a hand-made one must still terminate.
+    const a = await write(root, 'a.js', 'a-original');
+    const b = await write(root, 'b.js', 'b-original');
+    const before = await snapshotScriptDigests([root]);
+    await write(root, 'a.js', `x="${sha('sha384', 'b-original')}";`);
+    await write(root, 'b.js', `y="${sha('sha384', 'a-original')}";`);
+    const { files } = await resealIntegrity(before, [root]);
+    expect(files.sort()).toEqual([a, b].sort());
+  });
+
+  it('rewrites EVERY occurrence of a digest, in a page and in a server module', async () => {
+    await write(root, 'main.js', 'a();');
+    const old = sha('sha384', 'a();');
+    // Angular emits the same chunk both as a tag and in the import map; the SSR copy repeats the page.
+    const page = `<link rel="modulepreload" href="main.js" integrity="${old}"><script src="main.js" integrity="${old}"></script>`;
+    const html = await write(root, 'index.html', page);
+    const mjs = await write(root, 'index.html.mjs', `export default ${JSON.stringify(page)};`);
+    const before = await snapshotScriptDigests([root]);
+    await write(root, 'main.js', 'a2();');
+    await resealIntegrity(before, [root]);
+    const fresh = sha('sha384', 'a2();');
+    for (const file of [html, mjs]) {
+      const text = await readFile(file, 'utf8');
+      expect(text.split(fresh)).toHaveLength(3);
+      expect(text).not.toContain(old);
+    }
+  });
+
+  it('skips a script that is gone, and a directory that is missing', async () => {
+    await write(root, 'gone.js', 'x');
+    const before = await snapshotScriptDigests([root]);
+    await rm(join(root, 'gone.js'));
+    expect(await resealIntegrity(before, [root, join(root, 'missing')])).toEqual({ files: [] });
+  });
+
+  it('does not descend into node_modules, dot directories or past the depth bound', async () => {
+    const { before } = await hashedThenStamped();
+    const hidden = await write(root, 'node_modules/x/index.html', sha('sha384', 'a();'));
+    const dot = await write(root, '.cache/index.html', sha('sha384', 'a();'));
+    const deep = await write(root, 'a/b/c/d/e/f/g/h/index.html', sha('sha384', 'a();'));
+    const { files } = await resealIntegrity(before, [root]);
+    expect(files).not.toContain(hidden);
+    expect(files).not.toContain(dot);
+    expect(files).not.toContain(deep);
+  });
+});
+
+describe('snapshotScriptDigests', () => {
+  it('records every script under the directories, and nothing else', async () => {
+    const dir = await fixture();
+    const a = await write(dir, 'a.js', 'a');
+    const b = await write(dir, 'sub/b.mjs', 'b');
+    const c = await write(dir, 'c.cjs', 'c');
+    await write(dir, 'd.html', 'd');
+    await write(dir, 'e.js.map', 'e');
+    await write(dir, 'node_modules/f.js', 'f');
+    const snapshot = await snapshotScriptDigests([dir]);
+    expect([...snapshot.keys()].sort()).toEqual([a, b, c].sort());
+    const digest = (alg: string) => createHash(alg).update('a').digest('base64');
+    expect(snapshot.get(a)).toEqual({
+      sha256: digest('sha256'),
+      sha384: digest('sha384'),
+      sha512: digest('sha512'),
+    });
+  });
+});
+
+describe('ancestorDirs', () => {
+  it('lists the directories from the start up to the root, once each', () => {
+    expect(ancestorDirs('/a', '/a/b/c')).toEqual(['/a/b/c', '/a/b', '/a']);
+    expect(ancestorDirs('/a', '/a')).toEqual(['/a']);
+  });
+
+  it('stops at a filesystem root instead of looping (dirname of / is /)', () => {
+    expect(ancestorDirs('/', '/')).toEqual(['/']);
+    expect(ancestorDirs('/', '/x')).toEqual(['/x', '/']);
+  });
+
+  it('is empty when the start is not under the root', () => {
+    expect(ancestorDirs('/a', '/b/c')).toEqual([]);
   });
 });

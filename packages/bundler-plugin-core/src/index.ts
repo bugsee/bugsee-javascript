@@ -22,7 +22,12 @@ export {
   doctorExitCode,
   formatDoctorReport,
 } from './doctor';
-export { loadBuildPluginEnv, mergeBuildPluginEnv } from './env-file';
+export {
+  BUILD_PLUGIN_ENV_FILE,
+  type EnvFileResult,
+  loadBuildPluginEnv,
+  mergeBuildPluginEnv,
+} from './env-file';
 export {
   defaultDeleteMapFiles,
   type RunFn,
@@ -68,8 +73,21 @@ export {
   type SpawnResult,
   spawnProcess,
 } from './run-cli';
+export {
+  findIntegrityMismatches,
+  findSriProtectedScripts,
+  findStaleDigests,
+  findStaleServiceWorkerEntries,
+  hasDigestTokens,
+  hasServiceWorkerManifest,
+  listResealFiles,
+  resealIntegrity,
+  type ScriptDigests,
+  type SriProtectedScript,
+  snapshotScriptDigests,
+} from './sri';
 export { type AssetStore, type StampAssetsOptions, stampAssets } from './stamp-assets';
-export { cutAtQuery } from './stamp-files';
+export { cutAtQuery, isFencedPath } from './stamp-files';
 export {
   isWorkingTreeDirty,
   type ResolveVcsMetadataOptions,

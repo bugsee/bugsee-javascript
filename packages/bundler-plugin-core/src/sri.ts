@@ -15,9 +15,9 @@
 // runtime chunk (`__webpack_require__.sriHashes`), so patching the HTML alone would still break
 // every dynamic import.
 import { createHash } from 'node:crypto';
-import type { Dirent } from 'node:fs';
-import { readdir, readFile, realpath, stat } from 'node:fs/promises';
-import { isAbsolute, join, normalize, resolve, sep } from 'node:path';
+import { createReadStream, type Dirent } from 'node:fs';
+import { access, readdir, readFile, realpath, stat, writeFile } from 'node:fs/promises';
+import { dirname, isAbsolute, join, normalize, relative, resolve, sep } from 'node:path';
 import { readRegularFile } from './safe-read';
 
 /** A page larger than this is not scanned (a real page is a few KB): the scan must stay bounded on hostile input. */
@@ -122,6 +122,103 @@ const resolveLocalScript = (outDir: string, htmlDir: string, src: string): strin
   const root = normalize(outDir);
   const rooted = root.endsWith(sep) ? root : root + sep;
   return normalize(full).startsWith(rooted) ? full : undefined;
+};
+
+/** `{ integrity, url }` for every entry of every import map's `integrity` table in `markup`. */
+function importMapPins(markup: string): { integrity: string; url: string }[] {
+  // An import map's `integrity` table pins modules by URL: how Angular's esbuild builder (v21+) pins its lazy chunks,
+  // which no tag mentions. The browser enforces it exactly like a tag's attribute. Linear: tags come from `findTags`,
+  // and each body is the text up to the next `</script`, searched from where the tag ended.
+  const pins: { integrity: string; url: string }[] = [];
+  // Closing tags are searched case-insensitively IN `markup` (lower-casing a copy can change its length: İ), from
+  // where the opening tag ended.
+  const closing = /<\/script/gi;
+  let cursor = 0;
+  for (const tag of findTags(markup, 'script')) {
+    const at = markup.indexOf(tag, cursor);
+    cursor = at + tag.length;
+    if (!/\stype\s*=\s*("|')?importmap\1?/i.test(tag)) {
+      continue;
+    }
+    closing.lastIndex = cursor;
+    const end = closing.exec(markup)?.index ?? -1;
+    let table: unknown;
+    try {
+      table = (
+        JSON.parse(markup.slice(cursor, end === -1 ? markup.length : end)) as {
+          integrity?: unknown;
+        }
+      ).integrity;
+    } catch {
+      continue; // not JSON: the browser ignores such a map too
+    }
+    if (typeof table === 'object' && table !== null) {
+      for (const [url, integrity] of Object.entries(table)) {
+        if (typeof integrity === 'string') {
+          pins.push({ integrity, url });
+        }
+      }
+    }
+  }
+  return pins;
+}
+
+const fileExists = async (file: string): Promise<boolean> => {
+  try {
+    await access(file);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+/** Whether `dir` is `root` or below it. */
+const isUnder = (root: string, dir: string): boolean => {
+  const rel = relative(root, dir);
+  return rel === '' || (!rel.startsWith(`..${sep}`) && rel !== '..' && !isAbsolute(rel));
+};
+
+/**
+ * `start` and each of its parents up to `root`, nearest first, each once. Stops at a filesystem root (whose parent is
+ * itself), so a scan rooted at `/` ends. Empty when `start` is not under `root`.
+ */
+export function ancestorDirs(root: string, start: string): string[] {
+  const dirs: string[] = [];
+  for (let d = start; isUnder(root, d); d = dirname(d)) {
+    dirs.push(d);
+    if (dirname(d) === d) {
+      break;
+    }
+  }
+  return dirs;
+}
+
+/** Files under `dir` whose NAME matches `wanted`: for the re-seal, which rewrites real files only (no symlinks followed). */
+const walkFiles = async (dir: string, wanted: RegExp, depth = 0): Promise<string[]> => {
+  if (depth > MAX_DEPTH) {
+    return [];
+  }
+  let entries: Dirent[];
+  try {
+    entries = await readdir(dir, { withFileTypes: true });
+  } catch {
+    // A missing or unreadable output directory is not this guard's error to raise: the CLI reports
+    // it properly ("path does not exist"), and throwing here would replace that with a worse one.
+    return [];
+  }
+  const found: string[] = [];
+  for (const entry of entries) {
+    const full = join(dir, entry.name);
+    if (entry.isDirectory()) {
+      if (NEVER_WALK.has(entry.name) || entry.name.startsWith('.')) {
+        continue;
+      }
+      found.push(...(await walkFiles(full, wanted, depth + 1)));
+    } else if (entry.isFile() && wanted.test(entry.name)) {
+      found.push(full);
+    }
+  }
+  return found;
 };
 
 interface HtmlWalk {
@@ -298,16 +395,32 @@ export async function findSriProtectedScriptsDetailed(
       ...findTags(markup, 'link')
         .filter((tag) => PRELOADS_SCRIPT.test(tag))
         .map((tag) => ({ tag, url: HREF_ATTR.exec(tag)?.[1] })),
-    ];
-    for (const { tag, url } of tags) {
+    ].map(({ tag, url }) => {
       const integrity = INTEGRITY_ATTR.exec(tag)?.[1];
+      return {
+        integrity: integrity === undefined ? undefined : unquote(integrity),
+        url: url === undefined ? undefined : unquote(url),
+      };
+    });
+    for (const { integrity, url } of [...tags, ...importMapPins(markup)]) {
       // An empty `integrity` pins nothing — browsers treat it as no check at all.
-      if (integrity === undefined || unquote(integrity).trim() === '' || url === undefined) {
+      if (integrity === undefined || integrity.trim() === '' || url === undefined) {
         continue;
       }
-      const script = resolveLocalScript(outDir, htmlDir, unquote(url));
+      let script = resolveLocalScript(outDir, htmlDir, url);
+      if (script !== undefined && url.startsWith('/') && !(await fileExists(script))) {
+        // A root-relative src is served from the directory the page was built into, which is not the scanned
+        // root when that root is an SSR output (browser/ beside server/): look from the page's own directory up.
+        const bare = (url.split(/[?#]/)[0] ?? '').trim();
+        for (const d of ancestorDirs(outDir, htmlDir)) {
+          if (await fileExists(join(d, bare))) {
+            script = join(d, bare);
+            break;
+          }
+        }
+      }
       // Only a JS file we emit can be broken by inject; a `.mjs`/`.cjs` counts, a `.wasm` does not.
-      const pin = unquote(integrity).trim();
+      const pin = integrity.trim();
       if (script === undefined || !/\.[cm]?js$/i.test(script) || seen.has(`${script}\0${pin}`)) {
         continue;
       }
@@ -372,4 +485,304 @@ export async function findIntegrityMismatches(outDirInput: string): Promise<SriP
     }
   }
   return mismatched;
+}
+
+const SCRIPT_FILE = /\.[cm]?js$/i;
+
+/**
+ * Text files that can carry a copy of a script's hash: the page itself, the server modules that embed it, and
+ * the scripts that hold a table of other scripts' hashes (the webpack builder's runtime chunk).
+ */
+const RESEAL_FILE = /\.(x?html?|[cm]?js)$|^ngsw\.json$/i;
+
+/** The files {@link resealIntegrity} may rewrite under `dirs`: pages, server modules, scripts. */
+export async function listResealFiles(dirs: readonly string[]): Promise<string[]> {
+  const found = new Set<string>();
+  for (const dir of dirs) {
+    for (const file of await walkFiles(resolve(dir), RESEAL_FILE)) {
+      found.add(file);
+    }
+  }
+  return [...found];
+}
+
+/** Rounds of re-sealing: a table inside a script changes that script's own hash, which is one more round. */
+const MAX_RESEAL_PASSES = 5;
+
+type Digests = Record<SriAlgorithm, string>;
+
+const digestsOf = (bytes: Buffer): Digests => ({
+  sha256: createHash('sha256').update(bytes).digest('base64'),
+  sha384: createHash('sha384').update(bytes).digest('base64'),
+  sha512: createHash('sha512').update(bytes).digest('base64'),
+});
+
+/** What every script under some directories hashed to at one moment: the input of {@link resealIntegrity}. */
+export type ScriptDigests = Map<string, Digests>;
+
+/**
+ * Record the digests of every script (`.js`/`.mjs`/`.cjs`) under `dirs`, BEFORE something rewrites them.
+ *
+ * Taken from the files, not from the pages that pin them: a hash can live where no tag mentions it — an
+ * import map's table, or a table inside the webpack builder's runtime chunk, which pins every lazy chunk.
+ */
+export async function snapshotScriptDigests(dirs: readonly string[]): Promise<ScriptDigests> {
+  const snapshot: ScriptDigests = new Map();
+  for (const dir of dirs) {
+    for (const file of await walkFiles(resolve(dir), SCRIPT_FILE)) {
+      snapshot.set(file, digestsOf(await readFile(file)));
+    }
+  }
+  return snapshot;
+}
+
+/**
+ * Re-seal a build whose scripts changed AFTER their hashes were written: for every script whose bytes differ
+ * from `before` (a {@link snapshotScriptDigests}), replace its old digests with its current ones, in every HTML
+ * page, `.mjs` module and script under `dirs`. A script that is gone is skipped.
+ *
+ * A digest is the same length whatever it hashes, so a rewrite never moves a byte offset: source maps stay
+ * valid. Rewriting a table inside a script changes THAT script, so the pass repeats (bounded) until nothing
+ * is stale; a build whose hashes cannot be brought to rest is left for the caller's
+ * {@link findIntegrityMismatches} to report. Sound where every copy of a hash is a literal in those files —
+ * Angular's pages, its SSR copies of them, the webpack builder's runtime table. Not for a hash computed at
+ * run time. Returns the files it rewrote. A missing directory is skipped.
+ */
+export async function resealIntegrity(
+  before: ScriptDigests,
+  dirs: readonly string[],
+): Promise<{ files: string[] }> {
+  const known: ScriptDigests = new Map(
+    [...before].map(([file, digests]) => [file, { ...digests }]),
+  );
+  const rewritten = new Set<string>();
+  for (let pass = 0; pass < MAX_RESEAL_PASSES; pass++) {
+    const swaps = new Map<string, string>();
+    for (const [file, digests] of known) {
+      let bytes: Buffer;
+      try {
+        bytes = await readFile(file);
+      } catch {
+        continue;
+      }
+      const now = digestsOf(bytes);
+      for (const alg of SRI_ALGORITHMS) {
+        if (now[alg] !== digests[alg]) {
+          swaps.set(`${alg}-${digests[alg]}`, `${alg}-${now[alg]}`);
+          // What this script's pages hold now, for the next pass.
+          digests[alg] = now[alg];
+        }
+      }
+    }
+    if (swaps.size === 0) {
+      break;
+    }
+    for (const dir of dirs) {
+      for (const file of await walkFiles(resolve(dir), RESEAL_FILE)) {
+        const text = await readFile(file, 'utf8');
+        let after = text;
+        for (const [stale, fresh] of swaps) {
+          after = after.split(stale).join(fresh);
+        }
+        if (after !== text) {
+          await writeFile(file, after, 'utf8');
+          rewritten.add(file);
+        }
+      }
+    }
+  }
+  // After the last pass, so every file a manifest lists is final: the service worker's own hashes (below).
+  for (const manifest of await findManifests(dirs)) {
+    const text = await readFile(manifest.path, 'utf8');
+    let after = text;
+    for (const { url, recorded, actual } of manifest.entries) {
+      if (actual !== undefined && actual !== recorded) {
+        const entry = new RegExp(`(${escapeRegExp(JSON.stringify(url))}\\s*:\\s*")${recorded}(")`);
+        after = after.replace(entry, `$1${actual}$2`);
+      }
+    }
+    // A key written with a JSON escape ("/main\u002ejs") is the same key but not the same text: any entry the text
+    // swap did not reach is set on the parsed table and the manifest written back with its own indent.
+    const parsed = JSON.parse(after) as { hashTable: Record<string, string> };
+    const missed = manifest.entries.filter(
+      (e) =>
+        e.actual !== undefined && e.actual !== e.recorded && parsed.hashTable[e.url] !== e.actual,
+    );
+    if (missed.length > 0) {
+      for (const { url, actual } of missed) {
+        parsed.hashTable[url] = actual as string;
+      }
+      const indent = /^([ \t]+)"/m.exec(text)?.[1] ?? 2;
+      after = `${JSON.stringify(parsed, null, indent)}${text.endsWith('\n') ? '\n' : ''}`;
+    }
+    if (after !== text) {
+      await writeFile(manifest.path, after, 'utf8');
+      rewritten.add(manifest.path);
+    }
+  }
+  return { files: [...rewritten] };
+}
+
+/**
+ * Files under `dirs` that STILL hold an old digest of a script that has changed since `before`: a copy the swap
+ * did not fix (the check {@link resealIntegrity} is verified by, over every directory it was given, not just the one
+ * the pages are read from). Empty means every copy it could see was brought up to date.
+ */
+export async function findStaleDigests(
+  before: ScriptDigests,
+  dirs: readonly string[],
+): Promise<{ file: string; script: string }[]> {
+  const tokens = new Map<string, string>();
+  for (const [script, old] of before) {
+    let bytes: Buffer;
+    try {
+      bytes = await readFile(script);
+    } catch {
+      continue;
+    }
+    const now = digestsOf(bytes);
+    for (const alg of SRI_ALGORITHMS) {
+      if (now[alg] !== old[alg]) {
+        tokens.set(`${alg}-${old[alg]}`, script);
+      }
+    }
+  }
+  const stale: { file: string; script: string }[] = [];
+  if (tokens.size === 0) {
+    return stale;
+  }
+  // One pass per file over every digest-shaped token (exact lengths: 256 -> 43 chars + `=`, 384 -> 64, 512 -> 86 + `==`),
+  // looked up in a map, instead of a substring search per changed script per file.
+  const shaped = /sha256-[A-Za-z0-9+/]{43}=|sha384-[A-Za-z0-9+/]{64}|sha512-[A-Za-z0-9+/]{86}==/g;
+  for (const file of await listResealFiles(dirs)) {
+    const text = await readFile(file, 'utf8');
+    for (const [found] of text.matchAll(shaped)) {
+      const script = tokens.get(found);
+      if (script !== undefined) {
+        stale.push({ file, script });
+        break;
+      }
+    }
+  }
+  return stale;
+}
+
+/**
+ * Whether any re-sealable file under `dirs` holds an SRI digest (`sha256-` / `sha384-` / `sha512-` plus base64 of the
+ * right length): a cheap check of whether a copy of a page's pins could be there at all.
+ */
+export async function hasDigestTokens(dirs: readonly string[]): Promise<boolean> {
+  const shaped = /sha256-[A-Za-z0-9+/]{43}=|sha384-[A-Za-z0-9+/]{64}|sha512-[A-Za-z0-9+/]{86}==/;
+  for (const file of await listResealFiles(dirs)) {
+    if (shaped.test(await readFile(file, 'utf8'))) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/** Whether any directory holds an `ngsw.json`: the one thing besides a pinned hash that a re-seal has to fix. */
+export async function hasServiceWorkerManifest(dirs: readonly string[]): Promise<boolean> {
+  for (const dir of dirs) {
+    if ((await walkFiles(resolve(dir), /^ngsw\.json$/)).length > 0) {
+      return true;
+    }
+  }
+  return false;
+}
+
+const escapeRegExp = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+interface ManifestEntry {
+  url: string;
+  recorded: string;
+  /** SHA-1 of the file the URL names, `undefined` when no such file is under the manifest's directory. */
+  actual: string | undefined;
+}
+
+/** SHA-1 (hex) of a file, streamed. `undefined` when there is no such regular file (a missing path, a directory). */
+async function sha1OfFile(path: string): Promise<string | undefined> {
+  try {
+    return await new Promise<string>((done, fail) => {
+      const hash = createHash('sha1');
+      createReadStream(path)
+        .on('error', fail)
+        .on('data', (chunk) => hash.update(chunk))
+        .on('end', () => done(hash.digest('hex')));
+    });
+  } catch (error) {
+    if (['ENOENT', 'ENOTDIR', 'EISDIR'].includes((error as NodeJS.ErrnoException).code ?? '')) {
+      return undefined;
+    }
+    throw error; // a file that is there but cannot be read must not look like "nothing to compare"
+  }
+}
+
+/**
+ * SHA-1 of the file a manifest URL names, looked for under the manifest's directory with leading segments dropped
+ * (base href). Streamed: a manifest lists every cached asset, media included, and none is buffered whole.
+ */
+async function hashManifestTarget(dir: string, url: string): Promise<string | undefined> {
+  const segments = url.split('/').filter((segment) => segment !== '' && segment !== '.');
+  if (segments.includes('..')) {
+    return undefined;
+  }
+  for (let from = 0; from < segments.length; from++) {
+    const digest = await sha1OfFile(join(dir, ...segments.slice(from)));
+    if (digest !== undefined) {
+      return digest;
+    }
+  }
+  return undefined;
+}
+
+/** Every `ngsw.json` under `dirs` with a `hashTable`, and what each entry's file hashes to now. */
+async function findManifests(
+  dirs: readonly string[],
+): Promise<{ path: string; entries: ManifestEntry[] }[]> {
+  const found = new Set<string>();
+  for (const dir of dirs) {
+    for (const file of await walkFiles(resolve(dir), /^ngsw\.json$/)) {
+      found.add(file);
+    }
+  }
+  const manifests: { path: string; entries: ManifestEntry[] }[] = [];
+  for (const path of found) {
+    let table: unknown;
+    try {
+      table = (JSON.parse(await readFile(path, 'utf8')) as { hashTable?: unknown }).hashTable;
+    } catch {
+      continue; // not JSON: nothing this can say about it
+    }
+    if (typeof table !== 'object' || table === null) {
+      continue;
+    }
+    const entries: ManifestEntry[] = [];
+    for (const [url, recorded] of Object.entries(table)) {
+      if (typeof recorded !== 'string') {
+        continue;
+      }
+      entries.push({ url, recorded, actual: await hashManifestTarget(dirname(path), url) });
+    }
+    manifests.push({ path, entries });
+  }
+  return manifests;
+}
+
+/**
+ * Entries of a service worker manifest whose recorded SHA-1 is not the file's: the service worker would treat the
+ * app as corrupt and stop serving it. An entry whose file cannot be found is not reported (nothing to compare).
+ */
+export async function findStaleServiceWorkerEntries(
+  dirs: readonly string[],
+): Promise<{ manifest: string; url: string }[]> {
+  const stale: { manifest: string; url: string }[] = [];
+  for (const manifest of await findManifests(dirs)) {
+    for (const { url, recorded, actual } of manifest.entries) {
+      if (actual !== undefined && actual !== recorded) {
+        stale.push({ manifest: manifest.path, url });
+      }
+    }
+  }
+  return stale;
 }

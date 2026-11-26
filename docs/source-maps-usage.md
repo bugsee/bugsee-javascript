@@ -72,7 +72,7 @@ For **Rspack**, set `devtool: 'source-map'`: its production default is `devtool:
 there is nothing to upload (the plugin says so through `onNotice`).
 
 **What these do not cover.** **Angular's builder does not accept esbuild plugins**, so `bugseeEsbuildPlugin`
-cannot be used with `ng build`: use the post-build recipe in §2. Bun's bundler, `tsc` and `swc` have no hook
+cannot be used with `ng build`: use `ng add @bugsee/angular` (§2). Bun's bundler, `tsc` and `swc` have no hook
 either (also §2). Next.js on webpack uses the webpack plugin.
 
 **Where the settings come from.** The lookup order is: the **plugin option**, then the **process environment**,
@@ -184,20 +184,51 @@ BUGSEE_APP_TOKEN=… bugsee-cli debug-files upload ./dist \
   --type sourcemaps --version "$APP_VERSION" --build "$APP_BUILD"
 ```
 
-**Angular (17+, `ng build` with the esbuild application builder).** There is no plugin hook, so add the CLI as a
-step after the build (for example an npm script or a CI step):
+**Angular — `ng add @bugsee/angular`.** Run it once in the workspace (`ng add @bugsee/angular --app-token <token>`):
 
 ```bash
-ng build --source-map            # or "sourceMap": true in angular.json; the output lands in dist/<project>/browser
-export BUGSEE_APP_TOKEN=…        # the CLI does not read .env.bugsee-build-plugin
-bugsee-cli sourcemaps inject dist/<project>/browser
-bugsee-cli debug-files upload dist/<project>/browser \
-  --type sourcemaps --version "$APP_VERSION" --build "$APP_BUILD"
+ng add @bugsee/angular
+npm run build:bugsee        # ng build --configuration production, then bugsee-angular-upload
 ```
 
-If you enable `"subresourceIntegrity": true`, bugsee-cli 0.7.13 `inject` refuses to run (it would invalidate the
-integrity hashes Angular writes into `index.html`) unless you pass `--allow-sri`, which you should only do if
-the hashes are recomputed after it runs; otherwise turn that option off for builds you symbolicate.
+It turns on hidden script source maps in the production configuration
+(`"sourceMap": { "scripts": true, "styles": false, "hidden": true }`), launches the SDK in `main.ts`, registers
+`BugseeErrorHandler` in your providers, adds the `build:bugsee` script, and keeps the token in
+`.env.bugsee-build-plugin` (added to `.gitignore`). Where it cannot find your bootstrap it changes no source and prints
+the lines to add. Running it again changes nothing. A plain `ng build` does not upload; run `build:bugsee` where you
+build for release, with `BUGSEE_APP_TOKEN` set (or the env file present).
+
+`bugsee-angular-upload` is the step the script runs, and you can run it yourself after any `ng build` (it finds the
+output from `angular.json`): `--project`, `--configuration`, `--dist <dir>`, `--dry-run`, `--keep-maps`,
+`--fail-on-error`, `--strip-sources-content`, `--help`. The same thing is a function:
+`import { uploadAngularSourcemaps } from '@bugsee/angular/sourcemaps'`. It works on both Angular builders — the
+esbuild `application` builder (the default since 17, output in `dist/<project>/browser`) and the webpack
+`browser` builder (`outputPath` is the browser directory) — because it only needs the finished output.
+
+- **`subresourceIntegrity: true` is supported.** Angular writes a hash of every script into `index.html` (the lazy
+  chunks in an import map, or in the runtime chunk on the webpack builder) and, with SSR, into the copy of that page
+  its server serves. The step stamps the bundles,
+  then re-writes those hashes to match and checks them, so the page keeps loading. (The CLI on its own refuses such a
+  build; this is what `--allow-sri` assumes you do.)
+- **A build with a service worker works.** `ngsw.json` (one per locale for a localized build) lists the SHA-1 of every
+  file it caches and the service worker rejects a changed one, so after stamping the step re-computes those entries
+  and checks them; if one cannot be reconciled it restores the build and uploads nothing.
+- **If the output moved** (`ng build --output-path other`), pass `--output-path other` (or `--dist <browser dir>`). When the output is named by its browser directory (also `browser/<locale>`) and a sibling `server/` exists inside the project, the output root is re-sealed, because the server embeds the page (for one locale of several, only that locale and its `server/<locale>` pages: Angular emits identical shared scripts into every locale, and the others must keep pinning their unstamped copies); if the output root is the project root itself (or outside it) the tool says it cannot, and you should build into its own directory and use `--output-path`. A
+  problem locating the output is printed and the command exits 0, so it cannot fail a pipeline whose build
+  succeeded; `--fail-on-error` makes it exit non-zero.
+- **Only `browser/` is uploaded.** An SSR server bundle's errors are reported by the Node SDK.
+- `outputHashing: "all"` (the default in production) keeps the file names unique per build; the debug-ID, not the
+  file name, is what links a frame to its map.
+
+By hand, without the schematic (any Angular version), the same two steps are:
+
+```bash
+ng build --configuration production      # with sourceMap.scripts true in angular.json
+BUGSEE_APP_TOKEN=… npx bugsee-angular-upload --configuration production
+```
+
+Do not run `bugsee-cli sourcemaps inject` yourself on an Angular build that has `subresourceIntegrity`: it refuses
+(or, with `--allow-sri`, leaves a page whose hashes no longer match, which the browser blocks).
 
 `inject` must run **before deployment** so the shipped bundle carries the debug-ID + the `_bugseeDebugIds` runtime
 stub the SDK reads. This is exactly what the plugins automate; the CLI is the same engine, just invoked by hand.

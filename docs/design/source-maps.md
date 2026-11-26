@@ -460,27 +460,99 @@ step that computes the hashes (esbuild, Angular, Bun, `tsc`). The CLI has its ow
   build still breaks.
 - **HTML emitted outside the output directory.** `html-webpack-plugin`'s `filename` can point anywhere
   (`../templates/index.html` is the usual Django/Rails shape); the scan only walks `outDir`.
-- **Importmap integrity** (`<script type="importmap">` whose JSON body carries an `integrity` map) —
-  an inline script with no `src`.
 - **Lazy-chunk hash tables are not read.** The post-stamp integrity check compares what the HTML pins; the table
   `webpack-subresource-integrity` / Rspack embed in the runtime chunk is correct because it was hashed after the
   stamp (real-build test: every lazy chunk's digest appears in the runtime), but it is not re-verified from disk.
 - **In-build stamping covers what is in the bundler's asset table.** A script copied verbatim from a `public/`
   directory (never in the bundle) is no longer stamped, since the post-emit inject is skipped for a pre-stamped build.
-- **The standalone CLI path.** Users driving `bugsee-cli` directly (Angular 17+, Bun, `tsc`) get no plugin guard,
-  but the CLI's own (`--allow-sri`).
+- **The standalone CLI path.** Users driving `bugsee-cli` directly (Bun, `tsc`) get no plugin guard, but the CLI's
+  own (`--allow-sri`). Angular has its own entry (below).
 
 It does see, and refuses: `<script integrity src=…>` and `<link rel=modulepreload|preload integrity href=…>`
 in any `.html` under the output directory, quoted or bare, in any attribute order, with a whitespace-padded
-URL. It deliberately does NOT fire on a CDN script, a non-JS target, a path outside the output directory, an
+URL, and the `integrity` table of a `<script type="importmap">` (a URL-keyed pin the browser enforces like a tag's
+attribute; an unparsable map is ignored, as a browser does). It deliberately does NOT fire on a CDN script, a non-JS target, a path outside the output directory, an
 empty `integrity`, a `data-integrity`/`data-src` attribute, a commented-out tag, a `rel=prefetch` (a failed
 prefetch is discarded, not fatal), or a symlinked page.
 
 **Why not rewrite the hashes instead.** `webpack-subresource-integrity` also embeds the lazy chunks' hashes in
 the runtime chunk (`__webpack_require__.sriHashes = {480: "sha384-…"}`), so patching the HTML alone would still
-break every dynamic import, and Angular's builder has its own shape. Stamping before the hash is the only approach
-correct for the HTML *and* the runtime-embedded lazy hashes (OPEN-FINDINGS D3's "real fix"; now built for webpack 5,
-Rspack, Vite and Rollup).
+break every dynamic import. Stamping before the hash is the only approach correct for the HTML *and* the
+runtime-embedded lazy hashes (OPEN-FINDINGS D3's "real fix"; now built for webpack 5, Rspack, Vite and Rollup).
+Re-writing IS correct where the page is the only place the hashes live — Angular's esbuild builder, next.
+
+### Angular (`@bugsee/angular`): post-build stamp, then re-seal
+
+Measured on `@angular/build` 22.3 (the esbuild `application` builder), read from its source and run for real.
+
+**No hook to stamp before the hash.** The builder takes no plugin: `buildApplication(options, context, extensions)`
+has `codePlugins` (esbuild) and `indexHtmlTransformer`, documented *"usage of the `extensions` parameter is NOT
+supported and may cause unexpected build output or build failures"* and `@experimental`, and neither runs between
+the final bytes and the hash (`execute-post-bundle.js`: debug-IDs, then `generateIndexHtml`, which computes SRI from
+the output files). A wrapper builder over that API was therefore not built: it would sit on an unsupported seam of
+an API that churns every release.
+
+**What Angular already does.** Since 21/22 it writes an ECMA-426 `//# debugId=<uuid>` comment into every browser
+bundle that has a map (and `debugId` into the map) when `sourceMap.scripts` is on, BEFORE the SRI hashes are taken.
+That is only half of what the SDK needs: the `_bugseeDebugIds` registration that maps a running script to its id is
+not there, so the SDK would report no id. `bugsee-cli sourcemaps inject` keeps an id another tool wrote and adds only
+the registration (log: `registered an existing debug-id another tool wrote`), so Angular's id, the map's id and the
+reported id are one value.
+
+**Where Angular keeps the hashes** (`subresourceIntegrity: true`, one real build each, loaded in Chromium):
+
+- (esbuild builder) the entry `<script src integrity>` tags and the stylesheet `<link integrity>` in `index.html` (and in every
+  prerendered page, and in `index.csr.html`);
+- a `<script type="importmap">{"integrity": {"./chunk-X.js": "sha384-…"}}</script>` in the same page, pinning EVERY lazy chunk. A stamped lazy chunk is blocked
+  (`Failed to find a valid digest in the 'integrity' attribute for resource '…/chunk-X.js' … has been blocked`,
+  and `Failed to fetch dynamically imported module`) while the entry scripts still run — which is what made this a
+  finding: the first version of the scan read tags only;
+- with SSR/prerender, a second copy of the page as a string in `server/assets-chunks/index*.html.mjs` and in
+  `server/index.server.html`, which the Node server answers requests from.
+
+Nothing else in the esbuild builder's output (no runtime table). The legacy webpack `browser` builder differs:
+its `runtime.*.js` carries the lazy chunks' hashes (`sriHashes`), which NO page pins (measured on
+`@angular-devkit/build-angular` 19: a stamped lazy chunk was blocked while the entry scripts ran). So the stale
+hashes cannot be found by reading the pages. They are found by what the files WERE: `snapshotScriptDigests` records
+the sha256/384/512 of every script under the output before the stamp, and `resealIntegrity` swaps each changed
+script's old digests for its new ones in every HTML, `.mjs` and `.js` file (same length, so no byte offset moves and
+the maps stay valid), repeating (bounded) because rewriting the runtime's table changes the runtime's own hash.
+
+The order that works is the one the CLI documents for `--allow-sri`: stamp, then recompute the hashes.
+`uploadSourcemaps({ resealSri: true })` does: snapshot, `inject --allow-sri`, verify the stamp, re-seal, then verify
+with `findIntegrityMismatches` (the pages' pins, the one thing a browser checks first). A page that still does not
+verify is reported, or thrown under `failOnError`, never silent. A hash computed at run time, or kept in a file
+outside the directories given, is not covered and is not claimed to be.
+
+**Verified for real** (`npm run build:bugsee` from `ng add`, the packed `@bugsee/angular` + `@bugsee/bundler-plugin-core`,
+the real `bugsee-cli`, a mock collector, Chromium via Playwright; `outputHashing: all`, `subresourceIntegrity: true`):
+
+| App | Result |
+|---|---|
+| Angular 22.3, esbuild `application`, lazy route | every pin matches its file; 5 maps uploaded and deleted; the page runs, the lazy chunk loads, 4 debug-IDs registered, no console error |
+| same, stamped with `--allow-sri` and NOT re-sealed (control) | blocked outright: nothing runs |
+| Angular 22.3, SSR + prerender | 24 pins across `browser/`, `server/index.server.html` and the 3 `assets-chunks` modules all match; the real `server.mjs` serves a page that runs, 5 debug-IDs, no console error |
+| Angular 19.2, webpack `browser` builder | the lazy chunk (blocked before the digest snapshot) now loads; 4 debug-IDs, no console error; control blocked |
+
+CI keeps the bytes half of this: `upload.real-build.test.ts` runs the real CLI over two real Angular 22.3 chunks with
+the SRI page shapes above (script tag, import map, SSR copy); the browser half is not in CI.
+
+**Service worker manifests.** `ngsw.json` (one per locale for a localized build; measured on `@angular/build` 22.3 with
+`@angular/service-worker`) carries `hashTable`: SHA-1 hex of each cached file's bytes, keyed by path from the manifest's
+directory. A service worker that finds a mismatch treats the app as corrupt and stops serving it, and the SRI re-seal
+(sha256/384/512) never touched it: the first version only refused a top-level manifest and so missed the per-locale
+ones. `resealIntegrity` now recomputes every entry after the last pass (a targeted text swap, formatting untouched;
+the file is found by dropping leading URL segments, which covers a base href), `findStaleServiceWorkerEntries` verifies,
+and an entry that cannot be reconciled rolls the build back like a stale SRI hash. No other manifest field depends on
+file contents in the version checked. **What it refuses:** nothing for a service worker now. It also stamps `browser/` only: a server bundle's errors are the Node
+SDK's, symbolicated by `@bugsee/node`.
+
+**The legacy webpack `browser` builder** (`@angular-devkit/build-angular:browser`) takes the same route: the post-build
+step needs nothing from the builder, and its output is flat (`outputPath` IS the browser directory). Its SRI is the
+reason for the digest snapshot above. `@angular-builders/custom-webpack` + `bugseeWebpackPlugin` (the route Sentry
+documents) was considered and not built: it would need the plugin's in-build stamp to run before Angular's own SRI
+plugin hashes, an ordering nobody verified for Angular's compilation, to cover one legacy builder that the post-build
+step already covers with a measured result.
 
 ---
 

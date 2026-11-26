@@ -1,0 +1,19 @@
+{
+  "$schema": "http://json-schema.org/schema",
+  "$id": "BugseeAngularNgAdd",
+  "title": "Bugsee ng-add options",
+  "type": "object",
+  "properties": {
+    "project": {
+      "type": "string",
+      "description": "The application project to set up. Defaults to the workspace's only application.",
+      "$default": { "$source": "projectName" }
+    },
+    "appToken": {
+      "type": "string",
+      "description": "Your Bugsee app token. Written into the launch call and, for the build step, into .env.bugsee-build-plugin (kept out of git).",
+      "x-prompt": "Your Bugsee app token (press Enter to fill it in later):"
+    }
+  },
+  "required": []
+}
