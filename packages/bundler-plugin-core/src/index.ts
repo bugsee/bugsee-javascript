@@ -10,6 +10,18 @@ export {
   findPackageVersion,
 } from './app-identity';
 export { deriveBuildUuid } from './build-id';
+export {
+  DOCTOR_CHECK_IDS,
+  DOCTOR_SCHEMA_VERSION,
+  type DoctorCheckId,
+  type DoctorFinding,
+  type DoctorOptions,
+  type DoctorReport,
+  type DoctorSeverity,
+  diagnoseBuildOutput,
+  doctorExitCode,
+  formatDoctorReport,
+} from './doctor';
 export { loadBuildPluginEnv, mergeBuildPluginEnv } from './env-file';
 export {
   defaultDeleteMapFiles,

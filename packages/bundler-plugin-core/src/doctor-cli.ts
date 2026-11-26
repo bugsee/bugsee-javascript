@@ -1,0 +1,170 @@
+#!/usr/bin/env node
+// `bugsee-sourcemaps-doctor` — the command-line face of `diagnoseBuildOutput`.
+//
+//   bugsee-sourcemaps-doctor <dir> [--json] [--strict] [--project-root <dir>] [--max-map-mb <n>] [--no-env] [--exclude <glob>]
+//
+// Exit codes: 0 ok, 1 warnings only with --strict, 2 errors (or a usage error).
+import { realpathSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import {
+  DOCTOR_CHECK_IDS,
+  diagnoseBuildOutput,
+  doctorExitCode,
+  formatDoctorReport,
+  NON_IGNORABLE_CHECK_IDS,
+} from './doctor';
+import type { EnvRecord } from './run-cli';
+
+export const DOCTOR_USAGE = `Usage: bugsee-sourcemaps-doctor <build-output-dir> [options]
+
+Audits a build output directory for everything that stops Bugsee from symbolicating a crash.
+
+Options:
+  --json                 Print the machine-readable report (schemaVersion 1) instead of text.
+  --strict               Exit 1 when there are warnings (and no errors).
+  --project-root <dir>   Where .env.bugsee-build-plugin and package.json are looked up (default: cwd).
+  --max-map-mb <n>       Flag source maps larger than n MiB (default 50).
+  --no-env               Skip the token / version / build / NODE_ENV checks.
+  --deployed             The directory is (about to be) served: leftover .map files become a warning.
+  --ignore <id>          Drop a check ID from the report; repeatable.
+  --exclude <glob>       Do not check files the build did not emit (e.g. sw.js; relative to <dir>); repeatable.
+  --                     End of options (a directory may start with a dash after it).
+  -h, --help             Show this help.
+
+Exit codes: 0 ok, 1 warnings only (with --strict), 2 errors.`;
+
+/** Flags that take no value: `--strict=false` must be refused, not read as `--strict`. */
+const BOOLEAN_FLAGS: ReadonlySet<string> = new Set([
+  '--json',
+  '--strict',
+  '--no-env',
+  '--deployed',
+  '--help',
+]);
+
+export interface DoctorCliIo {
+  stdout: (text: string) => void;
+  stderr: (text: string) => void;
+  env: EnvRecord;
+}
+
+/** Run the CLI in-process: returns the exit code, writes only through `io`. */
+export async function runDoctorCli(argv: readonly string[], io: DoctorCliIo): Promise<number> {
+  let dir: string | undefined;
+  let json = false;
+  let strict = false;
+  let skipEnv = false;
+  let deployed = false;
+  let onlyPositionals = false;
+  const ignore: string[] = [];
+  const exclude: string[] = [];
+  let projectRoot: string | undefined;
+  let maxMapBytes: number | undefined;
+  const usage = (message: string): number => {
+    io.stderr(`${message}\n\n${DOCTOR_USAGE}\n`);
+    return 2;
+  };
+  for (let i = 0; i < argv.length; i++) {
+    let arg = argv[i] as string;
+    // `--key=value` is the same as `--key value`
+    let inline: string | undefined;
+    const eq = !onlyPositionals && arg.startsWith('--') ? arg.indexOf('=') : -1;
+    if (eq > 2) {
+      inline = arg.slice(eq + 1);
+      arg = arg.slice(0, eq);
+    }
+    if (inline !== undefined && BOOLEAN_FLAGS.has(arg)) {
+      return usage(`${arg} does not take a value`);
+    }
+    if (onlyPositionals) {
+      if (dir !== undefined) {
+        return usage(`Unexpected argument ${arg}`);
+      }
+      dir = arg;
+    } else if (arg === '--') {
+      onlyPositionals = true;
+    } else if (arg === '-h' || arg === '--help') {
+      io.stdout(`${DOCTOR_USAGE}\n`);
+      return 0;
+    } else if (arg === '--json') {
+      json = true;
+    } else if (arg === '--strict') {
+      strict = true;
+    } else if (arg === '--no-env') {
+      skipEnv = true;
+    } else if (arg === '--deployed') {
+      deployed = true;
+    } else if (
+      arg === '--project-root' ||
+      arg === '--max-map-mb' ||
+      arg === '--ignore' ||
+      arg === '--exclude'
+    ) {
+      const value = inline ?? argv[++i];
+      if (value === undefined || (inline === undefined && value.startsWith('--'))) {
+        return usage(`${arg} needs a value`);
+      }
+      if (arg === '--project-root') {
+        projectRoot = value;
+      } else if (arg === '--exclude') {
+        exclude.push(value);
+      } else if (arg === '--ignore') {
+        if (NON_IGNORABLE_CHECK_IDS.has(value)) {
+          io.stderr(
+            `Warning: ${value} cannot be ignored (it means nothing was checked); it stays in the report.\n`,
+          );
+        } else if (!(DOCTOR_CHECK_IDS as readonly string[]).includes(value)) {
+          io.stderr(
+            `Warning: --ignore ${value} is not a known check ID (see DOCTOR_CHECK_IDS); ignored.\n`,
+          );
+        }
+        ignore.push(value);
+      } else {
+        const mb = Number(value);
+        if (!Number.isFinite(mb) || mb <= 0) {
+          return usage(`--max-map-mb needs a positive number, got "${value}"`);
+        }
+        maxMapBytes = mb * 1024 * 1024;
+      }
+    } else if (arg.startsWith('-')) {
+      return usage(`Unknown option ${arg}`);
+    } else if (dir === undefined) {
+      dir = arg;
+    } else {
+      return usage(`Unexpected argument ${arg}`);
+    }
+  }
+  if (dir === undefined) {
+    return usage('Missing the build output directory');
+  }
+  const report = await diagnoseBuildOutput(dir, {
+    env: io.env,
+    skipEnv,
+    deployed,
+    ignore,
+    exclude,
+    ...(projectRoot !== undefined ? { projectRoot } : {}),
+    ...(maxMapBytes !== undefined ? { maxMapBytes } : {}),
+  });
+  io.stdout(`${json ? JSON.stringify(report, null, 2) : formatDoctorReport(report)}\n`);
+  return doctorExitCode(report, strict);
+}
+
+/* v8 ignore start -- process entry point: the logic above is what is tested */
+const self = process.argv[1];
+if (self !== undefined && realpathSync(self) === realpathSync(fileURLToPath(import.meta.url))) {
+  runDoctorCli(process.argv.slice(2), {
+    stdout: (text) => process.stdout.write(text),
+    stderr: (text) => process.stderr.write(text),
+    env: process.env,
+  }).then(
+    (code) => {
+      process.exitCode = code;
+    },
+    (error: unknown) => {
+      process.stderr.write(`bugsee-sourcemaps-doctor: ${String(error)}\n`);
+      process.exitCode = 2;
+    },
+  );
+}
+/* v8 ignore stop */
