@@ -23,8 +23,8 @@ const name = (n: Node | undefined): string | undefined =>
   n?.type === 'Identifier' ? (n.name as string) : undefined;
 const literalString = (n: Node | undefined): boolean =>
   n?.type === 'Literal' && typeof n.value === 'string';
-const isFunction = (n: Node): boolean =>
-  n.type === 'FunctionExpression' || n.type === 'ArrowFunctionExpression';
+const isFunction = (n: Node | undefined): boolean =>
+  n?.type === 'FunctionExpression' || n?.type === 'ArrowFunctionExpression';
 
 /** Rollup's interop helpers: `_interopDefault`, `_interopNamespaceDefault`, `_interopNamespace`, ... */
 const HELPER_NAME = /^_interop[A-Za-z]*$/;
@@ -385,13 +385,12 @@ function pureReference(n: Node | undefined): boolean {
  */
 function factoryBody(factory: Node | undefined): boolean {
   if (
-    factory === undefined ||
     !isFunction(factory) ||
-    !nodes(factory, 'params').every((param) => param.type === 'Identifier')
+    !nodes(factory as Node, 'params').every((param) => param.type === 'Identifier')
   ) {
     return false;
   }
-  const body = node(factory, 'body') as Node;
+  const body = node(factory as Node, 'body') as Node;
   if (body.type !== 'BlockStatement') {
     return false;
   }
@@ -452,10 +451,7 @@ function isIifeCall(call: Node | undefined): boolean {
   return (
     args.length === nodes(callee, 'params').length &&
     args.every(
-      (arg) =>
-        arg.type === 'ThisExpression' ||
-        (arg.type === 'ObjectExpression' && nodes(arg, 'properties').length === 0) ||
-        pureExpression(arg),
+      (arg) => arg.type === 'ThisExpression' || pureExpression(arg), // (`{}` is pure)
     ) &&
     factoryBody(callee)
   );
@@ -535,6 +531,7 @@ function isUmdCall(call: Node | undefined): boolean {
     (args[0]?.type === 'ThisExpression' || pureExpression(args[0])) &&
     preamble.length === 1 &&
     preamble[0]?.type === 'ExpressionStatement' &&
+    /^(?:Conditional|Sequence|Call)Expression$/.test(node(preamble[0], 'expression')?.type ?? '') &&
     umdExpression(node(preamble[0], 'expression'), global, factory) &&
     factoryBody(args[1])
   );
@@ -623,14 +620,13 @@ function isSystemFacade(statement: Node): boolean {
     args.length !== 2 ||
     dependencies?.type !== 'ArrayExpression' ||
     !nodes(dependencies, 'elements').every((element) => literalString(element)) ||
-    factory === undefined ||
     !isFunction(factory) ||
-    !nodes(factory, 'params').every((param) => param.type === 'Identifier')
+    !nodes(factory as Node, 'params').every((param) => param.type === 'Identifier')
   ) {
     return false;
   }
-  const callback = name(nodes(factory, 'params')[0]); // `exports`, whatever the factory calls it
-  const body = node(factory, 'body') as Node;
+  const callback = name(nodes(factory as Node, 'params')[0]); // `exports`, whatever the factory calls it
+  const body = node(factory as Node, 'body') as Node;
   const statements = body.type === 'BlockStatement' ? nodes(body, 'body') : [];
   const last = statements.at(-1);
   if (last?.type !== 'ReturnStatement') {
@@ -660,20 +656,15 @@ function isSystemFacade(statement: Node): boolean {
     properties.find((p) => name(node(p, 'key')) === key && p.computed !== true);
   const setters = node(property('setters') ?? result, 'value');
   const execute = node(property('execute') ?? result, 'value');
-  if (
-    properties.length !== 2 ||
-    setters?.type !== 'ArrayExpression' ||
-    execute === undefined ||
-    !isFunction(execute)
-  ) {
+  if (properties.length !== 2 || setters?.type !== 'ArrayExpression' || !isFunction(execute)) {
     return false;
   }
-  const executeBody = node(execute, 'body') as Node;
+  const executeBody = node(execute as Node, 'body') as Node;
   const setterFunctions = (setters.elements as unknown[]).filter(isNode);
   systemExport = callback;
   try {
     return (
-      nodes(execute, 'params').length === 0 &&
+      nodes(execute as Node, 'params').length === 0 &&
       executeBody.type === 'BlockStatement' &&
       nodes(executeBody, 'body').every((item) => item.type === 'EmptyStatement') &&
       setterFunctions.length === (setters.elements as unknown[]).length &&

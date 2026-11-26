@@ -2537,6 +2537,8 @@ exports.d = _interopDefault(dep3);
     expect(
       isFacadeCode(sys("function (module) { const other = module.a; exports('a', other); }")),
     ).toBe(true);
+    expect(isFacadeCode(sys("function (module) { exports('a', track()); }"))).toBe(false); // every argument counts
+    expect(isFacadeCode(sys("function (module) { exports(track(), 'a'); }"))).toBe(false);
     // the factory's own prelude may not shadow it either, and without a callback there is nothing to call
     expect(
       isFacadeCode(
@@ -2686,6 +2688,165 @@ exports.d = _interopDefault(dep3);
     expect(
       isFacadeCode(`${facade}!function(){g._bugseeDebugIds=a&&b}();\n//# debugId=${ID_A}`),
     ).toBe(true);
+  });
+
+  it('isFacadeCode round 20b: near misses of every whitelisted shape', () => {
+    const has = (callee: string): string =>
+      `${callee}(a, b) && Object.defineProperty(exports, 'x', {});`;
+    expect(isFacadeCode(has('Object.prototype.hasOwnProperty.call'))).toBe(true);
+    expect(
+      isFacadeCode(
+        "Object.prototype.hasOwnProperty.call(a, track()) && Object.defineProperty(exports, 'x', {});",
+      ),
+    ).toBe(false);
+    expect(
+      isFacadeCode(
+        "Object.prototype.hasOwnProperty.call(track(), b) && Object.defineProperty(exports, 'x', {});",
+      ),
+    ).toBe(false);
+    expect(isFacadeCode(has('Object.prototype.hasOwnProperty.apply'))).toBe(false);
+    expect(isFacadeCode(has('Object.prototype.hasOwn.call'))).toBe(false);
+    expect(isFacadeCode(has('Other.prototype.hasOwnProperty.call'))).toBe(false);
+    expect(isFacadeCode(has('Object.proto.hasOwnProperty.call'))).toBe(false);
+    expect(isFacadeCode(has('Object.prototype.hasOwnProperty'))).toBe(false);
+    expect(isFacadeCode(has('prototype.hasOwnProperty.call'))).toBe(false);
+    expect(isFacadeCode(has('x.hasOwnProperty.call'))).toBe(false);
+    expect(isFacadeCode(has('hasOwnProperty.call'))).toBe(false);
+    expect(
+      isFacadeCode(has('Object.prototype.hasOwnProperty.call'.replace('Object.', '(a, b).'))),
+    ).toBe(false);
+    // every argument counts, not just one of them
+    expect(isFacadeCode('Object.keys(x, track()).forEach(() => {});')).toBe(false);
+    expect(isFacadeCode('_interopDefault(a, track());')).toBe(false);
+    expect(isFacadeCode("Object.defineProperty(exports, 'a', track());")).toBe(false);
+    expect(isFacadeCode('Object.freeze(a, track());')).toBe(false);
+    expect(isFacadeCode('Object.freeze(a, b);')).toBe(true);
+    expect(isFacadeCode('other.keys(x);')).toBe(false);
+    expect(isFacadeCode('Other.keys(x);')).toBe(false);
+    expect(isFacadeCode('Object.assign(x);')).toBe(false);
+    expect(isFacadeCode('exports.a = ok ? track() : b;')).toBe(false);
+    expect(isFacadeCode('exports.a = ok ? b : track();')).toBe(false);
+    expect(isFacadeCode('exports.a = track() ? a : b;')).toBe(false);
+    expect(isFacadeCode('exports.a = ok ? a : b;')).toBe(true);
+    expect(isFacadeCode('function _interopX(e) { var a = e, b = track(); return a; }')).toBe(false);
+    expect(isFacadeCode('function _interopX(e) { var a = e, b = e; return a; }')).toBe(true);
+    expect(isFacadeCode('define([], function (a, { b }) {});')).toBe(false);
+    expect(isFacadeCode('define([], function (a, b) {});')).toBe(true);
+    expect(isFacadeCode("define(['a', b], function () {});")).toBe(false);
+    expect(isFacadeCode("define(['a', 'b'], function () {});")).toBe(true);
+    expect(isFacadeCode('(function (exports) { })(this);')).toBe(true);
+    expect(isFacadeCode('(function (exports) { })({});')).toBe(true);
+    expect(isFacadeCode('(function (exports) { })(window);')).toBe(true);
+    expect(isFacadeCode('(function (exports) { })(track());')).toBe(false);
+    expect(isFacadeCode('(function (exports) { })({ a: track() });')).toBe(false);
+    expect(
+      isFacadeCode('(function (global, factory) { typeof exports; })(this, function () {});'),
+    ).toBe(false);
+    const umdHead = (deps: string): string =>
+      `(function (global, factory) { typeof define === 'function' && define.amd ? define(${deps}, factory) : factory(global); })(this, (function (exports) { }));`;
+    expect(isFacadeCode(umdHead("['a', 'b']"))).toBe(true);
+    expect(isFacadeCode(umdHead("['a', b]"))).toBe(false);
+    expect(isFacadeCode(umdHead('[]'))).toBe(true);
+    expect(isFacadeCode(umdHead('a'))).toBe(false);
+    expect(isFacadeCode(umdHead("['a'], 1"))).toBe(false);
+    const sysWith = (head: string, tail = ''): string =>
+      `System.register(${head}, ${tail}(function (exports) { return { setters: [], execute: (function () {}) }; }));`;
+    expect(isFacadeCode(sysWith('[]'))).toBe(true);
+    expect(isFacadeCode(sysWith('[1]'))).toBe(false);
+    expect(isFacadeCode(sysWith("['a', b]"))).toBe(false);
+    expect(isFacadeCode(sysWith('1'))).toBe(false);
+    expect(isFacadeCode('System.register([]);')).toBe(false);
+    expect(isFacadeCode('System.register([], 1);')).toBe(false);
+    expect(
+      isFacadeCode('System.register([], (a) => { return { setters: [], execute: () => {} }; });'),
+    ).toBe(true);
+    expect(
+      isFacadeCode(
+        'System.register([], (function (exports) { var a = {}, b = track(); return { setters: [], execute: (function () {}) }; }));',
+      ),
+    ).toBe(false);
+    expect(
+      isFacadeCode(
+        'System.register([], (function (exports) { var a = {}, b = {}; return { setters: [], execute: (function () {}) }; }));',
+      ),
+    ).toBe(true);
+    expect(
+      isFacadeCode(
+        'System.register([], (function (exports) { return { setters: 1, execute: (function () {}) }; }));',
+      ),
+    ).toBe(false);
+    expect(
+      isFacadeCode(
+        'System.register([], (function (exports) { return { setters: [], other: (function () {}) }; }));',
+      ),
+    ).toBe(false);
+    expect(
+      isFacadeCode(
+        'System.register([], (function (exports) { return { other: [], execute: (function () {}) }; }));',
+      ),
+    ).toBe(false);
+    expect(
+      isFacadeCode(
+        'System.register([], (function (exports) { return { setters: [], execute: 1 }; }));',
+      ),
+    ).toBe(false);
+    expect(
+      isFacadeCode(
+        'System.register([], (function (exports) { return { execute: (function () {}), setters: [] }; }));',
+      ),
+    ).toBe(true);
+    // a stub's every statement and every operand must be plain
+    const facade = "export{a}from'./m.js';\n";
+    const tail = `\n//# debugId=${ID_A}`;
+    expect(
+      isFacadeCode(`${facade}!function(){var a=1,b=track();g._bugseeDebugIds={}}();${tail}`),
+    ).toBe(false);
+    expect(isFacadeCode(`${facade}!function(){var a=1,b=2;g._bugseeDebugIds={}}();${tail}`)).toBe(
+      true,
+    );
+    expect(
+      isFacadeCode(`${facade}!function(){try{g._bugseeDebugIds={};track()}catch(e){}}();${tail}`),
+    ).toBe(false);
+    expect(
+      isFacadeCode(`${facade}!function(){try{g._bugseeDebugIds={};h=1}catch(e){}}();${tail}`),
+    ).toBe(true);
+    expect(isFacadeCode(`${facade}!function(){g._bugseeDebugIds=a&&track()}();${tail}`)).toBe(
+      false,
+    );
+    expect(isFacadeCode(`${facade}!function(){g._bugseeDebugIds=track()&&a}();${tail}`)).toBe(
+      false,
+    );
+    expect(isFacadeCode(`${facade}!function(){g._bugseeDebugIds=a?track():b}();${tail}`)).toBe(
+      false,
+    );
+    expect(isFacadeCode(`${facade}!function(){g._bugseeDebugIds=a?b:track()}();${tail}`)).toBe(
+      false,
+    );
+    expect(isFacadeCode(`${facade}!function(){g._bugseeDebugIds=track()?a:b}();${tail}`)).toBe(
+      false,
+    );
+    expect(isFacadeCode(`${facade}!function(){g._bugseeDebugIds=(a,track())}();${tail}`)).toBe(
+      false,
+    );
+    expect(isFacadeCode(`${facade}!function(){g._bugseeDebugIds=(track(),a)}();${tail}`)).toBe(
+      false,
+    );
+    expect(isFacadeCode(`${facade}!function(){g._bugseeDebugIds=a?b:c}();${tail}`)).toBe(true);
+    expect(isFacadeCode(`${facade}!function(){track()._bugseeDebugIds={}}();${tail}`)).toBe(false);
+    expect(isFacadeCode(`${facade}!function(){g._bugseeDebugIds=(a,b)}();${tail}`)).toBe(true);
+    // the debugId comment must be a LINE comment AFTER the statement
+    expect(
+      isFacadeCode(`${facade}!function(){g._bugseeDebugIds={}}();\n/*# debugId=${ID_A}*/`),
+    ).toBe(false);
+    expect(isFacadeCode(`//# debugId=${ID_A}\n${facade}!function(){g._bugseeDebugIds={}}();`)).toBe(
+      false,
+    );
+    expect(isFacadeCode(`${facade}!function(){g._bugseeDebugIds={}}();\n// debugId=${ID_A}`)).toBe(
+      false,
+    );
+    expect(isFacadeCode(`${facade}!function(){g._bugseeDebugIds={}}();//# debugId=${ID_A}`)).toBe(
+      true,
+    ); // same line
   });
 
   it('isFacadeCode round 19: empty statements and comment boundaries', () => {
