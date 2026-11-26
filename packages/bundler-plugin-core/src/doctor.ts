@@ -958,18 +958,17 @@ async function diagnose(dirInput: string, options: DoctorOptions): Promise<Docto
         // Counted once as unstamped above; do not double report below.
         unstamped.delete(name);
       }
-      validateMap(mapPath, mapName, parsed.json, mapRead.real, code === null ? null : code);
+      validateMap(mapPath, mapName, parsed.json, mapRead.real, code);
     }
   }
 
-  // Bundles with no pointer and no sibling map: a hidden map the bundler wrote elsewhere. The pairing is resolved
-  // for the whole build, never in walk order: first every stamped bundle whose debugId matches exactly one free map,
-  // then, for the bundles left, a map whose `file` names the bundle (exactly one candidate, and not a map that
-  // belongs to another stamped bundle's id). Ambiguity pairs nothing.
+  // Bundles with no pointer and no sibling map: a hidden map the bundler wrote elsewhere. The pairing is resolved for
+  // the whole build, never in walk order. First every stamped bundle whose debugId matches exactly one free map; then,
+  // by `file` name, a bundle and a map are paired when each is the other's single BEST match (a map at the bundle's
+  // own relative path beats one in a shared directory, which beats one anywhere), round after round so that a
+  // settled pair frees the rest. Whatever is left is reported, never guessed.
   if (unpaired.length > 0) {
-    const byDebugId = new Map<string, string[]>();
-    const infoOf = new Map<string, { file: string; debugId?: string }>();
-    const byFile = new Map<string, Array<{ map: string; debugId?: string }>>();
+    type Entry = (typeof unpaired)[number];
     const push = <T>(table: Map<string, T[]>, key: string, value: T): void => {
       const list = table.get(key);
       if (list === undefined) {
@@ -978,24 +977,32 @@ async function diagnose(dirInput: string, options: DoctorOptions): Promise<Docto
         list.push(value);
       }
     };
+    const byDebugId = new Map<string, string[]>();
+    const infoOf = new Map<string, { file: string; debugId?: string; real: string; key: string }>();
+    const byFile = new Map<string, string[]>();
+    const bySuffix = new Map<string, string[]>(); // `maps/cjs/index.js` -> `cjs/index.js`, `index.js`
     const byDirFile = new Map<string, string[]>(); // `<ancestor directory>\0<file>` -> maps below that directory
-    const indexedReal = new Set<string>(); // a symlink alias of an indexed map is the same map, not a second candidate
+    const aliases = new Map<string, string[]>(); // real path -> every name it is reached by
     for (const map of maps) {
       if (!claimedMaps.has(map)) {
         const read = await loadMap(map);
-        if (read.ok && read.parsed.ok && !indexedReal.has(read.real)) {
-          indexedReal.add(read.real);
+        if (read.ok && read.parsed.ok) {
+          push(aliases, read.real, map);
           const file = read.parsed.json.file;
           if (read.parsed.debugId !== undefined) {
             push(byDebugId, read.parsed.debugId, map);
           }
           if (typeof file === 'string') {
             const base = nodePath.basename(file);
-            push(byFile, base, { map, debugId: read.parsed.debugId });
-            infoOf.set(map, { file: base, debugId: read.parsed.debugId });
-            const segments = nodePath.dirname(rel(dir, map)).split('/');
-            for (let at = 1; at <= segments.length; at++) {
-              if (segments[0] !== '.') {
+            const key = rel(dir, map).replace(/\.map$/i, '');
+            infoOf.set(map, { file: base, debugId: read.parsed.debugId, real: read.real, key });
+            push(byFile, base, map);
+            const segments = key.split('/');
+            for (let at = 0; at < segments.length; at++) {
+              push(bySuffix, segments.slice(at).join('/'), map);
+            }
+            if (segments.length > 1) {
+              for (let at = 1; at < segments.length; at++) {
                 push(byDirFile, `${segments.slice(0, at).join('/')}\0${base}`, map);
               }
             }
@@ -1003,24 +1010,29 @@ async function diagnose(dirInput: string, options: DoctorOptions): Promise<Docto
         }
       }
     }
-    const pair = async (entry: (typeof unpaired)[number], map: string): Promise<void> => {
+    const claim = (map: string): void => {
+      for (const alias of aliases.get(infoOf.get(map)?.real ?? '') ?? [map]) {
+        claimedMaps.add(alias);
+      }
+    };
+    const pair = async (entry: Entry, map: string): Promise<void> => {
       const reread = await readInside(entry.bundle, maxBundleBytes, realDir);
       // one snapshot for both checks: the stamp comparison uses the id of the very text the content check sees
       /* v8 ignore start -- the bundle was read a moment ago; failing now means it changed under us (a race), and null keeps it from being judged a facade */
       const code = reread.ok ? reread.bytes.toString('utf8') : null;
       await pairMap(map, entry.name, code, code === null ? entry.id : readDebugId(code));
       /* v8 ignore stop */
+      claim(map);
     };
-    // The free candidates of a lookup, up to two (more than one is ambiguous).
-    const free = <T>(
-      list: T[] | undefined,
-      map: (item: T) => string,
-      keep: (item: T) => boolean,
-    ): T[] => {
-      const found: T[] = [];
-      for (const item of list ?? []) {
-        if (!claimedMaps.has(map(item)) && keep(item)) {
-          found.push(item);
+    // The free maps of a bucket, one per real file, up to two (more than one is a tie).
+    const freeMaps = (list: string[] | undefined, keep: (map: string) => boolean): string[] => {
+      const found: string[] = [];
+      const reals = new Set<string>();
+      for (const map of list ?? []) {
+        const real = infoOf.get(map)?.real ?? map;
+        if (!claimedMaps.has(map) && !reals.has(real) && keep(map)) {
+          found.push(map);
+          reals.add(real);
           if (found.length === 2) {
             break;
           }
@@ -1028,18 +1040,14 @@ async function diagnose(dirInput: string, options: DoctorOptions): Promise<Docto
       }
       return found;
     };
-    const ambiguous = new Map<(typeof unpaired)[number], string[]>(); // by id: the maps that carry it
-    const left: typeof unpaired = [];
+    const ambiguous = new Map<Entry, string[]>(); // by id: the maps that carry it
+    const left: Entry[] = [];
     for (const entry of unpaired) {
       if (entry.id === undefined) {
         left.push(entry);
         continue;
       }
-      const hits = free(
-        byDebugId.get(entry.id),
-        (map) => map,
-        () => true,
-      );
+      const hits = freeMaps(byDebugId.get(entry.id), () => true);
       if (hits.length === 1) {
         await pair(entry, hits[0] as string);
       } else {
@@ -1050,24 +1058,13 @@ async function diagnose(dirInput: string, options: DoctorOptions): Promise<Docto
       }
     }
 
-    // By `file`, settled across the whole build in one snapshot per group (stamped bundles first, so an unstamped
-    // copy can never take a stamped bundle's map). A bundle's candidates are the free maps naming its file, narrowed
-    // by where they sit: at the bundle's own relative path (`maps/cjs/index.js.map` for `cjs/index.js`), else under
-    // its nearest shared directory (`cjs/maps/index.map`), else anywhere. A map goes to the bundle with the longest
-    // path that ends it. A bundle pairs when it has exactly one candidate and no other bundle of the group wants
-    // that map; anything else is reported, never guessed.
-    const mapRel = new Map<string, string>();
-    const bySuffix = new Map<string, string[]>();
-    for (const list of byFile.values()) {
-      for (const { map } of list) {
-        const key = rel(dir, map).replace(/\.map$/i, '');
-        mapRel.set(map, key);
-        const segments = key.split('/');
-        for (let at = 0; at < segments.length; at++) {
-          push(bySuffix, segments.slice(at).join('/'), map);
-        }
-      }
-    }
+    // A map that carries the id of a stamped bundle belongs to that bundle (the id pass found it, or it was ambiguous).
+    const eligible = (map: string): boolean => {
+      const debugId = infoOf.get(map)?.debugId;
+      return debugId === undefined || !stampedIds.has(debugId);
+    };
+    /** How well a bundle and a map fit: 3 = the map sits at the bundle's own path, 2 = they share a directory, 1 = same file name. */
+    type Fit = { tier: number; depth: number };
     type Unsettled = {
       name: string;
       why: string;
@@ -1077,81 +1074,128 @@ async function diagnose(dirInput: string, options: DoctorOptions): Promise<Docto
     };
     const unsettled: Unsettled[] = [];
     for (const stampedGroup of [true, false]) {
-      const group = left.filter((entry) => (entry.id !== undefined) === stampedGroup);
-      const wanted = new Map<(typeof unpaired)[number], string[]>();
-      const byName = new Map(group.map((entry) => [entry.name, entry]));
-      const eligible = (map: string): boolean => {
-        const debugId = infoOf.get(map)?.debugId;
-        return debugId === undefined || !stampedIds.has(debugId);
+      const group = left.filter(
+        (entry) => (entry.id !== undefined) === stampedGroup && !ambiguous.has(entry),
+      );
+      const open = new Set(group);
+      const segmentsOf = (path: string): string[] => {
+        const parts = nodePath.dirname(path).split('/');
+        return parts;
       };
-      // a map whose path ends with a longer bundle path of this group belongs to that bundle
-      const ownedByLonger = (map: string, entry: (typeof unpaired)[number]): boolean => {
-        const segments = (mapRel.get(map) as string).split('/');
-        for (let at = 0; at < segments.length; at++) {
-          const owner = byName.get(segments.slice(at).join('/'));
-          if (owner !== undefined && owner.name.length > entry.name.length) {
-            return true;
+      const bundleByName = new Map<string, Entry>();
+      const bundleByDirBase = new Map<string, Entry[]>();
+      const bundleByBase = new Map<string, Entry[]>();
+      for (const entry of group) {
+        const base = nodePath.basename(entry.bundle);
+        bundleByName.set(entry.name, entry);
+        push(bundleByBase, base, entry);
+        const segments = segmentsOf(entry.name);
+        for (let at = 1; at <= segments.length; at++) {
+          push(bundleByDirBase, `${segments.slice(0, at).join('/')}\0${base}`, entry);
+        }
+      }
+      const liveBundles = (list: Entry[] | undefined): Entry[] => {
+        const found: Entry[] = [];
+        for (const entry of list ?? []) {
+          if (open.has(entry)) {
+            found.push(entry);
+            if (found.length === 2) {
+              break;
+            }
           }
         }
-        return false;
+        return found;
       };
+      /** The best free maps for a bundle (up to two) and how well they fit. */
+      const bestMaps = (entry: Entry): { fit: Fit; maps: string[] } | undefined => {
+        const base = nodePath.basename(entry.bundle);
+        const named = (map: string): boolean => infoOf.get(map)?.file === base && eligible(map);
+        const own = freeMaps(bySuffix.get(entry.name), named);
+        if (own.length > 0) {
+          return { fit: { tier: 3, depth: entry.name.length }, maps: own };
+        }
+        const segments = segmentsOf(entry.name);
+        for (let at = segments.length; at >= 1; at--) {
+          const near = freeMaps(
+            byDirFile.get(`${segments.slice(0, at).join('/')}\0${base}`),
+            eligible,
+          );
+          if (near.length > 0) {
+            return { fit: { tier: 2, depth: at }, maps: near };
+          }
+        }
+        const any = freeMaps(byFile.get(base), eligible);
+        return any.length > 0 ? { fit: { tier: 1, depth: 0 }, maps: any } : undefined;
+      };
+      /** The best open bundles for a map (up to two) and how well they fit. */
+      const bestBundles = (map: string): { fit: Fit; bundles: Entry[] } | undefined => {
+        const info = infoOf.get(map) as { file: string; key: string };
+        const parts = info.key.split('/');
+        for (let at = 0; at < parts.length; at++) {
+          const owner = bundleByName.get(parts.slice(at).join('/'));
+          if (owner !== undefined && nodePath.basename(owner.bundle) === info.file) {
+            return { fit: { tier: 3, depth: owner.name.length }, bundles: [owner] };
+          }
+        }
+        for (let at = parts.length - 1; at >= 1; at--) {
+          const near = liveBundles(
+            bundleByDirBase.get(`${parts.slice(0, at).join('/')}\0${info.file}`),
+          );
+          if (near.length > 0) {
+            return { fit: { tier: 2, depth: at }, bundles: near };
+          }
+        }
+        const any = liveBundles(bundleByBase.get(info.file));
+        return any.length > 0 ? { fit: { tier: 1, depth: 0 }, bundles: any } : undefined;
+      };
+      for (let round = 0; round < 16; round++) {
+        const proposals: Array<[Entry, string]> = [];
+        for (const entry of open) {
+          const best = bestMaps(entry);
+          if (best !== undefined && best.maps.length === 1) {
+            const map = best.maps[0] as string;
+            const back = bestBundles(map);
+            if (back !== undefined && back.bundles.length === 1 && back.bundles[0] === entry) {
+              proposals.push([entry, map]);
+            }
+          }
+        }
+        if (proposals.length === 0) {
+          break;
+        }
+        for (const [entry, map] of proposals) {
+          open.delete(entry);
+          await pair(entry, map);
+        }
+      }
       for (const entry of group) {
-        if (ambiguous.has(entry)) {
+        if (!open.has(entry)) {
           continue;
         }
-        const base = nodePath.basename(entry.bundle);
-        const takeable = (map: string): boolean => eligible(map) && !ownedByLonger(map, entry);
-        let found = free(
-          bySuffix.get(entry.name),
-          (map) => map,
-          (map) => infoOf.get(map)?.file === base && takeable(map),
-        );
-        const segments = nodePath.dirname(entry.name).split('/');
-        for (let at = segments.length; found.length === 0 && at >= 1 && segments[0] !== '.'; at--) {
-          found = free(
-            byDirFile.get(`${segments.slice(0, at).join('/')}\0${base}`),
-            (map) => map,
-            takeable,
-          );
-        }
-        if (found.length === 0) {
-          found = free(
-            byFile.get(base),
-            (item) => item.map,
-            (item) => takeable(item.map),
-          ).map((item) => item.map);
-        }
-        wanted.set(entry, found);
-      }
-      const wantedBy = new Map<string, number>();
-      for (const maps of wanted.values()) {
-        for (const map of maps) {
-          wantedBy.set(map, (wantedBy.get(map) ?? 0) + 1);
-        }
-      }
-      for (const entry of group) {
-        const maps = wanted.get(entry) ?? [];
-        const sameId = ambiguous.get(entry);
-        if (maps.length === 1 && wantedBy.get(maps[0] as string) === 1) {
-          await pair(entry, maps[0] as string);
-        } else if (sameId !== undefined || maps.length > 0) {
-          const candidates = (sameId ?? maps).map((map) => rel(dir, map));
+        const best = bestMaps(entry);
+        if (best === undefined) {
+          if (entry.id === undefined) {
+            unstampedWithoutMap.push(entry.name);
+          }
+        } else {
           unsettled.push({
             name: entry.name,
-            why:
-              sameId !== undefined
-                ? 'several maps carry its debug ID'
-                : maps.length > 1
-                  ? 'several maps fit'
-                  : 'another bundle wants the same map',
-            candidates,
+            why: best.maps.length > 1 ? 'several maps fit' : 'another bundle wants the same map',
+            candidates: best.maps.map((map) => rel(dir, map)),
             stamped: stampedGroup,
-            byId: sameId !== undefined,
+            byId: false,
           });
-        } else if (entry.id === undefined) {
-          unstampedWithoutMap.push(entry.name);
         }
       }
+    }
+    for (const [entry, maps] of ambiguous) {
+      unsettled.push({
+        name: entry.name,
+        why: 'several maps carry its debug ID',
+        candidates: maps.map((map) => rel(dir, map)),
+        stamped: true,
+        byId: true,
+      });
     }
     if (unsettled.length > 0) {
       unsettled.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));

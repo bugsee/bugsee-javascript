@@ -517,6 +517,60 @@ describe('reads', () => {
       expect(report.findings.filter((f) => f.id === 'stamp.map-id-mismatch')).toHaveLength(2);
     });
 
+    it('a nearer bundle settles first, so a shallower one with the same file name still pairs (nested outputs)', async () => {
+      put('index.js', `a${stamp(ID_A)}`);
+      put('maps/index.map', mapJson({ file: 'index.js', debugId: ID_C }));
+      put('cjs/index.js', `b${stamp(ID_B)}`);
+      put('cjs/maps/index.map', mapJson({ file: 'index.js', debugId: ID_D }));
+      const report = await run();
+      expect(
+        report.findings
+          .filter((f) => f.id === 'stamp.map-id-mismatch')
+          .map((f) => f.file)
+          .sort(),
+      ).toEqual(['cjs/maps/index.map', 'maps/index.map']);
+      expect(find(report, 'map.ambiguous')).toBeUndefined();
+    });
+
+    it('the same, unstamped: a precise lost-stamp error per map, no ambiguity', async () => {
+      put('index.js', 'a');
+      put('maps/index.map', mapJson({ file: 'index.js', debugId: ID_C }));
+      put('cjs/index.js', 'b');
+      put('cjs/maps/index.map', mapJson({ file: 'index.js', debugId: ID_D }));
+      const report = await run();
+      expect(lostStamp(report)).toHaveLength(2);
+      expect(find(report, 'map.ambiguous')).toBeUndefined();
+    });
+
+    it('a paired bundle does not claim a second map at its path; the shorter bundle may take it', async () => {
+      put('cjs/index.js', `a${stamp(ID_A)}`);
+      put('index.js', `b${stamp(ID_B)}`);
+      put('maps/cjs/index.js.map', mapJson({ file: 'index.js', debugId: ID_A }));
+      put('other/cjs/index.js.map', mapJson({ file: 'index.js', debugId: ID_C }));
+      const report = await run();
+      expect(find(report, 'stamp.map-id-mismatch')?.file).toBe('other/cjs/index.js.map');
+      expect(find(report, 'map.ambiguous')).toBeUndefined();
+    });
+
+    it('a map whose path ends with a bundle path but names another file belongs to the bundle of that file', async () => {
+      put('cjs/index.js', `a${stamp(ID_A)}`);
+      put('x.js', `b${stamp(ID_B)}`);
+      put('maps/cjs/index.js.map', mapJson({ file: 'x.js', debugId: ID_C }));
+      expect(find(await run(), 'stamp.map-id-mismatch')?.file).toBe('maps/cjs/index.js.map');
+    });
+
+    it('an alias that sorts first does not hide the real path of a map from its bundle', async () => {
+      put('a/index.js', `a${stamp(ID_A)}`);
+      put('b/index.js', `b${stamp(ID_B)}`);
+      put('a/maps/index.map', mapJson({ file: 'index.js', debugId: ID_C }));
+      put('b/maps/index.map', mapJson({ file: 'index.js', debugId: ID_D }));
+      mkdirSync(join(dist, '0'), { recursive: true });
+      symlinkSync(join(dist, 'a/maps/index.map'), join(dist, '0/index.map'));
+      const report = await run();
+      expect(report.findings.filter((f) => f.id === 'stamp.map-id-mismatch')).toHaveLength(2);
+      expect(find(report, 'map.ambiguous')).toBeUndefined();
+    });
+
     it('a symlink alias of a map is the same map, not a second candidate', async () => {
       put('main.js', `a${stamp(ID_A)}`);
       put('maps/main.map', mapJson({ file: 'main.js', debugId: ID_A }));
@@ -640,6 +694,24 @@ describe('reads', () => {
         `${helper}System.register([],function(exports){var probe=n({});return{setters:[],execute:function(){}}});`,
       ),
     ).toBe(true);
+  });
+
+  it('round 25: a function expression name cannot be written; a shadowed require is not a require', () => {
+    const sys = (setter: string): string =>
+      `System.register([],function(exports){return{setters:[${setter}],execute:function(){}}});`;
+    expect(isFacadeCode(sys('function n(dep){"use strict";n=dep}'))).toBe(false);
+    expect(isFacadeCode(sys('function n(dep){"use strict";for(n in dep){}}'))).toBe(false);
+    expect(isFacadeCode(sys('function(dep){var n;n=dep}'))).toBe(true);
+    expect(isFacadeCode(sys('function n(n){n=1}'))).toBe(true); // the parameter shadows the name, and is writable
+    expect(
+      isFacadeCode(
+        'System.register([],function(exports){var require=console.log;var probe=require("started");return{setters:[],execute:function(){}}});',
+      ),
+    ).toBe(false);
+    expect(isFacadeCode('var d=require("./dep");exports.x=d.x;')).toBe(true);
+    expect(
+      isFacadeCode('exports.x=(function require(e){return e.__esModule?e:require("./a")})(dep);'),
+    ).toBe(false);
   });
 
   it('round 23: a SystemJS factory parameter or prelude variable shadows an outer helper', () => {

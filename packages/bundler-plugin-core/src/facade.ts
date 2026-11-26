@@ -40,6 +40,8 @@ const MAX_DEPTH = 64;
 let depth = 0;
 /** The variables of the functions being walked (params and declarations): a helper may write to those only. */
 let scopes: Array<Set<string>> = [];
+/** The own names of the function EXPRESSIONS being walked: visible (they shadow) but immutable (a write throws). */
+let selfNames: Array<Set<string>> = [];
 /** Inside a SystemJS setter: the factory's export callback, the one name whose calls are the module system's own. */
 let systemExport: string | undefined;
 /** What a wrapper's factory calls its `exports` parameter (terser renames it to `e`): writes to it are export writes. */
@@ -58,6 +60,7 @@ let source = '';
 const reset = (): void => {
   depth = 0;
   scopes = [];
+  selfNames = [];
   systemExport = undefined;
   exportAlias = undefined;
   helperScopes = [];
@@ -120,15 +123,15 @@ function pureFunction(fn: Node): boolean {
   const body = node(fn, 'body') as Node; // a function always has a body
   // a function EXPRESSION's own name is bound inside it (`(function n(e){ return n(e) })` calls itself, not an outer `n`)
   const own = fn.type === 'FunctionExpression' ? name(node(fn, 'id')) : undefined;
-  scopes.push(
-    new Set([...params.map((param) => param.name as string), ...(own === undefined ? [] : [own])]),
-  );
+  scopes.push(new Set(params.map((param) => param.name as string)));
+  selfNames.push(new Set(own === undefined ? [] : [own]));
   try {
     return body.type === 'BlockStatement'
       ? nodes(body, 'body').every(pureStatement)
       : pureExpression(body);
   } finally {
     scopes.pop();
+    selfNames.pop();
   }
 }
 
@@ -139,7 +142,7 @@ function pureCall(call: Node): boolean {
     return false;
   }
   const calleeName = name(callee);
-  if (calleeName === 'require') {
+  if (calleeName === 'require' && !isBound('require')) {
     return args.length === 1 && literalString(args[0]);
   }
   if (isFunction(callee)) {
@@ -459,9 +462,18 @@ function returnedValue(n: Node | undefined): boolean {
   return parts.slice(0, -1).every(facadeExpression) && pureReference(parts.at(-1));
 }
 
+/** Whether `id` is bound by anything in sight: a local of a function being read, or a name declared in an enclosing scope. */
+function isBound(id: string): boolean {
+  return (
+    scopes.some((scope) => scope.has(id)) ||
+    selfNames.some((scope) => scope.has(id)) ||
+    helperScopes.some((scope) => scope.helpers.has(id) || scope.bound.has(id))
+  );
+}
+
 /** Whether `callee` resolves to a declared helper from where it is called. */
 function isHelper(callee: string): boolean {
-  if (scopes.some((scope) => scope.has(callee))) {
+  if (scopes.some((scope) => scope.has(callee)) || selfNames.some((scope) => scope.has(callee))) {
     return false; // a local of the function being read shadows everything outside it
   }
   for (let i = helperScopes.length - 1; i >= 0; i--) {

@@ -15,7 +15,7 @@ import {
 } from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import terser from '@rollup/plugin-terser';
 import { rspack } from '@rspack/core';
 import { rollup } from 'rollup';
@@ -319,7 +319,7 @@ describeReal('doctor on hidden maps the bundler wrote to another path', () => {
           const named = report.findings
             .filter((f) => f.id === 'stamp.map-id-mismatch')
             .map((f) => f.file);
-          expect(named).toEqual([`maps/${map.split('/').pop()}`]);
+          expect(named).toEqual([`maps/${basename(map)}`]);
           expect(doctorExitCode(report, true)).toBe(2);
         } finally {
           writeFileSync(map, original);
