@@ -9,6 +9,7 @@
 // Build-time only: imports `@nuxt/kit` + TYPE-only option shapes — no `bugsee`/`bugsee/node` runtime pulled
 // into the module bundle (the client/server cores are referenced by template string / resolved path).
 import { addPluginTemplate, addServerPlugin, createResolver, defineNuxtModule } from '@nuxt/kit';
+import type { NuxtModule } from 'nuxt/schema';
 import type { InstallBugseeClientOptions } from './client';
 import type { InstallBugseeNitroOptions } from './nitro';
 
@@ -121,7 +122,14 @@ export function setupBugseeModule(options: ModuleOptions, nuxt: NuxtLike): void 
   });
 }
 
-export default defineNuxtModule<ModuleOptions>({
+// Annotated, not inferred: Nuxt >=4.6 ships a `typesVersions` map that keeps TypeScript from naming
+// `@nuxt/schema`'s NuxtModule through the `nuxt/schema` re-export, which fails the declaration build (TS2883).
+// `nuxt` is this package's peer, so its `nuxt/schema` entry is the portable name for the type. The single
+// type argument is the form every Nuxt 3/4 schema accepts; with the default `TWith = false` it is the same
+// type defineNuxtModule infers (pinned in module.test.ts).
+const bugseeNuxtModule: NuxtModule<ModuleOptions> = defineNuxtModule<ModuleOptions>({
   meta: { name: '@bugsee/nuxt', configKey: 'bugsee' },
   setup: setupBugseeModule as unknown as (options: ModuleOptions, nuxt: unknown) => void,
 });
+
+export default bugseeNuxtModule;

@@ -41,7 +41,7 @@
     "@stryker-mutator/core": "^9.6.1",
     "@stryker-mutator/vitest-runner": "^9.6.1",
     "@types/node": "^22.20.5",
-    "@vitest/coverage-v8": "^4.1.7",
+    "@vitest/coverage-v8": "^4.1.12",
     "fast-check": "^4.10.2",
     "madge": "^8.0.0",
     "rollup": "^4.65.1",
@@ -49,6 +49,6 @@
     "tsup": "^9.0.0",
     "turbo": "^2.11.10",
     "typescript": "^6.0.3",
-    "vitest": "^4.1.7"
+    "vitest": "^4.1.12"
   }
 }

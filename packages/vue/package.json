@@ -59,6 +59,7 @@
     "access": "public"
   },
   "devDependencies": {
-    "@bugsee/core": "workspace:*"
+    "@bugsee/core": "workspace:*",
+    "vue": "^3.5.46"
   }
 }

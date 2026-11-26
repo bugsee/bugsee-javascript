@@ -1,4 +1,5 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { NuxtModule } from 'nuxt/schema';
+import { afterEach, describe, expect, expectTypeOf, it, vi } from 'vitest';
 
 // Mock the @nuxt/kit build-time helpers so `setup` runs without a real Nuxt. `defineNuxtModule` returns its
 // definition verbatim so the default export IS the definition (asserted below). `createResolver` returns a
@@ -16,7 +17,12 @@ vi.mock('@nuxt/kit', () => ({
   createResolver,
 }));
 
-import nuxtModule, { clientPluginContent, type NuxtLike, setupBugseeModule } from './module';
+import nuxtModule, {
+  clientPluginContent,
+  type ModuleOptions,
+  type NuxtLike,
+  setupBugseeModule,
+} from './module';
 
 function fakeNuxt(): NuxtLike {
   return { options: { runtimeConfig: { public: {} } } };
@@ -162,6 +168,13 @@ describe('the module default export', () => {
     };
     expect(def.meta).toEqual({ name: '@bugsee/nuxt', configKey: 'bugsee' });
     expect(def.setup).toBe(setupBugseeModule); // the module delegates to the tested core
+  });
+
+  it('is declared as the exact NuxtModule that defineNuxtModule infers, named through the nuxt peer', () => {
+    // Nuxt >=4.6 adds a `typesVersions` map that stops TypeScript naming `@nuxt/schema` through `nuxt/schema`
+    // on its own (TS2883 in the declaration build), so the export carries an explicit annotation. Pin it to
+    // the type defineNuxtModule returns so the annotation can never widen or narrow the public type.
+    expectTypeOf(nuxtModule).toEqualTypeOf<NuxtModule<ModuleOptions, ModuleOptions, false>>();
   });
 });
 
