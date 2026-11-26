@@ -417,7 +417,8 @@ export function hasOriginalPosition(
       continue;
     }
     // a value ends here: bit 0 is the sign
-    const decoded = value % 2 === 1 ? -(value - 1) / 2 : value / 2;
+    // bit 0 is the sign: a sign bit with no magnitude (`B`) is -2147483648 (ECMA-426), not -0
+    const decoded = value === 1 ? -2147483648 : value % 2 === 1 ? -(value - 1) / 2 : value / 2;
     values++;
     if (values === 1) {
       column += decoded;

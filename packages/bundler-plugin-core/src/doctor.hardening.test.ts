@@ -14,6 +14,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, posix, relative, sep, win32 } from 'node:path';
+import { parse } from 'acorn';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   batchEnd,
@@ -1785,9 +1786,13 @@ describe('round 16 review findings', () => {
     expect(hasOriginalPosition('DCAA;ADAA', 1)).toBe(false);
     expect(hasOriginalPosition('DCAA;ACAA', 3)).toBe(true); // the second line's own column is fine: index 1 of 3
     expect(hasOriginalPosition('DAAA;AAAA', 1)).toBe(true); // the generated column resets at `;`
-    expect(hasOriginalPosition('EAAA,DAAA', 1)).toBe(true); // 2 then 1: both non-negative
+    expect(hasOriginalPosition('E,DAAA', 1)).toBe(true); // the first segment only sets column 2; the next maps at column 1
     expect(hasOriginalPosition('DAAA', 1)).toBe(false);
-    expect(hasOriginalPosition('EAAA,HAAA', 1)).toBe(true); // 2 then 2-3=-1: the first is already fine
+    expect(hasOriginalPosition('E,HAAA', 1)).toBe(false); // its only candidate maps at column 2-3 = -1
+    expect(hasOriginalPosition('E,BAAA', 1)).toBe(false); // `B` is sign-bit-only: -2147483648, not -0
+    expect(hasOriginalPosition('E,BAAA', 5)).toBe(false);
+    expect(hasOriginalPosition('BAAA', 1)).toBe(false);
+    expect(hasOriginalPosition('EAAA,BAAA', 1)).toBe(true); // the first segment is already fine
     // only a segment with an original line and column moves the running source index (ECMA-426)
     expect(hasOriginalPosition('AC,EDAA', 1)).toBe(false); // AC (2 values) must not commit +1
     expect(hasOriginalPosition('AEAA$,AAAA', 2)).toBe(true); // a segment with a bad character commits nothing
@@ -2320,9 +2325,13 @@ exports.d = _interopDefault(dep3);
     expect(isFacadeCode(es5.replace('setters:', 'listeners:'))).toBe(false);
     expect(isFacadeCode(es5.replace('(function () {\n\n\n\n\t\t})', '1'))).toBe(false);
     expect(isFacadeCode(es5.replace('function (exports)', 'function ({ exports })'))).toBe(false);
-    expect(isFacadeCode(es5.replace('var _starExcludes = {', 'var _starExcludes = track({'))).toBe(
-      false,
+    // valid JavaScript with an application call in the prelude (the parse must succeed for the validator to judge it)
+    const withProbe = es5.replace(
+      'var _starExcludes = {',
+      'var probe = track();\n\tvar _starExcludes = {',
     );
+    expect(() => parse(withProbe, { ecmaVersion: 'latest', sourceType: 'module' })).not.toThrow();
+    expect(isFacadeCode(withProbe)).toBe(false);
     expect(
       isFacadeCode(
         'System.register([], (function (exports) { return { setters: [1], execute: (function () {}) }; }));',
@@ -2355,6 +2364,328 @@ exports.d = _interopDefault(dep3);
         'System.register(deps, (function (exports) { return { setters: [], execute: (function () {}) }; }));',
       ),
     ).toBe(false);
+  });
+
+  it('isFacadeCode round 20: AMD default-export mode (a trailing return of a reference)', () => {
+    const amd = (body: string): string =>
+      `define(['./main'], (function (main) { 'use strict'; ${body} }));`;
+    expect(isFacadeCode(amd('return main;'))).toBe(true);
+    expect(isFacadeCode(amd('return main.default;'))).toBe(true);
+    expect(isFacadeCode(amd("return main['default'];"))).toBe(true);
+    expect(isFacadeCode(amd('return;'))).toBe(false);
+    expect(isFacadeCode(amd('return track();'))).toBe(false);
+    expect(isFacadeCode(amd('return main.a.b.c;'))).toBe(true);
+    expect(isFacadeCode(amd('return 1;'))).toBe(false);
+    expect(isFacadeCode(amd('return main; track();'))).toBe(false); // the return is the LAST statement
+    expect(isFacadeCode(amd('return main; return main;'))).toBe(false);
+    expect(isFacadeCode(amd('var x = _interopDefault(main); return x.default;'))).toBe(true);
+    expect(isFacadeCode(amd('return main[track()];'))).toBe(false);
+    expect(isFacadeCode('return main;')).toBe(false); // not inside a wrapper (and a top-level return is not valid anyway)
+  });
+
+  it('isFacadeCode round 20: IIFE and UMD wrappers', () => {
+    const body =
+      "'use strict'; Object.defineProperty(exports, '__esModule', { value: true }); Object.keys(extA).forEach(function (k) { if (k !== 'default' && !Object.prototype.hasOwnProperty.call(exports, k)) Object.defineProperty(exports, k, { enumerable: true, get: function () { return extA[k]; } }); }); exports.named = extC.named;";
+    const iife = `var Lib = (function (exports, extA, extC) { ${body} return exports; })({}, A, C);`;
+    expect(isFacadeCode(iife)).toBe(true);
+    expect(isFacadeCode(`(function (exports, extA, extC) { ${body} })({}, A, C);`)).toBe(true);
+    expect(
+      isFacadeCode(
+        `this.my = this.my || {};\nthis.my.Lib = (function (exports, extA, extC) { ${body} return exports; })({}, A, C);`,
+      ),
+    ).toBe(true);
+    expect(isFacadeCode(iife.replace('return exports;', 'track(); return exports;'))).toBe(false);
+    expect(isFacadeCode(iife.replace('({}, A, C)', '({}, track(), C)'))).toBe(false);
+    expect(isFacadeCode(iife.replace('({}, A, C)', '({}, A, C, D)'))).toBe(false); // arity mismatch is not Rollup's
+    expect(isFacadeCode(iife.replace('({}, A, C)', '({}, A)'))).toBe(false);
+    expect(
+      isFacadeCode(
+        iife.replace('(function (exports, extA, extC)', '(function ({ exports }, extA, extC)'),
+      ),
+    ).toBe(false);
+    expect(isFacadeCode(iife.replace('return exports;', 'return other;'))).toBe(true); // any pure reference may be returned
+    expect(isFacadeCode(iife.replace('return exports;', 'return track;'))).toBe(true);
+    expect(isFacadeCode(iife.replace('var Lib =', 'var Lib, Other ='))).toBe(false);
+    expect(isFacadeCode(iife.replace('var Lib =', 'globalThis.Lib ='))).toBe(false);
+    expect(isFacadeCode(`globalThis.my = globalThis.my || {};`)).toBe(false);
+    expect(isFacadeCode(`this.my = other || {};`)).toBe(false);
+    expect(isFacadeCode(`this.my = this.my || track();`)).toBe(false);
+    expect(isFacadeCode(`this.my = this.other || {};`)).toBe(false);
+    const umd = `(function (global, factory) {
+  typeof exports === 'object' && typeof module !== 'undefined' ? factory(exports, require('ext-a'), require('ext-c')) :
+  typeof define === 'function' && define.amd ? define(['exports', 'ext-a', 'ext-c'], factory) :
+  (global = typeof globalThis !== 'undefined' ? globalThis : global || self, factory(global.Lib = {}, global.A, global.C));
+})(this, (function (exports, extA, extC) { ${body} }));`;
+    expect(isFacadeCode(umd)).toBe(true);
+    expect(
+      isFacadeCode(
+        umd.replace("factory(exports, require('ext-a')", "track(exports, require('ext-a')"),
+      ),
+    ).toBe(false);
+    expect(isFacadeCode(umd.replace("require('ext-a')", 'require(dep)'))).toBe(false);
+    expect(isFacadeCode(umd.replace('global.A, global.C', 'track(), global.C'))).toBe(false);
+    expect(
+      isFacadeCode(
+        umd.replace("define(['exports', 'ext-a', 'ext-c'], factory)", "define(['exports'], other)"),
+      ),
+    ).toBe(false);
+    expect(isFacadeCode(umd.replace('(this, (function', '(this, 1, (function'))).toBe(false);
+    expect(isFacadeCode(umd.replace('exports.named = extC.named;', 'track();'))).toBe(false);
+    expect(isFacadeCode(umd.replace('(global = typeof', '(globalThis.x = typeof'))).toBe(false);
+    expect(
+      isFacadeCode(umd.replace('factory(global.Lib = {}', 'factory(globalThis.Lib = {}')),
+    ).toBe(false);
+    expect(isFacadeCode(umd.replace('})(this,', '})(track(),'))).toBe(false);
+    expect(isFacadeCode(umd.replace('(function (global, factory) {', '(function (global) {'))).toBe(
+      false,
+    );
+    expect(
+      isFacadeCode(
+        umd.replace(
+          /\(function \(global, factory\) \{[\s\S]*?\n\}\)\(this/,
+          '(function (global, factory) { track(); })(this',
+        ),
+      ),
+    ).toBe(false);
+    expect(isFacadeCode(umd.replace('typeof exports', 'typeof track()'))).toBe(false);
+  });
+
+  it('isFacadeCode round 20: assignments inside callbacks are to local bindings or export targets only', () => {
+    expect(isFacadeCode('Object.keys(dep).forEach(k => { globalThis.lastKey = k; });')).toBe(false);
+    expect(isFacadeCode('Object.keys(dep).forEach(k => { [k] = dep; });')).toBe(false); // a pattern target
+    expect(isFacadeCode('Object.keys(dep).forEach(k => { var [a] = dep; });')).toBe(false); // a pattern declaration
+    expect(isFacadeCode('Object.keys(dep).forEach(k => { last = k; });')).toBe(false); // an unknown (global) binding
+    expect(isFacadeCode('Object.keys(dep).forEach(k => { k = 1; });')).toBe(true); // a parameter
+    expect(isFacadeCode('Object.keys(dep).forEach(k => { var acc = {}; acc[k] = dep[k]; });')).toBe(
+      true,
+    );
+    expect(
+      isFacadeCode('Object.keys(dep).forEach(k => { const acc = {}; acc.x.y = dep[k]; });'),
+    ).toBe(true);
+    expect(isFacadeCode('Object.keys(dep).forEach(k => { exports[k] = dep[k]; });')).toBe(true); // an export target
+    expect(isFacadeCode('Object.keys(dep).forEach(k => { module.exports[k] = dep[k]; });')).toBe(
+      true,
+    );
+    expect(isFacadeCode('Object.keys(dep).forEach(k => { exports[track()] = dep[k]; });')).toBe(
+      false,
+    );
+    expect(isFacadeCode('Object.keys(dep).forEach(k => { x.y = dep[k]; });')).toBe(false);
+    expect(
+      isFacadeCode('Object.keys(dep).forEach(k => { for (const j in dep) { j = k; } });'),
+    ).toBe(true);
+    expect(isFacadeCode('Object.keys(dep).forEach(k => { for (j in dep) { j = k; } });')).toBe(
+      false,
+    ); // j is not declared
+    expect(
+      isFacadeCode(
+        'function _interopX(e) { var n = Object.create(null); n.default = e; return n; }',
+      ),
+    ).toBe(true);
+    expect(isFacadeCode('function _interopX(e) { n.default = e; return e; }')).toBe(false); // n is not a local
+    expect(
+      isFacadeCode('function _interopX(e) { return function (k) { e = k; return e; }; }'),
+    ).toBe(false); // a function value is not pure
+    expect(isFacadeCode("var o = require('x'); function _interopY(e) { o = e; return o; }")).toBe(
+      false,
+    ); // an OUTER binding
+    expect(isFacadeCode('Object.keys(dep).forEach(function (k, j) { j = k; });')).toBe(true);
+  });
+
+  it('isFacadeCode round 20: computed export keys are checked', () => {
+    expect(isFacadeCode('exports[track()] = main.a;')).toBe(false);
+    expect(isFacadeCode("exports['a'] = main.a;")).toBe(true);
+    expect(isFacadeCode('exports[k] = main.a;')).toBe(true);
+    expect(isFacadeCode('module.exports[track()] = main.a;')).toBe(false);
+    expect(isFacadeCode("module.exports['a'] = main.a;")).toBe(true);
+    expect(isFacadeCode('exports.a[track()] = main.a;')).toBe(false);
+    expect(isFacadeCode('exports[a][track()] = main.a;')).toBe(false);
+    expect(isFacadeCode('exports[a][b] = main.a;')).toBe(true);
+  });
+
+  it('isFacadeCode round 20: SystemJS `exports` must be the factory callback, not a shadow', () => {
+    const sys = (setter: string, param = 'exports'): string =>
+      `System.register(['./m.js'], (function (${param}) { 'use strict'; return { setters: [${setter}], execute: (function () {}) }; }));`;
+    expect(isFacadeCode(sys("function (module) { exports('a', module.a); }"))).toBe(true);
+    expect(isFacadeCode(sys("function (module) { _e('a', module.a); }", '_e'))).toBe(true);
+    expect(isFacadeCode(sys("function (module) { exports('a', module.a); }", '_e'))).toBe(false); // not the callback's name
+    expect(isFacadeCode(sys("function (exports) { exports('a', 1); }"))).toBe(false); // the setter's own parameter
+    expect(
+      isFacadeCode(sys("function (module) { const exports = module.track; exports('a', 1); }")),
+    ).toBe(false);
+    expect(
+      isFacadeCode(sys("function (module) { var exports = module.track; exports('a', 1); }")),
+    ).toBe(false);
+    expect(
+      isFacadeCode(
+        sys("function (module) { if (module) { var exports = module.track; } exports('a', 1); }"),
+      ),
+    ).toBe(false);
+    expect(
+      isFacadeCode(sys("function (module) { for (var exports in module) { } exports('a', 1); }")),
+    ).toBe(false);
+    expect(isFacadeCode(sys("function (module) { { const exports = 1; } exports('a', 1); }"))).toBe(
+      false,
+    );
+    expect(
+      isFacadeCode(
+        sys("function (module) { if (module) exports('a', 1); else { const exports = 1; } }"),
+      ),
+    ).toBe(false);
+    expect(
+      isFacadeCode(sys('function (module) { for (const k in module) { const exports = k; } }')),
+    ).toBe(false);
+    expect(
+      isFacadeCode(sys("function (module) { const other = module.a; exports('a', other); }")),
+    ).toBe(true);
+    // the factory's own prelude may not shadow it either, and without a callback there is nothing to call
+    expect(
+      isFacadeCode(
+        "System.register([], (function (exports) { var exports = track; return { setters: [function (m) { exports('a', 1); }], execute: (function () {}) }; }));",
+      ),
+    ).toBe(false);
+    expect(
+      isFacadeCode(
+        "System.register([], (function () { return { setters: [function (m) { exports('a', 1); }], execute: (function () {}) }; }));",
+      ),
+    ).toBe(false);
+    expect(
+      isFacadeCode(
+        'System.register([], (function () { return { setters: [function (m) { }], execute: (function () {}) }; }));',
+      ),
+    ).toBe(true);
+    // a function as a setter's own parameter shadows nothing when it is not named like the callback
+    expect(
+      isFacadeCode(sys("function (m) { exports('a', m.a); }, function (n) { exports(n); }")),
+    ).toBe(true);
+  });
+
+  it('isFacadeCode round 20: only the GENERATED registration statement is removed', () => {
+    const real = (id: string): string =>
+      `;!function(){try{var e="undefined"!=typeof window?window:"undefined"!=typeof global?global:"undefined"!=typeof globalThis?globalThis:"undefined"!=typeof self?self:{},n=(new e.Error).stack;n&&(e._bugseeDebugIds=e._bugseeDebugIds||{},e._bugseeDebugIds[n]="${id}")}catch(e){}}();\n//# debugId=${id}`;
+    const facade = "export{a}from'./m.js';\n";
+    expect(isFacadeCode(`${facade}${real(ID_A)}`)).toBe(true); // the real CLI's stub
+    expect(
+      isFacadeCode(
+        `${facade}\n!function(){var g=globalThis;g._bugseeDebugIds=g._bugseeDebugIds||{};g._bugseeDebugIds["x"]="${ID_A}"}();\n//# debugId=${ID_A}`,
+      ),
+    ).toBe(true);
+    expect(isFacadeCode(`${facade}console.log('_bugseeDebugIds');\n//# debugId=${ID_A}`)).toBe(
+      false,
+    );
+    expect(isFacadeCode(`${facade}track('_bugseeDebugIds');\n//# debugId=${ID_A}`)).toBe(false);
+    expect(
+      isFacadeCode(
+        `${facade}!function(){track(globalThis._bugseeDebugIds)}();\n//# debugId=${ID_A}`,
+      ),
+    ).toBe(false);
+    expect(
+      isFacadeCode(
+        `${facade}!function(){globalThis._bugseeDebugIds = track()}();\n//# debugId=${ID_A}`,
+      ),
+    ).toBe(false);
+    expect(
+      isFacadeCode(
+        `${facade}!function(a){var g=globalThis;g._bugseeDebugIds={}}(1);\n//# debugId=${ID_A}`,
+      ),
+    ).toBe(false); // an argument
+    expect(
+      isFacadeCode(
+        `${facade}!function(a){var g=globalThis;g._bugseeDebugIds={}}();\n//# debugId=${ID_A}`,
+      ),
+    ).toBe(false); // a parameter
+    expect(
+      isFacadeCode(
+        `${facade}!function(){var g=globalThis;g._bugseeDebugIds={x:track()}}();\n//# debugId=${ID_A}`,
+      ),
+    ).toBe(false);
+    expect(isFacadeCode(`${facade}!function(){g._bugseeDebugIds={}}();\n//# debugId=${ID_A}`)).toBe(
+      true,
+    );
+    expect(
+      isFacadeCode(`${facade}!function(){var g=globalThis;g.other={}}();\n//# debugId=${ID_A}`),
+    ).toBe(false); // does not mention the marker
+    expect(
+      isFacadeCode(
+        `${facade}!function(){try{track()}catch(e){}g._bugseeDebugIds={}}();\n//# debugId=${ID_A}`,
+      ),
+    ).toBe(false);
+    expect(
+      isFacadeCode(
+        `${facade}!function(){try{g._bugseeDebugIds={}}catch(e){track()}}();\n//# debugId=${ID_A}`,
+      ),
+    ).toBe(false);
+    expect(
+      isFacadeCode(
+        `${facade}!function(){try{g._bugseeDebugIds={}}catch(e){}finally{track()}}();\n//# debugId=${ID_A}`,
+      ),
+    ).toBe(false);
+    expect(
+      isFacadeCode(
+        `${facade}!function(){try{g._bugseeDebugIds={}}catch{}}();\n//# debugId=${ID_A}`,
+      ),
+    ).toBe(true);
+    expect(
+      isFacadeCode(
+        `${facade}!function(){var x=(new e.Error).stack;g._bugseeDebugIds=x}();\n//# debugId=${ID_A}`,
+      ),
+    ).toBe(true);
+    expect(
+      isFacadeCode(
+        `${facade}!function(){var x=new track();g._bugseeDebugIds=x}();\n//# debugId=${ID_A}`,
+      ),
+    ).toBe(false);
+    expect(
+      isFacadeCode(
+        `${facade}!function(){var x=(new e.Error(1)).stack;g._bugseeDebugIds=x}();\n//# debugId=${ID_A}`,
+      ),
+    ).toBe(false);
+    expect(
+      isFacadeCode(
+        `${facade}!function(){var x=a?b:c;g._bugseeDebugIds={}}();\n//# debugId=${ID_A}`,
+      ),
+    ).toBe(true);
+    expect(
+      isFacadeCode(
+        `${facade}!function(){var x={a:1};g._bugseeDebugIds={}}();\n//# debugId=${ID_A}`,
+      ),
+    ).toBe(false); // only `{}`
+    expect(
+      isFacadeCode(`${facade}void function(){g._bugseeDebugIds={}}();\n//# debugId=${ID_A}`),
+    ).toBe(false); // not the generated `!`
+    expect(
+      isFacadeCode(`${facade}!function(){x:1;g._bugseeDebugIds={}}();\n//# debugId=${ID_A}`),
+    ).toBe(false);
+    expect(
+      isFacadeCode(`${facade}!function(){var [a]=b;g._bugseeDebugIds={}}();\n//# debugId=${ID_A}`),
+    ).toBe(false);
+    expect(
+      isFacadeCode(`${facade}!(function(){g._bugseeDebugIds={}}());\n//# debugId=${ID_A}`),
+    ).toBe(true);
+    expect(isFacadeCode(`${facade}!function(){g._bugseeDebugIds+=1}();\n//# debugId=${ID_A}`)).toBe(
+      false,
+    );
+    expect(isFacadeCode(`${facade}!function(){(a,b)}();\n//# debugId=${ID_A}`)).toBe(false); // no marker
+    expect(
+      isFacadeCode(`${facade}!function(){g._bugseeDebugIds=(1,2)}();\n//# debugId=${ID_A}`),
+    ).toBe(true);
+    expect(
+      isFacadeCode(`${facade}!function(){g._bugseeDebugIds=typeof g}();\n//# debugId=${ID_A}`),
+    ).toBe(true);
+    expect(
+      isFacadeCode(`${facade}!function(){g._bugseeDebugIds=delete g.x}();\n//# debugId=${ID_A}`),
+    ).toBe(false);
+    expect(
+      isFacadeCode(`${facade}!function(){g._bugseeDebugIds=a[b]}();\n//# debugId=${ID_A}`),
+    ).toBe(true);
+    expect(
+      isFacadeCode(`${facade}!function(){g._bugseeDebugIds=a[track()]}();\n//# debugId=${ID_A}`),
+    ).toBe(false);
+    expect(
+      isFacadeCode(`${facade}!function(){g._bugseeDebugIds=1+2}();\n//# debugId=${ID_A}`),
+    ).toBe(true);
+    expect(
+      isFacadeCode(`${facade}!function(){g._bugseeDebugIds=a&&b}();\n//# debugId=${ID_A}`),
+    ).toBe(true);
   });
 
   it('isFacadeCode round 19: empty statements and comment boundaries', () => {

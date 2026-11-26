@@ -23,6 +23,8 @@ const name = (n: Node | undefined): string | undefined =>
   n?.type === 'Identifier' ? (n.name as string) : undefined;
 const literalString = (n: Node | undefined): boolean =>
   n?.type === 'Literal' && typeof n.value === 'string';
+const isFunction = (n: Node): boolean =>
+  n.type === 'FunctionExpression' || n.type === 'ArrowFunctionExpression';
 
 /** Rollup's interop helpers: `_interopDefault`, `_interopNamespaceDefault`, `_interopNamespace`, ... */
 const HELPER_NAME = /^_interop[A-Za-z]*$/;
@@ -33,10 +35,29 @@ const OBJECT_CALL =
 /** How deep the walk goes before it gives up ("not a facade"): a hostile chain must not exhaust the stack. */
 const MAX_DEPTH = 64;
 let depth = 0;
-/** Inside a function body (a helper, a getter): assignments to its own variables are fine there. */
-let inFunction = 0;
-/** Inside a SystemJS setter: `exports(...)` is the module system's own call there. */
-let inSystem = 0;
+/** The variables of the functions being walked (params and declarations): a helper may write to those only. */
+let scopes: Array<Set<string>> = [];
+/** Inside a SystemJS setter: the factory's export callback, the one name whose calls are the module system's own. */
+let systemExport: string | undefined;
+
+const reset = (): void => {
+  depth = 0;
+  scopes = [];
+  systemExport = undefined;
+};
+
+/** Runs `fn` one level deeper, or gives up ("not a facade") past the cap. */
+function bounded(fn: () => boolean): boolean {
+  if (depth >= MAX_DEPTH) {
+    return false;
+  }
+  depth++;
+  try {
+    return fn();
+  } finally {
+    depth--;
+  }
+}
 
 /** `Object.prototype.hasOwnProperty.call`, as Rollup's `export *` loop writes it. */
 function isHasOwnCall(callee: Node): boolean {
@@ -64,22 +85,24 @@ function isObjectKeysCall(n: Node | undefined): boolean {
   );
 }
 
-const isFunction = (n: Node): boolean =>
-  n.type === 'FunctionExpression' || n.type === 'ArrowFunctionExpression';
+/** The names a pattern-free declaration or parameter list binds. */
+const declared = (declaration: Node): string[] =>
+  nodes(declaration, 'declarations').flatMap((declarator) => name(node(declarator, 'id')) ?? []);
 
 /** A function Rollup writes into a re-export block: plain parameters and a body of re-export statements. */
 function pureFunction(fn: Node): boolean {
-  if (!nodes(fn, 'params').every((param) => param.type === 'Identifier')) {
+  const params = nodes(fn, 'params');
+  if (!params.every((param) => param.type === 'Identifier')) {
     return false;
   }
   const body = node(fn, 'body') as Node; // a function always has a body
-  inFunction++;
+  scopes.push(new Set(params.map((param) => param.name as string)));
   try {
     return body.type === 'BlockStatement'
       ? nodes(body, 'body').every(pureStatement)
       : pureExpression(body);
   } finally {
-    inFunction--;
+    scopes.pop();
   }
 }
 
@@ -93,8 +116,8 @@ function pureCall(call: Node): boolean {
   if (calleeName === 'require') {
     return args.length === 1 && literalString(args[0]);
   }
-  if (calleeName === 'exports') {
-    return inSystem > 0 && args.every(pureExpression);
+  if (calleeName !== undefined && calleeName === systemExport) {
+    return args.every(pureExpression);
   }
   if (calleeName !== undefined) {
     return HELPER_NAME.test(calleeName) && args.every(pureExpression);
@@ -126,17 +149,64 @@ function pureCall(call: Node): boolean {
   return false;
 }
 
-/** The expressions a re-export is written with: references, literals, whitelisted calls, getters. */
-function pureExpression(expression: Node | undefined): boolean {
-  if (depth >= MAX_DEPTH) {
+/** The computed keys along a member chain are code too: `exports[track()]` calls `track`. */
+function chainPure(target: Node | undefined): boolean {
+  let current = target;
+  while (current?.type === 'MemberExpression') {
+    if (current.computed === true && !pureExpression(node(current, 'property'))) {
+      return false;
+    }
+    current = node(current, 'object');
+  }
+  return true;
+}
+
+/** The identifier a member chain starts from (`acc` in `acc.x[k]`). */
+function chainRoot(target: Node | undefined): string | undefined {
+  let current = target;
+  while (current?.type === 'MemberExpression') {
+    current = node(current, 'object');
+  }
+  return name(current);
+}
+
+/** `exports.a`, `exports['a']`, `exports.a.b`, `module.exports`, `module.exports.a`: where a CommonJS facade writes. */
+function isExportTarget(target: Node | undefined): boolean {
+  const isModuleExports = (n: Node): boolean =>
+    n.computed !== true &&
+    name(node(n, 'object')) === 'module' &&
+    name(node(n, 'property')) === 'exports';
+  let current = target;
+  while (current?.type === 'MemberExpression') {
+    if (isModuleExports(current)) {
+      return chainPure(target);
+    }
+    current = node(current, 'object');
+    if (name(current) === 'exports') {
+      return chainPure(target);
+    }
+  }
+  return false;
+}
+
+/** An assignment inside a helper: to its own variables (a parameter, a `var`, an accumulator's member) or an export. */
+function localAssignmentTarget(target: Node | undefined): boolean {
+  if (target?.type === 'Identifier') {
+    return scopes.some((scope) => scope.has(target.name as string));
+  }
+  if (target?.type !== 'MemberExpression') {
     return false;
   }
-  depth++;
-  try {
-    return pureExpressionNode(expression as Node);
-  } finally {
-    depth--;
-  }
+  const root = chainRoot(target);
+  return (
+    chainPure(target) &&
+    ((root !== undefined && scopes.some((scope) => scope.has(root))) || isExportTarget(target))
+  );
+}
+
+/** The expressions a re-export is written with: references, literals, whitelisted calls, getters. */
+function pureExpression(expression: Node | undefined): boolean {
+  return bounded(() => pureExpressionNode(expression));
 }
 
 function pureExpressionNode(expression: Node | undefined): boolean {
@@ -161,11 +231,11 @@ function pureExpressionNode(expression: Node | undefined): boolean {
         pureExpression(node(expression, 'alternate'))
       );
     case 'AssignmentExpression':
-      // only to the variables of a helper's own body: a top-level write is judged by `facadeExpression`
+      // only inside a helper, and only to its own variables or the exports: a top-level write is `facadeExpression`'s
       return (
-        inFunction > 0 &&
+        scopes.length > 0 &&
         expression.operator === '=' &&
-        pureExpression(node(expression, 'left')) &&
+        localAssignmentTarget(node(expression, 'left')) &&
         pureExpression(node(expression, 'right'))
       );
     case 'ObjectExpression':
@@ -190,15 +260,7 @@ function pureExpressionNode(expression: Node | undefined): boolean {
 }
 
 function pureStatement(statement: Node): boolean {
-  if (depth >= MAX_DEPTH) {
-    return false;
-  }
-  depth++;
-  try {
-    return pureStatementNode(statement);
-  } finally {
-    depth--;
-  }
+  return bounded(() => pureStatementNode(statement));
 }
 
 function pureStatementNode(statement: Node): boolean {
@@ -228,6 +290,12 @@ function pureStatementNode(statement: Node): boolean {
           nodes(left, 'declarations').every(
             (declarator) => node(declarator, 'id')?.type === 'Identifier',
           ));
+      if (left.type === 'VariableDeclaration') {
+        const scope = scopes.at(-1);
+        for (const bound of declared(left)) {
+          scope?.add(bound);
+        }
+      }
       return (
         isBinding &&
         pureExpression(node(statement, 'right')) &&
@@ -236,28 +304,20 @@ function pureStatementNode(statement: Node): boolean {
     }
     case 'BlockStatement':
       return nodes(statement, 'body').every(pureStatement);
-    case 'VariableDeclaration':
-      return nodes(statement, 'declarations').every(
-        (declarator) =>
-          node(declarator, 'id')?.type === 'Identifier' && pureExpression(node(declarator, 'init')),
-      );
+    case 'VariableDeclaration': {
+      const scope = scopes.at(-1);
+      return nodes(statement, 'declarations').every((declarator) => {
+        const id = name(node(declarator, 'id'));
+        if (id === undefined) {
+          return false;
+        }
+        scope?.add(id);
+        return pureExpression(node(declarator, 'init'));
+      });
+    }
     default:
       return false;
   }
-}
-
-/** `exports`, `exports.a`, `exports['a']`, `module.exports`, `module.exports.a`: where a CommonJS facade writes. */
-function isExportTarget(target: Node | undefined): boolean {
-  if (target?.type !== 'MemberExpression') {
-    return false;
-  }
-  const object = node(target, 'object');
-  const isModuleExports = (n: Node | undefined): boolean =>
-    n?.type === 'MemberExpression' &&
-    n.computed !== true &&
-    name(node(n, 'object')) === 'module' &&
-    name(node(n, 'property')) === 'exports';
-  return isModuleExports(target) || name(object) === 'exports' || isModuleExports(object);
 }
 
 /** A top-level expression statement of a facade: a whitelisted call, a write to the exports, or a `&&`/`||` chain of them. */
@@ -280,7 +340,7 @@ function facadeExpression(expression: Node | undefined): boolean {
   }
 }
 
-/** One top-level statement of a facade (or of the body of its AMD wrapper). */
+/** One top-level statement of a facade (or of the body of a wrapper). */
 function facadeStatement(statement: Node): boolean {
   switch (statement.type) {
     case 'EmptyStatement':
@@ -311,39 +371,235 @@ function facadeStatement(statement: Node): boolean {
   }
 }
 
+/** A reference a wrapper may return: an identifier, or a member chain of one (`main`, `main.default`). */
+function pureReference(n: Node | undefined): boolean {
+  if (n?.type === 'Identifier') {
+    return true;
+  }
+  return n?.type === 'MemberExpression' && chainPure(n) && chainRoot(n) !== undefined;
+}
+
+/**
+ * The factory of a wrapper (AMD / IIFE / UMD): plain parameters and a body of facade statements, optionally ending in
+ * a `return <reference>` (default-export mode, or an IIFE returning its `exports`).
+ */
+function factoryBody(factory: Node | undefined): boolean {
+  if (
+    factory === undefined ||
+    !isFunction(factory) ||
+    !nodes(factory, 'params').every((param) => param.type === 'Identifier')
+  ) {
+    return false;
+  }
+  const body = node(factory, 'body') as Node;
+  if (body.type !== 'BlockStatement') {
+    return false;
+  }
+  const statements = nodes(body, 'body');
+  const last = statements.at(-1);
+  const returns = last?.type === 'ReturnStatement';
+  return (
+    (!returns || pureReference(node(last as Node, 'argument'))) &&
+    (returns ? statements.slice(0, -1) : statements).every(facadeStatement)
+  );
+}
+
 /**
  * Rollup's AMD wrapper: `define(['exports', './main.js'], function (exports, main) { ...facade body... })`, with an
  * optional leading module id. The body is judged by the same statements as a top-level facade (no nesting).
  */
-function amdBody(statement: Node): Node[] | undefined {
+function isAmdFacade(statement: Node): boolean {
   const expression =
     statement.type === 'ExpressionStatement' ? node(statement, 'expression') : undefined;
   if (expression?.type !== 'CallExpression' || name(node(expression, 'callee')) !== 'define') {
-    return undefined;
+    return false;
   }
   const args = nodes(expression, 'arguments');
   if (args.length > 0 && literalString(args[0])) {
     args.shift(); // the module id
   }
   const [dependencies, factory] = args;
-  if (
-    args.length !== 2 ||
-    dependencies?.type !== 'ArrayExpression' ||
-    !nodes(dependencies, 'elements').every((element) => literalString(element)) ||
-    factory === undefined ||
-    !isFunction(factory) ||
-    !nodes(factory, 'params').every((param) => param.type === 'Identifier')
-  ) {
-    return undefined;
+  return (
+    args.length === 2 &&
+    dependencies?.type === 'ArrayExpression' &&
+    nodes(dependencies, 'elements').every((element) => literalString(element)) &&
+    factoryBody(factory)
+  );
+}
+
+/** Whether `a` and `b` are the same chain of plain properties rooted at `this` (`this.my.Lib`). */
+function thisChain(n: Node | undefined): string | undefined {
+  const parts: string[] = [];
+  let current = n;
+  while (current?.type === 'MemberExpression') {
+    const property = current.computed === true ? undefined : name(node(current, 'property'));
+    if (property === undefined) {
+      return undefined;
+    }
+    parts.unshift(property);
+    current = node(current, 'object');
   }
-  const body = node(factory, 'body') as Node;
-  return body.type === 'BlockStatement' ? nodes(body, 'body') : undefined;
+  return current?.type === 'ThisExpression' ? parts.join('.') : undefined;
+}
+
+/** `(function (exports, extA) { ...facade body... return exports; })({}, A)`: Rollup's IIFE. */
+function isIifeCall(call: Node | undefined): boolean {
+  const callee = call?.type === 'CallExpression' ? node(call, 'callee') : undefined;
+  if (call === undefined || callee?.type !== 'FunctionExpression') {
+    return false;
+  }
+  const args = nodes(call, 'arguments');
+  return (
+    args.length === nodes(callee, 'params').length &&
+    args.every(
+      (arg) =>
+        arg.type === 'ThisExpression' ||
+        (arg.type === 'ObjectExpression' && nodes(arg, 'properties').length === 0) ||
+        pureExpression(arg),
+    ) &&
+    factoryBody(callee)
+  );
+}
+
+/** The UMD preamble's expression: `typeof exports === 'object' ? factory(...) : define(...) : (global = ..., factory(...))`. */
+function umdExpression(expression: Node | undefined, global: string, factory: string): boolean {
+  return bounded(() => umdNode(expression, global, factory));
+}
+
+function umdNode(expression: Node | undefined, global: string, factory: string): boolean {
+  const recurse = (n: Node | undefined): boolean => umdExpression(n, global, factory);
+  switch (expression?.type) {
+    case 'ConditionalExpression':
+      return (
+        recurse(node(expression, 'test')) &&
+        recurse(node(expression, 'consequent')) &&
+        recurse(node(expression, 'alternate'))
+      );
+    case 'LogicalExpression':
+    case 'BinaryExpression':
+      return recurse(node(expression, 'left')) && recurse(node(expression, 'right'));
+    case 'UnaryExpression':
+      return recurse(node(expression, 'argument'));
+    case 'SequenceExpression':
+      return nodes(expression, 'expressions').every(recurse);
+    case 'AssignmentExpression': {
+      // `global = typeof globalThis !== ... : global || self`, and `global.Lib = {}` as a factory argument
+      const left = node(expression, 'left');
+      return (
+        expression.operator === '=' &&
+        (name(left) === global ||
+          (left?.type === 'MemberExpression' && chainRoot(left) === global)) &&
+        chainPure(left) &&
+        recurse(node(expression, 'right'))
+      );
+    }
+    case 'ObjectExpression':
+      return nodes(expression, 'properties').length === 0;
+    case 'CallExpression': {
+      const callee = name(node(expression, 'callee'));
+      const args = nodes(expression, 'arguments');
+      if (callee === factory) {
+        return args.every(recurse);
+      }
+      if (callee === 'define') {
+        return (
+          args.length === 2 &&
+          args[0]?.type === 'ArrayExpression' &&
+          nodes(args[0], 'elements').every((element) => literalString(element)) &&
+          name(args[1]) === factory
+        );
+      }
+      return pureCall(expression);
+    }
+    default:
+      return pureExpression(expression);
+  }
+}
+
+/** `(function (global, factory) { <UMD preamble> })(this, function (exports, ...) { ...facade body... })`. */
+function isUmdCall(call: Node | undefined): boolean {
+  const callee = call?.type === 'CallExpression' ? node(call, 'callee') : undefined;
+  if (call === undefined || callee?.type !== 'FunctionExpression') {
+    return false;
+  }
+  const params = nodes(callee, 'params');
+  const args = nodes(call, 'arguments');
+  const [global, factory] = params.map(name);
+  const wrapper = node(callee, 'body') as Node;
+  const preamble = nodes(wrapper, 'body');
+  return (
+    params.length === 2 &&
+    global !== undefined &&
+    factory !== undefined &&
+    args.length === 2 &&
+    (args[0]?.type === 'ThisExpression' || pureExpression(args[0])) &&
+    preamble.length === 1 &&
+    preamble[0]?.type === 'ExpressionStatement' &&
+    umdExpression(node(preamble[0], 'expression'), global, factory) &&
+    factoryBody(args[1])
+  );
+}
+
+/** IIFE and UMD wrappers, bound to a name or a `this.X` namespace, or bare. */
+function isWrapperFacade(statement: Node): boolean {
+  if (statement.type === 'VariableDeclaration') {
+    const declarations = nodes(statement, 'declarations');
+    return (
+      declarations.length === 1 &&
+      name(node(declarations[0] as Node, 'id')) !== undefined &&
+      isIifeCall(node(declarations[0] as Node, 'init'))
+    );
+  }
+  const expression =
+    statement.type === 'ExpressionStatement' ? node(statement, 'expression') : undefined;
+  if (expression?.type === 'CallExpression') {
+    return isIifeCall(expression) || isUmdCall(expression);
+  }
+  if (expression?.type !== 'AssignmentExpression' || expression.operator !== '=') {
+    return false;
+  }
+  const target = thisChain(node(expression, 'left'));
+  const right = node(expression, 'right');
+  if (target === undefined) {
+    return false;
+  }
+  // `this.my = this.my || {};` (a dotted `output.name`'s namespace) or `this.my.Lib = (function () {...})({})`
+  return right?.type === 'LogicalExpression'
+    ? right.operator === '||' &&
+        thisChain(node(right, 'left')) === target &&
+        node(right, 'right')?.type === 'ObjectExpression' &&
+        nodes(node(right, 'right') as Node, 'properties').length === 0
+    : isIifeCall(right);
+}
+
+/** Whether a setter declares `callback` (as a parameter or a variable anywhere in its body): that shadows the export callback. */
+function shadows(fn: Node, callback: string): boolean {
+  if (nodes(fn, 'params').some((param) => name(param) === callback)) {
+    return true;
+  }
+  const visit = (statement: Node | undefined): boolean => {
+    switch (statement?.type) {
+      case 'VariableDeclaration':
+        return declared(statement).includes(callback);
+      case 'BlockStatement':
+        return nodes(statement, 'body').some(visit);
+      case 'IfStatement':
+        return visit(node(statement, 'consequent')) || visit(node(statement, 'alternate'));
+      case 'ForInStatement':
+        return visit(node(statement, 'left')) || visit(node(statement, 'body'));
+      default:
+        return false;
+    }
+  };
+  const body = node(fn, 'body');
+  return body?.type === 'BlockStatement' ? visit(body) : false;
 }
 
 /**
  * Rollup's SystemJS wrapper: `System.register(deps, function (exports) { 'use strict'; var x = {...}; return { setters:
  * [function (module) { exports('a', module.a); }, ...], execute: function () {} }; })`. The setters hold the
- * re-exports (`exports(...)` calls count only there) and `execute` must be empty: a chunk with code has statements in it.
+ * re-exports (calls of the factory's export callback count only there, and only while no setter shadows it) and
+ * `execute` must be empty: a chunk with code has statements in it.
  */
 function isSystemFacade(statement: Node): boolean {
   const expression =
@@ -373,19 +629,22 @@ function isSystemFacade(statement: Node): boolean {
   ) {
     return false;
   }
+  const callback = name(nodes(factory, 'params')[0]); // `exports`, whatever the factory calls it
   const body = node(factory, 'body') as Node;
   const statements = body.type === 'BlockStatement' ? nodes(body, 'body') : [];
   const last = statements.at(-1);
   if (last?.type !== 'ReturnStatement') {
     return false;
   }
-  // everything before the `return` is a directive or a variable of a pure value (`var _starExcludes = {...}`)
+  // everything before the `return` is a directive or a variable of a pure value (`var _starExcludes = {...}`) that
+  // does not shadow the callback
   const prelude = statements
     .slice(0, -1)
     .every(
       (item) =>
         (item.type === 'ExpressionStatement' && item.directive !== undefined) ||
         (item.type === 'VariableDeclaration' &&
+          !(callback !== undefined && declared(item).includes(callback)) &&
           nodes(item, 'declarations').every(
             (declarator) =>
               node(declarator, 'id')?.type === 'Identifier' &&
@@ -410,43 +669,156 @@ function isSystemFacade(statement: Node): boolean {
     return false;
   }
   const executeBody = node(execute, 'body') as Node;
-  inSystem++;
+  const setterFunctions = (setters.elements as unknown[]).filter(isNode);
+  systemExport = callback;
   try {
     return (
       nodes(execute, 'params').length === 0 &&
       executeBody.type === 'BlockStatement' &&
       nodes(executeBody, 'body').every((item) => item.type === 'EmptyStatement') &&
-      (setters.elements as unknown[]).every(
-        (element) => isNode(element) && isFunction(element) && pureFunction(element),
+      setterFunctions.length === (setters.elements as unknown[]).length &&
+      setterFunctions.every(
+        (setter) =>
+          isFunction(setter) &&
+          !(callback !== undefined && shadows(setter, callback)) &&
+          pureFunction(setter),
       )
     );
   } finally {
-    inSystem--;
+    systemExport = undefined;
   }
 }
 
-/** One top-level statement, or the whole body of an AMD wrapper, or a SystemJS wrapper. */
+/** One top-level statement of a facade, in any of Rollup's output formats. */
 function facadeTopLevel(statement: Node): boolean {
-  const body = amdBody(statement);
-  return body === undefined
-    ? facadeStatement(statement) || isSystemFacade(statement)
-    : body.every(facadeStatement);
+  return (
+    isAmdFacade(statement) ||
+    isSystemFacade(statement) ||
+    isWrapperFacade(statement) ||
+    facadeStatement(statement)
+  );
+}
+
+/**
+ * The generated registration statement, as the stamp appends it (`;!function(){try{var e=...,n=(new e.Error).stack;
+ * n&&(e._bugseeDebugIds=e._bugseeDebugIds||{},e._bugseeDebugIds[n]="<id>")}catch(e){}}();`): an immediately invoked
+ * function without parameters or arguments, whose body only declares variables of plain values and writes to the
+ * marker, in a `try` that swallows. It calls nothing (a `new X.Error` for the stack is the one construction). A
+ * statement that merely MENTIONS the marker (`console.log('_bugseeDebugIds')`) is not it.
+ */
+function isRegistrationStatement(code: string, statement: Node): boolean {
+  if (!code.slice(statement.start as number, statement.end as number).includes(REGISTRATION)) {
+    return false;
+  }
+  const expression =
+    statement.type === 'ExpressionStatement' ? node(statement, 'expression') : undefined;
+  const call =
+    expression?.type === 'UnaryExpression' && expression.operator === '!'
+      ? node(expression, 'argument')
+      : undefined;
+  const fn = call?.type === 'CallExpression' ? node(call, 'callee') : undefined;
+  return (
+    call !== undefined &&
+    fn?.type === 'FunctionExpression' &&
+    nodes(call, 'arguments').length === 0 &&
+    nodes(fn, 'params').length === 0 &&
+    nodes(node(fn, 'body') as Node, 'body').every(stubStatement)
+  );
+}
+
+function stubStatement(statement: Node): boolean {
+  return bounded(() => {
+    switch (statement.type) {
+      case 'ExpressionStatement':
+        return stubExpression(node(statement, 'expression'));
+      case 'VariableDeclaration':
+        return nodes(statement, 'declarations').every(
+          (declarator) =>
+            node(declarator, 'id')?.type === 'Identifier' &&
+            stubExpression(node(declarator, 'init')),
+        );
+      case 'TryStatement': {
+        const handler = node(statement, 'handler');
+        return (
+          statement.finalizer === null &&
+          handler !== undefined &&
+          nodes(node(handler, 'body') as Node, 'body').length === 0 &&
+          nodes(node(statement, 'block') as Node, 'body').every(stubStatement)
+        );
+      }
+      default:
+        return false;
+    }
+  });
+}
+
+function stubExpression(expression: Node | undefined): boolean {
+  return bounded(() => {
+    switch (expression?.type) {
+      case 'Identifier':
+      case 'Literal':
+        return true;
+      case 'MemberExpression':
+        return (
+          stubExpression(node(expression, 'object')) &&
+          (expression.computed !== true || stubExpression(node(expression, 'property')))
+        );
+      case 'UnaryExpression':
+        return (
+          (expression.operator === 'typeof' || expression.operator === '!') &&
+          stubExpression(node(expression, 'argument'))
+        );
+      case 'BinaryExpression':
+      case 'LogicalExpression':
+        return (
+          stubExpression(node(expression, 'left')) && stubExpression(node(expression, 'right'))
+        );
+      case 'ConditionalExpression':
+        return (
+          stubExpression(node(expression, 'test')) &&
+          stubExpression(node(expression, 'consequent')) &&
+          stubExpression(node(expression, 'alternate'))
+        );
+      case 'SequenceExpression':
+        return nodes(expression, 'expressions').every(stubExpression);
+      case 'AssignmentExpression':
+        return (
+          expression.operator === '=' &&
+          node(expression, 'left')?.type !== 'ObjectPattern' &&
+          stubExpression(node(expression, 'left')) &&
+          stubExpression(node(expression, 'right'))
+        );
+      case 'ObjectExpression':
+        return nodes(expression, 'properties').length === 0;
+      case 'NewExpression': {
+        // `new e.Error` for the stack, and nothing else
+        const callee = node(expression, 'callee');
+        return (
+          callee?.type === 'MemberExpression' &&
+          callee.computed !== true &&
+          name(node(callee, 'property')) === 'Error' &&
+          nodes(expression, 'arguments').length === 0
+        );
+      }
+      default:
+        return false;
+    }
+  });
 }
 
 type Comment = { type: string; value: string; start: number; end: number };
 
 /**
- * Whether a bundle holds no code of its own: only imports and re-exports (ESM, or Rollup's CommonJS / AMD shape with its
- * `export *` loop and interop helpers), plus the Bugsee registration the stamp appended: ONE trailing STATEMENT that
- * carries the marker, accepted only when the stamp's `//# debugId=` comment follows it. A marker anywhere else is the
- * bundle's own code (an SDK reads `_bugseeDebugIds`), so it stays. Comments are the parser's, so a block comment's
- * delimiters are never mistaken for line comments. Anything it cannot read, that goes deeper than the walk allows, or
- * that does something (a function, a call, a declaration), is real code, and an empty map for it is a stripped one.
+ * Whether a bundle holds no code of its own: only imports and re-exports (ESM, or Rollup's CommonJS / AMD / SystemJS /
+ * IIFE / UMD shape with its `export *` loop and interop helpers), plus the Bugsee registration the stamp appended: the
+ * ONE trailing statement that is the generated registration, accepted only when the stamp's `//# debugId=` comment
+ * follows it. A marker anywhere else, or a statement that only mentions it, is the bundle's own code. Comments are the
+ * parser's, so a block comment's delimiters are never mistaken for line comments. Anything it cannot read, that goes
+ * deeper than the walk allows, or that does something (a function, a call, a declaration), is real code, and an empty
+ * map for it is a stripped one.
  */
 export function isFacadeCode(code: string): boolean {
-  depth = 0;
-  inFunction = 0;
-  inSystem = 0;
+  reset();
   try {
     const comments: Comment[] = [];
     const program = parse(code, {
@@ -458,7 +830,7 @@ export function isFacadeCode(code: string): boolean {
     const last = body.at(-1);
     const isStub =
       last !== undefined &&
-      code.slice(last.start as number, last.end as number).includes(REGISTRATION) &&
+      isRegistrationStatement(code, last) &&
       comments.some(
         (comment) =>
           comment.type === 'Line' &&
@@ -469,8 +841,6 @@ export function isFacadeCode(code: string): boolean {
   } catch {
     return false; // unreadable, or too deep for the walk: not a facade
   } finally {
-    depth = 0;
-    inFunction = 0;
-    inSystem = 0;
+    reset();
   }
 }

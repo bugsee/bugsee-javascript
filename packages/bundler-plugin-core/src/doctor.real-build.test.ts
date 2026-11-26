@@ -499,11 +499,19 @@ describe('facade chunks in real Rollup / Vite output', () => {
     );
     writeFileSync(
       join(dir, 'src', 'main.js'),
-      'export const a = () => { throw new Error("a"); };\n',
+      'export const a = () => { throw new Error("a"); };\nexport default a;\n',
     );
+    // a default-only barrel: `output.exports: 'auto'` resolves to default mode (`return main;` in AMD, `module.exports =`)
+    writeFileSync(join(dir, 'src', 'def.js'), "export { default } from './main.js';\n");
+    writeFileSync(join(dir, 'src', 'extdef.js'), "export { default } from 'ext-d';\n");
     const bundle = await rollup({
-      input: { index: join(dir, 'src', 'index.js'), other: join(dir, 'src', 'other.js') },
-      external: ['ext-a', 'ext-b', 'ext-c'],
+      input: {
+        index: join(dir, 'src', 'index.js'),
+        other: join(dir, 'src', 'other.js'),
+        def: join(dir, 'src', 'def.js'),
+        extdef: join(dir, 'src', 'extdef.js'),
+      },
+      external: ['ext-a', 'ext-b', 'ext-c', 'ext-d'],
     });
     let facades = 0;
     const failures: string[] = [];
@@ -559,6 +567,74 @@ describe('facade chunks in real Rollup / Vite output', () => {
   for (const format of ['cjs', 'amd', 'es', 'system'] as const) {
     it(`every empty-map chunk Rollup writes for ${format} (option sweep) is a facade`, async () => {
       expect(await sweep(format)).toBeGreaterThan(100);
+    }, 120_000);
+  }
+
+  // IIFE / UMD wrap a single entry; a library that is only a barrel over externals gets `sources: []` too.
+  const wrapperSweep = async (format: 'iife' | 'umd'): Promise<number> => {
+    const dir = join(root, `facade-sweep-${format}`);
+    mkdirSync(join(dir, 'src'), { recursive: true });
+    writeFileSync(
+      join(dir, 'src', 'lib.js'),
+      "export * from 'ext-a';\nexport * as ns from 'ext-b';\nexport { named, default as d } from 'ext-c';\n",
+    );
+    const bundle = await rollup({
+      input: join(dir, 'src', 'lib.js'),
+      external: ['ext-a', 'ext-b', 'ext-c'],
+    });
+    let facades = 0;
+    const failures: string[] = [];
+    for (const name of ['Lib', 'my.Lib']) {
+      for (const preset of ['es5', 'es2015'] as const) {
+        for (const symbols of [false, true]) {
+          for (const externalLiveBindings of [true, false]) {
+            for (const esModule of [true, false, 'if-default-prop'] as const) {
+              for (const interop of ['auto', 'default', 'esModule', 'compat'] as const) {
+                const label = JSON.stringify({
+                  format,
+                  name,
+                  preset,
+                  symbols,
+                  externalLiveBindings,
+                  esModule,
+                  interop,
+                });
+                const { output } = await bundle.generate({
+                  format,
+                  name,
+                  sourcemap: true,
+                  interop,
+                  generatedCode: { preset, symbols },
+                  externalLiveBindings,
+                  esModule,
+                  globals: { 'ext-a': 'A', 'ext-b': 'B', 'ext-c': 'C' },
+                });
+                for (const chunk of output) {
+                  if (chunk.type !== 'chunk' || !chunk.map || chunk.map.sources.length > 0) {
+                    continue;
+                  }
+                  if (/[^;,]/.test(chunk.map.mappings)) {
+                    continue;
+                  }
+                  facades++;
+                  if (!isFacadeCode(chunk.code)) {
+                    failures.push(`${label}\n${chunk.code}`);
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    await bundle.close();
+    expect(failures.slice(0, 2).join('\n\n')).toBe('');
+    return facades;
+  };
+
+  for (const format of ['iife', 'umd'] as const) {
+    it(`every empty-map chunk Rollup writes for ${format} (option sweep, named and dotted) is a facade`, async () => {
+      expect(await wrapperSweep(format)).toBeGreaterThan(50);
     }, 120_000);
   }
 });
