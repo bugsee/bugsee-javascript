@@ -5,6 +5,17 @@
 // a separate step run by hand against the printed evidence.
 import { chromium } from 'playwright';
 
+/** Is `url` on `domain` or one of its subdomains? Parsed, never substring-matched: `includes('bugsee.com')`
+ *  also matches `https://bugsee.com.evil.test/` or `https://x.test/?bugsee.com`. */
+const isOnHost = (url, domain) => {
+  try {
+    const { hostname } = new URL(url);
+    return hostname === domain || hostname.endsWith(`.${domain}`);
+  } catch {
+    return false;
+  }
+};
+
 const BASE = 'http://localhost:5321';
 const results = [];
 
@@ -29,7 +40,7 @@ async function main() {
   page.on('pageerror', (err) => pageErrors.push(err.message));
   const bugseeCalls = [];
   page.on('response', async (res) => {
-    if (!res.url().includes('bugsee.com')) return;
+    if (!isOnHost(res.url(), 'bugsee.com')) return;
     let ok = false;
     try {
       const json = await res.json();

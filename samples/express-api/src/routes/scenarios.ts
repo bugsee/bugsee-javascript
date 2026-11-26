@@ -423,7 +423,11 @@ export function buildScenariosRouter(): Router {
       const store = requestContextStoreOf(c);
       store?.setAttribute('scenario.req_index', idx);
       c.log(`concurrency-log-${marker}-${idx}`);
-      await new Promise((resolve) => setTimeout(resolve, Number(req.query.delayMs ?? 0)));
+      // Capped: a delay taken straight from the query string would let one request hold a timer open
+      // for as long as it asks. verify.ts staggers these by at most 39 ms.
+      const requested = Number(req.query.delayMs ?? 0);
+      const delayMs = requested > 0 ? (requested > 5_000 ? 5_000 : requested) : 0;
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
       throw new Error(`concurrency-${marker}-${idx}`);
     } catch (err) {
       next(err);

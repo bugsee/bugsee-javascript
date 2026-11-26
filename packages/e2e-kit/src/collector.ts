@@ -243,8 +243,11 @@ export async function startMockCollector(): Promise<MockCollector> {
         res.writeHead(404, corsHeaders());
         res.end();
       } catch (err) {
-        res.writeHead(500, corsHeaders());
-        res.end(String(err));
+        // The detail goes to the harness's stderr, not back to the client: the response is a fixed
+        // plain-text line, so nothing derived from the request (or an error's stack) is reflected.
+        console.error('[e2e-kit collector] request failed:', err);
+        res.writeHead(500, { ...corsHeaders(), 'content-type': 'text/plain; charset=utf-8' });
+        res.end('mock collector error');
       }
     })();
   });

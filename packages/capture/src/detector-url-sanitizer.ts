@@ -980,13 +980,22 @@ export function templatePathSegment(segment: string): string {
   return segment;
 }
 
-/** `scheme://host/path` with credentials, query and fragment removed and identifier segments templated. */
+/**
+ * `scheme://host/path` with credentials, query and fragment removed and identifier segments templated.
+ *
+ * The path group is `[\s\S]*`, which accepts ANY rest of the string. It was `(.*)$`, and `.` does not cross a
+ * line terminator: a line break in the path failed the match, the engine then retried every
+ * authority/path boundary, each rescanning the path — quadratic on `a://` plus a long authority (CodeQL
+ * js/polynomial-redos) — and the URL finally fell into the bare-path branch with its authority templated
+ * as a segment. Once the scheme matches, nothing after it can fail now, so there is no retrying; userinfo
+ * still runs to the LAST `@` before the first `/`, so a password containing `@` goes with it.
+ */
 export function sanitizeDetectorUrl(raw: string): string {
   if (raw === '') {
     return '';
   }
   const noQuery = raw.split(/[?#]/)[0] ?? '';
-  const authority = /^([a-z][a-z0-9+.-]*:\/\/)(?:[^/]*@)?([^/]*)(.*)$/i.exec(noQuery);
+  const authority = /^([a-z][a-z0-9+.-]*:\/\/)(?:[^/]*@)?([^/]*)([\s\S]*)$/i.exec(noQuery);
   const prefix = authority === null ? '' : `${authority[1]}${authority[2]}`;
   const path = authority === null ? noQuery : (authority[3] ?? '');
   return prefix + path.split('/').map(templatePathSegment).join('/');

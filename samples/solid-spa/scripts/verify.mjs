@@ -78,6 +78,17 @@ import { gunzipSync, inflateRawSync } from 'node:zlib';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
+/** Is `url` on `domain` or one of its subdomains? Parsed, never substring-matched: `includes('bugsee.com')`
+ *  also matches `https://bugsee.com.evil.test/` or `https://x.test/?bugsee.com`. */
+const isOnHost = (url, domain) => {
+  try {
+    const { hostname } = new URL(url);
+    return hostname === domain || hostname.endsWith(`.${domain}`);
+  } catch {
+    return false;
+  }
+};
+
 const BASE = 'http://localhost:5307';
 const results = [];
 
@@ -200,10 +211,10 @@ async function main() {
   page.on('pageerror', (err) => pageErrors.push(err.message));
   const bugseeCalls = [];
   page.on('response', async (res) => {
-    if (!res.url().includes('bugsee.com') && !res.url().includes('amazonaws.com')) return;
+    if (!isOnHost(res.url(), 'bugsee.com') && !isOnHost(res.url(), 'amazonaws.com')) return;
     let ok = false;
     try {
-      if (res.url().includes('amazonaws.com')) {
+      if (isOnHost(res.url(), 'amazonaws.com')) {
         ok = res.status() >= 200 && res.status() < 300;
       } else {
         const json = await res.json();
@@ -256,7 +267,7 @@ async function main() {
   });
   page.on('response', (res) => {
     const req = res.request();
-    if (req.method() !== 'PUT' || !res.url().includes('amazonaws.com')) return;
+    if (req.method() !== 'PUT' || !isOnHost(res.url(), 'amazonaws.com')) return;
     const buf = req.postDataBuffer();
     if (!buf) return;
     uploadedBundles.push({

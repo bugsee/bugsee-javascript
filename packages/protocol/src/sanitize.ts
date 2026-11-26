@@ -228,28 +228,24 @@ function redactJsonPairs(body: string): string {
 }
 
 /**
- * Redact sensitive parts of a `multipart/form-data` body, or undefined when it is not multipart.
- *
- * Nothing else could reach these: a part's value sits alone after a blank line carrying no `=` and no `:`,
- * and the part header's own key (`Content-Disposition`) is not sensitive — so a file-upload login form
- * shipped its password verbatim through every textual pass. Split on the boundary rather than matched with
- * a regex, so a large body cannot backtrack.
- */
-/**
  * `<tag …>text` — the element-text pass. No backreference to the closing tag: it matches an open tag, then
- * the text up to the next `<`, which is enough to decide and cannot backtrack.
+ * the text up to the next `<`, which is enough to decide.
  *
  * The attribute group must START with whitespace or `/`, neither of which is in the tag-name class. That
  * is load-bearing, not stylistic: with an attribute group that could also match name characters, the two
  * quantifiers overlap and an unterminated tag (`<aaaa…` with no `>`) makes the name give back one
- * character at a time, retrying the attributes to end-of-string each time. My first version did exactly
- * that and cost 36 SECONDS on a 200 KB input — a ReDoS written into the pass I added in the round whose
- * theme was shipping ReDoS while fixing ReDoS. With the boundary explicit it is 1.4 ms at 1 MB.
+ * character at a time, retrying the attributes to end-of-string each time (36 s on a 200 KB input).
+ *
+ * The `|$` alternative is just as load-bearing. Without it a `<` that opens an attribute list with no `>`
+ * after it FAILS after scanning `[^>]*` to end-of-string, and the next `<` scans the same tail again, so
+ * `<A\t` repeated was quadratic (CodeQL js/polynomial-redos). With it, that scan ends in a match that
+ * consumes the rest of the body; its `text` group is undefined, and the caller hands such a match back
+ * unchanged, which is what the regex without `|$` produced for it (no match at all).
  *
  * Accepted limitation: `[^>]*` ends the tag at a `>` inside a quoted attribute value, so `<a b="x>y">`
  * is read as ending early. That UNDER-matches — the pass may skip a redaction, never invent one.
  */
-const XML_ELEMENT = /<([A-Za-z_][\w.:-]*)((?:[\s/][^>]*)?)>([^<]*)/g;
+export const XML_ELEMENT = /<([A-Za-z_][\w.:-]*)((?:[\s/][^>]*)?)(?:>([^<]*)|$)/g;
 
 /** ` attr="value"` / ` attr='value'` — the attribute pass. */
 const XML_ATTRIBUTE = /(\s)([A-Za-z_][\w.:-]*)(\s*=\s*)(?:"([^"]*)"|'([^']*)')/g;
@@ -293,9 +289,12 @@ function redactXml(body: string): string | undefined {
   // output instead would destroy every tag in the document.
   const marker = REDACTED.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   let changed = false;
-  // `_match` is the whole-match placeholder every `String.replace` callback receives first; the capture
-  // groups after it are what this rebuilds from.
-  const out = body.replace(XML_ELEMENT, (_match, tag: string, attrs: string, text: string) => {
+  // `text` is undefined only for an unterminated tag at the end of the body (the `|$` arm of XML_ELEMENT),
+  // which is returned as it was.
+  const out = body.replace(XML_ELEMENT, (match, tag: string, attrs: string, text?: string) => {
+    if (text === undefined) {
+      return match;
+    }
     const scrubbed = attrs.replace(
       XML_ATTRIBUTE,
       // `_sq` is named but unread: which quote style to re-emit is decided by whether the DOUBLE-quoted
@@ -334,6 +333,14 @@ function partName(headers: string): string | undefined {
   return m === null ? undefined : (m[1] ?? m[2] ?? m[3]);
 }
 
+/**
+ * Redact sensitive parts of a `multipart/form-data` body, or undefined when it is not multipart.
+ *
+ * Nothing else could reach these: a part's value sits alone after a blank line carrying no `=` and no `:`,
+ * and the part header's own key (`Content-Disposition`) is not sensitive — so a file-upload login form
+ * shipped its password verbatim through every textual pass. Split on the boundary rather than matched with
+ * a regex, so a large body cannot backtrack.
+ */
 function redactMultipart(body: string, contentType: string | undefined): string | undefined {
   const declared = /boundary=(?:"([^"]+)"|([^;\s]+))/i.exec(contentType ?? '');
   // The Content-Type is the authority, but a captured body sometimes arrives without one; the first line of

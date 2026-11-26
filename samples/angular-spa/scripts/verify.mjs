@@ -8,6 +8,17 @@
 // the two samples' sweeps read the same way. Requires `pnpm dev` running in another terminal first.
 import { chromium } from 'playwright';
 
+/** Is `url` on `domain` or one of its subdomains? Parsed, never substring-matched: `includes('bugsee.com')`
+ *  also matches `https://bugsee.com.evil.test/` or `https://x.test/?bugsee.com`. */
+const isOnHost = (url, domain) => {
+  try {
+    const { hostname } = new URL(url);
+    return hostname === domain || hostname.endsWith(`.${domain}`);
+  } catch {
+    return false;
+  }
+};
+
 const BASE = 'http://localhost:5306';
 const results = [];
 
@@ -54,10 +65,10 @@ async function main() {
   page.on('pageerror', (err) => pageErrors.push(err.message));
   const bugseeCalls = [];
   page.on('response', async (res) => {
-    if (!res.url().includes('bugsee.com') && !res.url().includes('amazonaws.com')) return;
+    if (!isOnHost(res.url(), 'bugsee.com') && !isOnHost(res.url(), 'amazonaws.com')) return;
     let ok = false;
     try {
-      if (res.url().includes('amazonaws.com')) {
+      if (isOnHost(res.url(), 'amazonaws.com')) {
         ok = res.status() >= 200 && res.status() < 300;
       } else {
         const json = await res.json();
@@ -1354,7 +1365,7 @@ async function main() {
   // `> 0` is load-bearing: "no upload was refused" is trivially true when nothing was uploaded, and it
   // would also be true if the upload host ever stopped matching this predicate — which must fail loudly
   // rather than quietly turning the check vacuous.
-  const uploadPuts = bugseeCalls.filter((c) => c.method === 'PUT' && c.url.includes('amazonaws.com'));
+  const uploadPuts = bugseeCalls.filter((c) => c.method === 'PUT' && isOnHost(c.url, 'amazonaws.com'));
   const refusedPuts = uploadPuts.filter((c) => !(c.status >= 200 && c.status < 300));
   const teeRefused = await refusedUploads();
   record(

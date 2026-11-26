@@ -712,7 +712,9 @@ describe('launchEdge — the reuse diagnostic never breaks launch()', () => {
 // uploading a real deployment's incidents to the wrong host under the wrong identity.
 describe('launchEdge — collector endpoint + SDK identity', () => {
   const controlPlaneUrls = (transport: ReturnType<typeof uploadTransport>): string[] =>
-    transport.mock.calls.map(([url]) => url).filter((url) => !url.startsWith('https://s3.test'));
+    transport.mock.calls
+      .map(([url]) => url)
+      .filter((url) => new URL(url).origin !== 'https://s3.test');
 
   const headersOf = (transport: ReturnType<typeof uploadTransport>, path: string) =>
     (
@@ -744,7 +746,7 @@ describe('launchEdge — collector endpoint + SDK identity', () => {
     const transport = await upload({});
     expect(controlPlaneUrls(transport).length).toBeGreaterThan(0);
     for (const url of controlPlaneUrls(transport)) {
-      expect(url.startsWith('https://api.bugsee.com/')).toBe(true);
+      expect(new URL(url).origin).toBe('https://api.bugsee.com');
     }
     expect(controlPlaneUrls(transport)).toContain('https://api.bugsee.com/v2/sessions');
   });
@@ -753,7 +755,7 @@ describe('launchEdge — collector endpoint + SDK identity', () => {
     const transport = await upload({ endpoint: 'https://collector.acme.test' });
     expect(controlPlaneUrls(transport)).toContain('https://collector.acme.test/v2/sessions');
     for (const url of controlPlaneUrls(transport)) {
-      expect(url.startsWith('https://api.bugsee.com')).toBe(false);
+      expect(new URL(url).origin).not.toBe('https://api.bugsee.com');
     }
   });
 
