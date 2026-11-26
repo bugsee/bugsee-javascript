@@ -92,8 +92,13 @@ export function buildOptions(profileName: string): { options: BugseeNodeLaunchOp
   const endpoint = process.env.BUGSEE_ENDPOINT ?? 'https://apidev.bugsee.com';
   // Compare the parsed host, not a substring: `includes('api.bugsee.com')` let a query string or a
   // look-alike host trip (or dodge) the guard. A trailing dot is the same host to DNS.
-  // An unparseable endpoint is left for the SDK to reject, as before.
-  if (URL.canParse(endpoint) && new URL(endpoint).hostname.replace(/\.$/, '') === 'api.bugsee.com') {
+  // A scheme-less value (`api.bugsee.com`, `api.bugsee.com:443`) is also read as if it had one, so it
+  // is refused too; anything that never parses is left for the SDK to reject, as before.
+  const isProduction = [endpoint, `https://${endpoint}`].some(
+    (candidate) =>
+      URL.canParse(candidate) && new URL(candidate).hostname.replace(/\.$/, '') === 'api.bugsee.com',
+  );
+  if (isProduction) {
     throw new Error('refusing to launch against production api.bugsee.com — use staging');
   }
 
