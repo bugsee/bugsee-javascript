@@ -522,7 +522,7 @@ describe('facade chunks in real Rollup / Vite output', () => {
     const failures: string[] = [];
     // minified builds are slow: a narrower grid over the same axes
     const interops = minify
-      ? (['auto', 'default'] as const)
+      ? (['auto', 'default', 'compat'] as const)
       : (['auto', 'default', 'esModule', 'compat'] as const);
     for (const interop of interops) {
       for (const preset of ['es5', 'es2015'] as const) {
@@ -629,7 +629,9 @@ describe('facade chunks in real Rollup / Vite output', () => {
         for (const esModule of minify ? [true] : [true, false, 'if-default-prop']) {
           for (const externalLiveBindings of [true, false]) {
             for (const symbols of minify ? [false] : [false, true]) {
-              for (const interop of minify ? ['auto'] : ['auto', 'default', 'esModule', 'compat']) {
+              for (const interop of minify
+                ? ['auto', 'compat']
+                : ['auto', 'default', 'esModule', 'compat']) {
                 await run(
                   'lib',
                   {

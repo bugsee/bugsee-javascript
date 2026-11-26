@@ -32,8 +32,8 @@ const HELPER_NAME = /^_interop[A-Za-z]*$/;
 const OBJECT_CALL =
   /^(?:keys|defineProperty|defineProperties|getOwnPropertyDescriptor|create|freeze)$/;
 
-/** What an interop helper's body mentions (`__esModule`, or the namespace object it builds). */
-const INTEROP_SHAPE = /__esModule|Object\.(?:create|freeze)\(/;
+/** What an interop helper's body mentions: `__esModule`, the namespace object it builds, or `'default' in e` (`compat`). */
+const INTEROP_SHAPE = /__esModule|Object\.(?:create|freeze)\(|["']default["']\s*in\b/;
 
 /** How deep the walk goes before it gives up ("not a facade"): a hostile chain must not exhaust the stack. */
 const MAX_DEPTH = 64;
@@ -44,8 +44,14 @@ let scopes: Array<Set<string>> = [];
 let systemExport: string | undefined;
 /** What a wrapper's factory calls its `exports` parameter (terser renames it to `e`): writes to it are export writes. */
 let exportAlias: string | undefined;
-/** Pure helper functions declared in the facade being read (Rollup's interop helpers, however a minifier renamed them). */
-let helpers = new Set<string>();
+/**
+ * The lexical scopes of the facade being read, innermost last: the helper functions declared in a scope (Rollup's interop
+ * helpers, however a minifier renamed them) and every other name bound there (imports, variables, parameters, a name
+ * declared twice). A call is a helper call only when the name RESOLVES to a helper: the nearest scope that binds it
+ * declares it as one.
+ */
+type HelperScope = { helpers: Set<string>; bound: Set<string> };
+let helperScopes: HelperScope[] = [];
 /** The bundle text, for the one textual question the grammar asks (is this function interop-shaped). */
 let source = '';
 
@@ -54,7 +60,7 @@ const reset = (): void => {
   scopes = [];
   systemExport = undefined;
   exportAlias = undefined;
-  helpers = new Set();
+  helperScopes = [];
   source = '';
 };
 
@@ -145,7 +151,7 @@ function pureCall(call: Node): boolean {
     return args.every(pureExpression);
   }
   if (calleeName !== undefined) {
-    return (HELPER_NAME.test(calleeName) || helpers.has(calleeName)) && args.every(pureExpression);
+    return isHelper(calleeName) && args.every(pureExpression);
   }
   if (callee.type !== 'MemberExpression' || callee.computed === true) {
     return false;
@@ -320,6 +326,12 @@ function pureStatementNode(statement: Node): boolean {
             (declarator) => node(declarator, 'id')?.type === 'Identifier',
           ));
       const bodyStatement = node(statement, 'body') as Node;
+      if (
+        left.type === 'Identifier' &&
+        (left.name === systemExport || !scopes.some((scope) => scope.has(left.name as string)))
+      ) {
+        return false; // a bare loop target is a write: to the export callback, or to something that is not a local
+      }
       let shadowed = false;
       if (left.type === 'VariableDeclaration') {
         const scope = scopes.at(-1);
@@ -359,7 +371,7 @@ function pureStatementNode(statement: Node): boolean {
           return false;
         }
         scope?.add(id);
-        return pureExpression(node(declarator, 'init'));
+        return declarator.init === null || pureExpression(node(declarator, 'init')); // (`var k;` declares only)
       });
     }
     default:
@@ -413,11 +425,11 @@ function facadeStatement(statement: Node): boolean {
           init !== undefined &&
           (init.type === 'Identifier' || // `var Lib = A;` (an IIFE of a default-only entry)
             pureCall(init) ||
-            (isFunction(init) && helpers.has(binding)))
+            (isFunction(init) && declaresHelper(binding)))
         );
       });
     case 'FunctionDeclaration':
-      return helpers.has(name(node(statement, 'id')) ?? '');
+      return declaresHelper(name(node(statement, 'id')) ?? '');
     default:
       return false;
   }
@@ -443,37 +455,82 @@ function returnedValue(n: Node | undefined): boolean {
   return parts.slice(0, -1).every(facadeExpression) && pureReference(parts.at(-1));
 }
 
+/** Whether `callee` resolves to a declared helper from where it is called. */
+function isHelper(callee: string): boolean {
+  if (scopes.some((scope) => scope.has(callee))) {
+    return false; // a local of the function being read shadows everything outside it
+  }
+  for (let i = helperScopes.length - 1; i >= 0; i--) {
+    const scope = helperScopes[i] as HelperScope;
+    if (scope.helpers.has(callee)) {
+      return true;
+    }
+    if (scope.bound.has(callee)) {
+      return false; // bound to something that is not a helper
+    }
+  }
+  return false;
+}
+
+/** Whether the declaration of `id` in the statement list being read is a helper. */
+const declaresHelper = (id: string): boolean => helperScopes.at(-1)?.helpers.has(id) === true;
+
 /**
- * Declares the pure helper functions among `statements` (Rollup's interop helpers, `_interopDefault` and friends, or what
- * a minifier renamed them to): a function whose body is made of the re-export language and that is shaped like an
- * interop helper (named `_interop*`, or touching `__esModule` / `Object.create` / `Object.freeze`). Calls to a declared
- * helper are then facade calls. Hoisting: they are declared before any statement is judged.
+ * Runs `fn` with a lexical scope for `statements` (a program, or a wrapper's factory body) whose `params` are bound in
+ * it. A function declared once in the scope, whose body is made of the re-export language, and that is shaped like an
+ * interop helper (named `_interop*`, or touching `__esModule` / `Object.create` / `Object.freeze` / `'default' in`),
+ * is a helper; every other name bound in it (an import, a variable, a parameter, a name declared TWICE) is not, and
+ * shadows any helper of the scopes outside. Hoisting: helpers are known before any statement is judged.
  */
-function declareHelpers(statements: Node[]): void {
+function withHelperScope(statements: Node[], params: string[], fn: () => boolean): boolean {
+  const counts = new Map<string, number>(params.map((param) => [param, 1]));
+  const candidates: Array<[string, Node]> = [];
+  const bind = (id: string | undefined): void => {
+    if (id !== undefined) {
+      counts.set(id, (counts.get(id) ?? 0) + 1);
+    }
+  };
   for (const statement of statements) {
-    const functions: Array<[string | undefined, Node]> =
-      statement.type === 'FunctionDeclaration'
-        ? [[name(node(statement, 'id')), statement]]
-        : statement.type === 'VariableDeclaration'
-          ? nodes(statement, 'declarations').flatMap(
-              (declarator): Array<[string | undefined, Node]> => {
-                const init = node(declarator, 'init');
-                return init !== undefined && isFunction(init)
-                  ? [[name(node(declarator, 'id')), init]]
-                  : [];
-              },
-            )
-          : [];
-    for (const [id, fn] of functions) {
-      const text = source.slice(fn.start as number, fn.end as number);
-      if (
-        id !== undefined &&
-        (HELPER_NAME.test(id) || INTEROP_SHAPE.test(text)) &&
-        pureFunction(fn)
-      ) {
-        helpers.add(id);
+    if (statement.type === 'FunctionDeclaration') {
+      const id = name(node(statement, 'id'));
+      bind(id);
+      if (id !== undefined) {
+        candidates.push([id, statement]);
+      }
+    } else if (statement.type === 'VariableDeclaration') {
+      for (const declarator of nodes(statement, 'declarations')) {
+        const id = name(node(declarator, 'id'));
+        const init = node(declarator, 'init');
+        bind(id);
+        if (id !== undefined && init !== undefined && isFunction(init)) {
+          candidates.push([id, init]);
+        }
+      }
+    } else if (statement.type === 'ImportDeclaration') {
+      for (const specifier of nodes(statement, 'specifiers')) {
+        bind(name(node(specifier, 'local')));
       }
     }
+  }
+  const scope: HelperScope = { helpers: new Set(), bound: new Set(counts.keys()) };
+  helperScopes.push(scope);
+  try {
+    // a helper's own name resolves to itself while its body is read (a recursive helper), but it only counts once the
+    // body has passed
+    for (const [id, definition] of candidates) {
+      const text = source.slice(definition.start as number, definition.end as number);
+      if (
+        counts.get(id) === 1 &&
+        (HELPER_NAME.test(id) || INTEROP_SHAPE.test(text)) &&
+        pureFunction(definition)
+      ) {
+        scope.helpers.add(id);
+        scope.bound.delete(id);
+      }
+    }
+    return fn();
+  } finally {
+    helperScopes.pop();
   }
 }
 
@@ -499,10 +556,12 @@ function factoryBody(factory: Node | undefined, exportsFirst: boolean): boolean 
     const statements = nodes(body, 'body');
     const last = statements.at(-1);
     const returns = last?.type === 'ReturnStatement';
-    declareHelpers(statements);
-    return (
-      (!returns || returnedValue(node(last as Node, 'argument'))) &&
-      (returns ? statements.slice(0, -1) : statements).every(facadeStatement)
+    return withHelperScope(
+      statements,
+      nodes(factory as Node, 'params').map((param) => param.name as string),
+      () =>
+        (!returns || returnedValue(node(last as Node, 'argument'))) &&
+        (returns ? statements.slice(0, -1) : statements).every(facadeStatement),
     );
   } finally {
     exportAlias = previous;
@@ -670,7 +729,16 @@ function umdNoConflict(call: Node, state: UmdState): boolean {
     if (e?.type === 'AssignmentExpression' && e.operator === '=') {
       const left = node(e, 'left');
       const right = node(e, 'right');
-      return left?.type === 'MemberExpression' && local(node(left, 'object')) && restorer(right);
+      const key = left === undefined ? undefined : node(left, 'property');
+      return (
+        left?.type === 'MemberExpression' &&
+        local(node(left, 'object')) &&
+        // the generated target: `exports.noConflict` or `exports['noConflict']`, never a key that runs code
+        (left.computed === true
+          ? key?.type === 'Literal' && key.value === 'noConflict'
+          : name(key) === 'noConflict') &&
+        restorer(right)
+      );
     }
     return (
       e?.type === 'CallExpression' &&
@@ -1008,6 +1076,7 @@ function stubExpression(expression: Node | undefined): boolean {
         return (
           callee?.type === 'MemberExpression' &&
           callee.computed !== true &&
+          stubExpression(node(callee, 'object')) &&
           name(node(callee, 'property')) === 'Error' &&
           nodes(expression, 'arguments').length === 0
         );
@@ -1040,7 +1109,6 @@ export function isFacadeCode(code: string): boolean {
     }) as unknown as Node;
     source = code;
     const body = nodes(program, 'body');
-    declareHelpers(body);
     const last = body.at(-1);
     const isStub =
       last !== undefined &&
@@ -1051,7 +1119,8 @@ export function isFacadeCode(code: string): boolean {
           comment.start >= (last.end as number) &&
           comment.value.startsWith('# debugId='),
       );
-    return (isStub ? body.slice(0, -1) : body).every(facadeTopLevel);
+    const rest = isStub ? body.slice(0, -1) : body;
+    return withHelperScope(rest, [], () => rest.every(facadeTopLevel));
   } catch {
     return false; // unreadable, or too deep for the walk: not a facade
   } finally {

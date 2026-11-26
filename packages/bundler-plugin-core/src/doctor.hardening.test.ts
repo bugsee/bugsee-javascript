@@ -236,6 +236,46 @@ describe('reads', () => {
     }
   });
 
+  it.skipIf(process.getuid?.() === 0)(
+    'round 22: an empty map whose bundle could not be read is an error, not a facade note',
+    async () => {
+      const bundle = put('x.js', `export {}\n//# sourceMappingURL=x.js.map${stamp(ID_A)}`);
+      put('x.js.map', JSON.stringify({ version: 3, sources: [], names: [], mappings: '' }));
+      put('other.js', 'o');
+      chmodSync(bundle, 0o000);
+      try {
+        const report = await run();
+        const finding = find(report, 'map.no-sources');
+        expect(finding?.severity).toBe('error');
+        expect(finding?.message).toContain('could not be read');
+        expect(find(report, 'output.unreadable')?.severity).toBe('error');
+      } finally {
+        chmodSync(bundle, 0o600);
+      }
+    },
+  );
+
+  it.skipIf(process.getuid?.() === 0)(
+    'round 22: a facade note is upgraded when the same map belongs to an unreadable bundle',
+    async () => {
+      put('a.js', `export {}\n//# sourceMappingURL=a.js.map${stamp(ID_A)}`);
+      const a = put(
+        'a.js.map',
+        JSON.stringify({ version: 3, sources: [], names: [], mappings: '' }),
+      );
+      symlinkSync(a, join(dist, 'b.js.map'));
+      const b = put('b.js', 'locked');
+      chmodSync(b, 0o000);
+      try {
+        const report = await run();
+        const notes = report.findings.filter((f) => f.id === 'map.no-sources');
+        expect(notes.map((f) => f.severity)).toEqual(['error']);
+      } finally {
+        chmodSync(b, 0o600);
+      }
+    },
+  );
+
   it('a script over the size limit is not read and is reported', async () => {
     put('huge.js', 'x'.repeat(1000));
     put('ok.js', `a${stamp(ID_A)}`);
@@ -2014,9 +2054,11 @@ exports.x = _interopDefault(x);
     expect(isFacadeCode(exportStar.replace('Object.keys(lodash)', 'doIt(lodash)'))).toBe(false);
     expect(isFacadeCode(interop.replace('Object.freeze(n)', 'sideEffect(n)'))).toBe(false);
     // a helper a minifier renamed is still a helper (it is interop-shaped); one that is not interop-shaped is code
+    expect(isFacadeCode(interop.replaceAll('_interopDefault', 'doThing'))).toBe(true);
     expect(isFacadeCode(interop.replace('function _interopDefault', 'function doThing'))).toBe(
-      true,
-    );
+      false,
+    ); // the call is then unresolved
+
     expect(isFacadeCode('function doThing(e) { return e; }\nexports.d = doThing(x);')).toBe(false);
     expect(
       isFacadeCode('function doThing(e) { return e.__esModule; }\nexports.d = doThing(x);'),
@@ -2090,9 +2132,10 @@ exports.d = _interopDefault(dep3);
     expect(
       isFacadeCode(es2015.replace("if (k !== 'default') {", "if (k !== 'default') { track(k);")),
     ).toBe(false);
+    expect(isFacadeCode(es2015.replaceAll('_interopDefault', 'doThing'))).toBe(true); // renamed, but still interop-shaped
     expect(
       isFacadeCode(es2015.replace('const _interopDefault = e =>', 'const doThing = e =>')),
-    ).toBe(true); // renamed, but still interop-shaped (and the call keeps its `_interop` name)
+    ).toBe(false); // the call is then unresolved
     expect(
       isFacadeCode(
         es2015
@@ -2116,9 +2159,14 @@ exports.d = _interopDefault(dep3);
     );
     expect(
       isFacadeCode(
-        'function _interopX(e) { for (k in e) { Object.defineProperty(e, k, {}); } return e; }',
+        'function _interopX(e) { var k; for (k in e) { Object.defineProperty(e, k, {}); } return e; }',
       ),
     ).toBe(true);
+    expect(
+      isFacadeCode(
+        'function _interopX(e) { for (k in e) { Object.defineProperty(e, k, {}); } return e; }',
+      ),
+    ).toBe(false); // an undeclared target is a write to a global
     expect(isFacadeCode('function _interopX(e) { for (const [a, b] in e) { } return e; }')).toBe(
       false,
     );
@@ -2171,7 +2219,11 @@ exports.d = _interopDefault(dep3);
     expect(isFacadeCode('Object.keys(x).forEach(function (k) { return; });')).toBe(true);
     expect(isFacadeCode('Object.keys(x).forEach(function (k) { return track(k); });')).toBe(false);
     expect(isFacadeCode('Object.keys(x).forEach(function (k) { while (k) {} });')).toBe(false); // a loop is code
-    expect(isFacadeCode("var a = require('x'), b = _interopDefault(a);")).toBe(true);
+    const interopDefault = 'function _interopDefault(e){return e&&e.__esModule?e:{default:e}}';
+    expect(isFacadeCode(`${interopDefault}var a = require('x'), b = _interopDefault(a);`)).toBe(
+      true,
+    );
+    expect(isFacadeCode("var a = require('x'), b = _interopDefault(a);")).toBe(false); // a name alone is no helper
     expect(isFacadeCode("var a = 1, b = require('x');")).toBe(false);
     expect(isFacadeCode("var [a] = require('x');")).toBe(false); // destructuring is not a plain binding
     expect(isFacadeCode("var a = k ? require('x') : require('y');")).toBe(false); // not a plain call
@@ -2399,7 +2451,11 @@ exports.d = _interopDefault(dep3);
     expect(isFacadeCode(amd('return 1;'))).toBe(false);
     expect(isFacadeCode(amd('return main; track();'))).toBe(false); // the return is the LAST statement
     expect(isFacadeCode(amd('return main; return main;'))).toBe(false);
-    expect(isFacadeCode(amd('var x = _interopDefault(main); return x.default;'))).toBe(true);
+    const interopDefault = 'function _interopDefault(e){return e&&e.__esModule?e:{default:e}}';
+    expect(
+      isFacadeCode(amd(`${interopDefault}var x = _interopDefault(main); return x.default;`)),
+    ).toBe(true);
+    expect(isFacadeCode(amd('var x = _interopDefault(main); return x.default;'))).toBe(false); // undeclared helper
     expect(isFacadeCode(amd('return main[track()];'))).toBe(false);
     expect(isFacadeCode('return main;')).toBe(false); // not inside a wrapper (and a top-level return is not valid anyway)
   });
@@ -3100,6 +3156,150 @@ exports.d = _interopDefault(dep3);
         '!function(e,t){"object"==typeof exports?t(exports):(e=globalThis,(()=>{const n=e.Lib,o=e.Lib={};t(o),o.noConflict=()=>{}})())}(this,function(e){"use strict";});',
       ),
     ).toBe(false);
+  });
+
+  it('isFacadeCode round 22: helpers are lexical bindings, not names', () => {
+    const helper = 'function n(e){return e&&e.__esModule?e:{default:e}}';
+    // the call resolves to a declared, pure helper in scope
+    expect(isFacadeCode(`${helper}exports.x=n(require('a'));`)).toBe(true);
+    expect(
+      isFacadeCode(
+        `var n=function(e){return e&&e.__esModule?e:{default:e}};exports.x=n(require('a'));`,
+      ),
+    ).toBe(true);
+    // an `_interop*` NAME alone approves nothing: the helper has to be declared
+    expect(isFacadeCode("exports.x=_interopDefault(require('a'));")).toBe(false);
+    expect(isFacadeCode("define(['exports','./dep'],function(e,t){e.x=_interopDefault(t)});")).toBe(
+      false,
+    );
+    expect(
+      isFacadeCode(
+        "function _interopDefault(e){return e&&e.__esModule?e:{default:e}}exports.x=_interopDefault(require('a'));",
+      ),
+    ).toBe(true);
+    // a second declaration of the name (the later one wins at runtime) is not a helper
+    expect(
+      isFacadeCode(
+        `var _interopDefault=function(e){return e&&e.__esModule?e:{default:e}};var _interopDefault=function(){globalThis.fetch('x')};exports.x=_interopDefault(a);`,
+      ),
+    ).toBe(false);
+    expect(
+      isFacadeCode(
+        `${helper}${helper.replace('return e&&e.__esModule?e:{default:e}', 'globalThis.fetch("x")')}exports.x=n(1);`,
+      ),
+    ).toBe(false);
+    expect(
+      isFacadeCode(
+        `define(["exports","./dep"],function(e,t){${helper}function n(){globalThis.fetch("x")}e.x=n(t)});`,
+      ),
+    ).toBe(false);
+    expect(isFacadeCode(`${helper}var n=2;exports.x=n(1);`)).toBe(false);
+    // a parameter shadows a helper of an outer scope
+    expect(isFacadeCode(`${helper}define(["exports","./dep"],function(e,n){e.x=n()});`)).toBe(
+      false,
+    );
+    expect(isFacadeCode(`${helper}define(["exports","./dep"],function(e,t){e.x=n(t)});`)).toBe(
+      true,
+    );
+    expect(isFacadeCode(`${helper}Object.keys(x).forEach(function(n){n()});`)).toBe(false);
+    // a function-local name shadows it too
+    expect(
+      isFacadeCode(
+        `${helper}function _interopX(e){var n=e.track;return n(e)}exports.a=_interopX(1);`,
+      ),
+    ).toBe(false);
+    // an import of the same name is not the helper
+    expect(isFacadeCode(`import { n } from './app.js';${helper}`)).toBe(false);
+    expect(
+      isFacadeCode(
+        "import { n } from './app.js';define([],function(){function n(x){return x.__esModule}});n(x);",
+      ),
+    ).toBe(false);
+    expect(isFacadeCode("import n from './app.js';exports.x=n(1);")).toBe(false);
+    // a helper of ONE factory is not a helper of the code outside it, nor of another factory
+    expect(
+      isFacadeCode(
+        `define([],function(){${helper}exports.a=n(1)});define([],function(){exports.b=n(1)});`,
+      ),
+    ).toBe(false);
+    expect(
+      isFacadeCode(`!function(e){${helper}e.a=n(1)}({});!function(e,t){e.b=t()}({},Dep);`),
+    ).toBe(false);
+    expect(isFacadeCode(`!function(e){${helper}e.a=n(1)}({});!function(e){e.b=n(1)}({});`)).toBe(
+      false,
+    );
+    expect(isFacadeCode(`define([],function(){${helper}exports.a=n(1)});n(1);`)).toBe(false);
+    expect(isFacadeCode(`define(["exports"],function(e){${helper}e.a=n(1)});`)).toBe(true);
+    // the interop-shaped test also covers 'compat' (a `'default' in e` check, no __esModule)
+    expect(
+      isFacadeCode(
+        'function u(e){return e&&"object"==typeof e&&"default"in e?e:{default:e}}var o=u(require("ext-c"));exports.c=o;',
+      ),
+    ).toBe(true);
+    expect(
+      isFacadeCode(
+        "function u(e){return e&&'object'==typeof e&&'default' in e?e:{default:e}}var o=u(require('x'));",
+      ),
+    ).toBe(true);
+    expect(
+      isFacadeCode(
+        'function u(e){return e&&"object"==typeof e?e:{default:e}}var o=u(require("x"));',
+      ),
+    ).toBe(false); // not shaped like interop
+    // the helper must be pure in ITS body, wherever it is declared
+    expect(isFacadeCode('function n(e){return track(e.__esModule)}var o=n(require("x"));')).toBe(
+      false,
+    );
+  });
+
+  it('isFacadeCode round 22: SystemJS loop targets, noConflict keys, registration receivers', () => {
+    const sys = (setter: string): string =>
+      `System.register([], (function (exports) { return { setters: [${setter}], execute: (function () {}) }; }));`;
+    expect(isFacadeCode(sys("function (m) { for (exports in m) {} exports('a', m.a); }"))).toBe(
+      false,
+    ); // writes the callback
+    expect(isFacadeCode(sys('function (m) { for (k in m) {} }'))).toBe(false); // an undeclared target
+    expect(isFacadeCode(sys("function (m) { var k; for (k in m) {} exports('a', m.a); }"))).toBe(
+      true,
+    );
+    expect(
+      isFacadeCode(sys("function (m) { for (const exports in m) {} exports('a', m.a); }")),
+    ).toBe(true);
+    expect(
+      isFacadeCode(
+        sys("function (m) { var exports2; for (exports2 in m) { exports('a', m[exports2]); } }"),
+      ),
+    ).toBe(true);
+    const nc = (target: string): string =>
+      `(function (global, factory) { typeof exports === 'object' ? factory(exports) : (global = globalThis, (function () { var current = global.Lib; var exports = global.Lib = {}; factory(exports); ${target} = function () { global.Lib = current; return exports; }; })()); })(this, (function (exports) {}));`;
+    expect(isFacadeCode(nc('exports.noConflict'))).toBe(true);
+    expect(isFacadeCode(nc("exports['noConflict']"))).toBe(true);
+    expect(isFacadeCode(nc('exports[track()]'))).toBe(false);
+    expect(isFacadeCode(nc('exports.other'))).toBe(false);
+    expect(isFacadeCode(nc("exports['other']"))).toBe(false);
+    expect(isFacadeCode(nc('exports[noConflict]'))).toBe(false); // an identifier key is a variable, not the property
+    expect(isFacadeCode(nc('exports'))).toBe(false);
+    const facade = "export{a}from'./m.js';\n";
+    const tail = `\n//# debugId=${ID_A}`;
+    expect(
+      isFacadeCode(
+        `${facade}!function(){var x=new (track()).Error();g._bugseeDebugIds={}}();${tail}`,
+      ),
+    ).toBe(false);
+    expect(
+      isFacadeCode(`${facade}!function(){var x=new e.Error;g._bugseeDebugIds={}}();${tail}`),
+    ).toBe(true);
+    expect(
+      isFacadeCode(`${facade}!function(){var x=new (a?b:c).Error;g._bugseeDebugIds={}}();${tail}`),
+    ).toBe(true);
+    expect(
+      isFacadeCode(
+        `${facade}!function(){var x=new e[track()].Error;g._bugseeDebugIds={}}();${tail}`,
+      ),
+    ).toBe(false);
+    expect(
+      isFacadeCode(`${facade}!function(){var x=new Error;g._bugseeDebugIds={}}();${tail}`),
+    ).toBe(false); // the generated form has a receiver
   });
 
   it('isFacadeCode round 21b: near misses of the wrapper readers', () => {

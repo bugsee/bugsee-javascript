@@ -771,6 +771,7 @@ async function diagnose(dirInput: string, options: DoctorOptions): Promise<Docto
       : read;
   });
   const claimedMaps = new Set<string>();
+  const unreadableBundles = new Set<string>(); // their sibling maps cannot be judged against code we never read
   const stampedIds = new Map<string, Array<{ file: string; path: string }>>();
   let stamped = 0;
   const unstamped = new Set<string>();
@@ -815,6 +816,7 @@ async function diagnose(dirInput: string, options: DoctorOptions): Promise<Docto
     const read = reads.get(bundle) as InsideRead;
     if (!read.ok) {
       unreadable.push(`${name} ${read.reason}`);
+      unreadableBundles.add(bundle);
       continue;
     }
     const code = read.bytes.toString('utf8');
@@ -963,7 +965,15 @@ async function diagnose(dirInput: string, options: DoctorOptions): Promise<Docto
           });
         }
       } else {
-        validateMap(map, mapName, parsed.json, mapRead.real);
+        // `null`: the bundle that owns this map could not be read, so it cannot be called a facade.
+        const owner = map.endsWith('.map') ? map.slice(0, -4) : undefined;
+        validateMap(
+          map,
+          mapName,
+          parsed.json,
+          mapRead.real,
+          owner !== undefined && unreadableBundles.has(owner) ? null : undefined,
+        );
       }
     }
   }
@@ -995,11 +1005,15 @@ async function diagnose(dirInput: string, options: DoctorOptions): Promise<Docto
     json: Record<string, unknown>,
     real: string,
     /** The bundle that claims this map, when there is one: an empty map is only right for a facade chunk. */
-    bundleCode?: string,
+    bundleCode?: string | null,
   ): void {
     // An empty map shared with a bundle that has real code is a stripped map for THAT bundle, whichever claimed it first.
     const note = emptyMapNotes.get(real);
-    if (note !== undefined && bundleCode !== undefined && !isFacadeCode(bundleCode)) {
+    if (
+      note !== undefined &&
+      bundleCode !== undefined &&
+      (bundleCode === null || !isFacadeCode(bundleCode))
+    ) {
       note.severity = 'error';
       note.message = `${note.file} has no \`sources\`; it can map nothing back to your code.`;
       note.fix = 'Enable full source maps in the bundler (not a stripped / empty map).';
@@ -1030,7 +1044,12 @@ async function diagnose(dirInput: string, options: DoctorOptions): Promise<Docto
       return;
     }
     const { sources, content, roots, hasOriginal } = mapSources(json);
-    if (sources.length === 0 && !hasGeneratedSegments(json) && isFacadeCode(bundleCode ?? '')) {
+    if (
+      sources.length === 0 &&
+      !hasGeneratedSegments(json) &&
+      bundleCode !== null &&
+      isFacadeCode(bundleCode ?? '')
+    ) {
       // A facade / empty chunk (Rollup: `sources: []`, `mappings: ""`): nothing generated, nothing to symbolicate.
       if (first) {
         const finding: DoctorFinding = {
@@ -1046,7 +1065,9 @@ async function diagnose(dirInput: string, options: DoctorOptions): Promise<Docto
     }
     if (sources.length === 0) {
       invalid(
-        `${mapName} has no \`sources\`; it can map nothing back to your code.`,
+        bundleCode === null
+          ? `${mapName} has no \`sources\` and its bundle could not be read, so it cannot be told apart from a stripped map.`
+          : `${mapName} has no \`sources\`; it can map nothing back to your code.`,
         'Enable full source maps in the bundler (not a stripped / empty map).',
         'map.no-sources',
       );
