@@ -583,6 +583,16 @@ describe('reads', () => {
       expect(lostStamp(report).map((f) => f.file)).toEqual(['vendor/index.js']);
     });
 
+    it('a map freed by a better-fitting unstamped bundle is still offered to the stamped bundle it tied with', async () => {
+      put('app/esm/index.js', `a${stamp(ID_A)}`);
+      put('app/cjs/index.js', 'x');
+      put('app/maps/index.js.map', mapJson({ file: 'index.js' }));
+      put('maps/app/cjs/index.js.map', mapJson({ file: 'index.js', debugId: ID_C }));
+      const report = await run();
+      expect(find(report, 'stamp.map-no-debug-id')?.file).toBe('app/maps/index.js.map');
+      expect(find(report, 'map.ambiguous')).toBeUndefined();
+    });
+
     it('an alias that sorts first does not hide the real path of a map from its bundle', async () => {
       put('a/index.js', `a${stamp(ID_A)}`);
       put('b/index.js', `b${stamp(ID_B)}`);

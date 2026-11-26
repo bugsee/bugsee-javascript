@@ -1095,111 +1095,112 @@ async function diagnose(dirInput: string, options: DoctorOptions): Promise<Docto
         push(bundleByDirBase, `${segments.slice(0, at).join('/')}\0${base}`, entry);
       }
     }
-    for (const stampedGroup of [true, false]) {
-      const group = left.filter(
-        (entry) => (entry.id !== undefined) === stampedGroup && !ambiguous.has(entry),
-      );
-      const liveBundles = (list: Entry[] | undefined): Entry[] => {
-        const found: Entry[] = [];
-        for (const entry of list ?? []) {
-          if (open.has(entry)) {
-            found.push(entry);
-            if (found.length === 2) {
-              break;
-            }
+    const liveBundles = (list: Entry[] | undefined): Entry[] => {
+      const found: Entry[] = [];
+      for (const entry of list ?? []) {
+        if (open.has(entry)) {
+          found.push(entry);
+          if (found.length === 2) {
+            break;
           }
-        }
-        return found;
-      };
-      /** The best free maps for a bundle (up to two) and how well they fit. */
-      const bestMaps = (entry: Entry): { fit: Fit; maps: string[] } | undefined => {
-        const base = nodePath.basename(entry.bundle);
-        const named = (map: string): boolean => infoOf.get(map)?.file === base && eligible(map);
-        const own = freeMaps(bySuffix.get(entry.name), named);
-        if (own.length > 0) {
-          return { fit: { tier: 3, depth: entry.name.length }, maps: own };
-        }
-        const segments = segmentsOf(entry.name);
-        for (let at = segments.length; at >= 1; at--) {
-          const near = freeMaps(
-            byDirFile.get(`${segments.slice(0, at).join('/')}\0${base}`),
-            eligible,
-          );
-          if (near.length > 0) {
-            return { fit: { tier: 2, depth: at }, maps: near };
-          }
-        }
-        const any = freeMaps(byFile.get(base), eligible);
-        return any.length > 0 ? { fit: { tier: 1, depth: 0 }, maps: any } : undefined;
-      };
-      /** The best open bundles for a map (up to two) and how well they fit. */
-      const bestBundles = (map: string): { fit: Fit; bundles: Entry[] } | undefined => {
-        const info = infoOf.get(map) as { file: string; key: string };
-        const parts = info.key.split('/');
-        for (let at = 0; at < parts.length; at++) {
-          const owner = bundleByName.get(parts.slice(at).join('/'));
-          if (owner !== undefined && nodePath.basename(owner.bundle) === info.file) {
-            return { fit: { tier: 3, depth: owner.name.length }, bundles: [owner] };
-          }
-        }
-        for (let at = parts.length - 1; at >= 1; at--) {
-          const near = liveBundles(
-            bundleByDirBase.get(`${parts.slice(0, at).join('/')}\0${info.file}`),
-          );
-          if (near.length > 0) {
-            return { fit: { tier: 2, depth: at }, bundles: near };
-          }
-        }
-        const any = liveBundles(bundleByBase.get(info.file));
-        return any.length > 0 ? { fit: { tier: 1, depth: 0 }, bundles: any } : undefined;
-      };
-      for (let round = 0; round < 16; round++) {
-        const proposals: Array<[Entry, string]> = [];
-        for (const entry of group) {
-          if (!open.has(entry)) {
-            continue;
-          }
-          const best = bestMaps(entry);
-          if (best !== undefined && best.maps.length === 1) {
-            const map = best.maps[0] as string;
-            const back = bestBundles(map);
-            if (back !== undefined && back.bundles.length === 1 && back.bundles[0] === entry) {
-              proposals.push([entry, map]);
-            }
-          }
-        }
-        if (proposals.length === 0) {
-          break;
-        }
-        for (const [entry, map] of proposals) {
-          open.delete(entry);
-          await pair(entry, map);
         }
       }
-      for (const entry of group) {
+      return found;
+    };
+    /** The best free maps for a bundle (up to two) and how well they fit. */
+    const bestMaps = (entry: Entry): { fit: Fit; maps: string[] } | undefined => {
+      const base = nodePath.basename(entry.bundle);
+      const named = (map: string): boolean => infoOf.get(map)?.file === base && eligible(map);
+      const own = freeMaps(bySuffix.get(entry.name), named);
+      if (own.length > 0) {
+        return { fit: { tier: 3, depth: entry.name.length }, maps: own };
+      }
+      const segments = segmentsOf(entry.name);
+      for (let at = segments.length; at >= 1; at--) {
+        const near = freeMaps(
+          byDirFile.get(`${segments.slice(0, at).join('/')}\0${base}`),
+          eligible,
+        );
+        if (near.length > 0) {
+          return { fit: { tier: 2, depth: at }, maps: near };
+        }
+      }
+      const any = freeMaps(byFile.get(base), eligible);
+      return any.length > 0 ? { fit: { tier: 1, depth: 0 }, maps: any } : undefined;
+    };
+    /** The best open bundles for a map (up to two) and how well they fit. */
+    const bestBundles = (map: string): { fit: Fit; bundles: Entry[] } | undefined => {
+      const info = infoOf.get(map) as { file: string; key: string };
+      const parts = info.key.split('/');
+      for (let at = 0; at < parts.length; at++) {
+        const owner = bundleByName.get(parts.slice(at).join('/'));
+        if (owner !== undefined && nodePath.basename(owner.bundle) === info.file) {
+          return { fit: { tier: 3, depth: owner.name.length }, bundles: [owner] };
+        }
+      }
+      for (let at = parts.length - 1; at >= 1; at--) {
+        const near = liveBundles(
+          bundleByDirBase.get(`${parts.slice(0, at).join('/')}\0${info.file}`),
+        );
+        if (near.length > 0) {
+          return { fit: { tier: 2, depth: at }, bundles: near };
+        }
+      }
+      const any = liveBundles(bundleByBase.get(info.file));
+      return any.length > 0 ? { fit: { tier: 1, depth: 0 }, bundles: any } : undefined;
+    };
+    // Each round pairs every mutual best fit at once; the leftovers are classified only when nothing more pairs, so a
+    // map freed late is still offered to everyone. (A tie between a stamped and an unstamped bundle pairs neither.)
+    const propose = (): Array<[Entry, string]> => {
+      const proposals: Array<[Entry, string]> = [];
+      for (const entry of contenders) {
         if (!open.has(entry)) {
           continue;
         }
         const best = bestMaps(entry);
-        // Its best map fits another bundle better: this bundle has no map (the normal state of a stamped build whose
-        // maps were deleted), whichever bundle ends up with that map.
-        const lost =
-          best !== undefined &&
-          best.maps.length === 1 &&
-          bestBundles(best.maps[0] as string)?.bundles.includes(entry) !== true;
-        if (best === undefined || lost) {
-          if (entry.id === undefined) {
-            unstampedWithoutMap.push(entry.name);
+        if (best !== undefined && best.maps.length === 1) {
+          const map = best.maps[0] as string;
+          const back = bestBundles(map);
+          if (back !== undefined && back.bundles.length === 1 && back.bundles[0] === entry) {
+            proposals.push([entry, map]);
           }
-        } else {
-          unsettled.push({
-            name: entry.name,
-            why: best.maps.length > 1 ? 'several maps fit' : 'another bundle wants the same map',
-            candidates: best.maps.map((map) => rel(dir, map)),
-            stamped: stampedGroup,
-            byId: false,
-          });
         }
+      }
+      return proposals;
+    };
+    for (let round = 0; round < 16; round++) {
+      const proposals = propose();
+      if (proposals.length === 0) {
+        break;
+      }
+      for (const [entry, map] of proposals) {
+        open.delete(entry);
+        await pair(entry, map);
+      }
+    }
+    for (const entry of contenders) {
+      if (!open.has(entry)) {
+        continue;
+      }
+      const best = bestMaps(entry);
+      // Its best map fits another bundle better: this bundle has no map (the normal state of a stamped build whose
+      // maps were deleted), whichever bundle ends up with that map.
+      const lost =
+        best !== undefined &&
+        best.maps.length === 1 &&
+        bestBundles(best.maps[0] as string)?.bundles.includes(entry) !== true;
+      if (best === undefined || lost) {
+        if (entry.id === undefined) {
+          unstampedWithoutMap.push(entry.name);
+        }
+      } else {
+        unsettled.push({
+          name: entry.name,
+          why: best.maps.length > 1 ? 'several maps fit' : 'another bundle wants the same map',
+          candidates: best.maps.map((map) => rel(dir, map)),
+          stamped: entry.id !== undefined,
+          byId: false,
+        });
       }
     }
     for (const [entry, maps] of ambiguous) {
