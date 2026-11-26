@@ -61,7 +61,10 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     return;
   }
   if (path === '/slow') {
-    const ms = Number(url.searchParams.get('ms') ?? '50');
+    // Capped: a delay taken straight from the query string would let one request hold a timer (and the
+    // connection) open for as long as it asks.
+    const requested = Number(url.searchParams.get('ms') ?? '50');
+    const ms = requested > 0 ? (requested > 30_000 ? 30_000 : requested) : 0;
     await new Promise((resolve) => setTimeout(resolve, ms));
     json(res, 200, { slept: ms });
     return;

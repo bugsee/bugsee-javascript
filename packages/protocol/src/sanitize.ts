@@ -227,29 +227,58 @@ function redactJsonPairs(body: string): string {
   );
 }
 
+/** An XML tag name, matched in place (sticky) right after a `<`. */
+const XML_TAG_NAME = /[A-Za-z_][\w.:-]*/y;
+
+/** What may follow a tag name and open its attribute list. Disjoint from the tag-name class. */
+const XML_ATTRIBUTES_START = /[\s/]/;
+
 /**
- * Redact sensitive parts of a `multipart/form-data` body, or undefined when it is not multipart.
+ * `<tag …>text` — the element-text pass: calls `replace(tag, attrs, text)` for every open tag and the
+ * text after it up to the next `<`, and splices in what it returns. No backreference to the closing tag:
+ * an open tag plus its text is enough to decide.
  *
- * Nothing else could reach these: a part's value sits alone after a blank line carrying no `=` and no `:`,
- * and the part header's own key (`Content-Disposition`) is not sensitive — so a file-upload login form
- * shipped its password verbatim through every textual pass. Split on the boundary rather than matched with
- * a regex, so a large body cannot backtrack.
+ * It computes exactly what `body.replace(/<([A-Za-z_][\w.:-]*)((?:[\s/][^>]*)?)>([^<]*)/g, …)` did, in
+ * one forward pass. The regex was quadratic (CodeQL js/polynomial-redos): from every `<` that opened an
+ * attribute list it scanned `[^>]*` to end-of-string looking for a `>`, so `<A\t` repeated had each
+ * of n opens rescan the rest. Here a missing `>` ends the whole scan — no later `<` could reach one either.
+ *
+ * The attribute list must START with whitespace or `/`, neither of which is in the tag-name class, so a
+ * tag name is never split two ways (an earlier overlapping version cost 36 s on 200 KB).
+ *
+ * Accepted limitation: the tag ends at the first `>`, even one inside a quoted attribute value, so
+ * `<a b="x>y">` is read as ending early. That UNDER-matches — the pass may skip a redaction, never invent
+ * one.
  */
-/**
- * `<tag …>text` — the element-text pass. No backreference to the closing tag: it matches an open tag, then
- * the text up to the next `<`, which is enough to decide and cannot backtrack.
- *
- * The attribute group must START with whitespace or `/`, neither of which is in the tag-name class. That
- * is load-bearing, not stylistic: with an attribute group that could also match name characters, the two
- * quantifiers overlap and an unterminated tag (`<aaaa…` with no `>`) makes the name give back one
- * character at a time, retrying the attributes to end-of-string each time. My first version did exactly
- * that and cost 36 SECONDS on a 200 KB input — a ReDoS written into the pass I added in the round whose
- * theme was shipping ReDoS while fixing ReDoS. With the boundary explicit it is 1.4 ms at 1 MB.
- *
- * Accepted limitation: `[^>]*` ends the tag at a `>` inside a quoted attribute value, so `<a b="x>y">`
- * is read as ending early. That UNDER-matches — the pass may skip a redaction, never invent one.
- */
-const XML_ELEMENT = /<([A-Za-z_][\w.:-]*)((?:[\s/][^>]*)?)>([^<]*)/g;
+export function replaceXmlElements(
+  body: string,
+  replace: (tag: string, attrs: string, text: string) => string,
+): string {
+  let out = '';
+  let copied = 0; // body[0, copied) is already in `out`
+  let lt = body.indexOf('<');
+  while (lt !== -1) {
+    XML_TAG_NAME.lastIndex = lt + 1;
+    const tag = XML_TAG_NAME.exec(body)?.[0];
+    const afterTag = lt + 1 + (tag?.length ?? 0);
+    const next = body.charAt(afterTag);
+    if (tag === undefined || (next !== '>' && !XML_ATTRIBUTES_START.test(next))) {
+      lt = body.indexOf('<', lt + 1); // not an open tag
+      continue;
+    }
+    const gt = next === '>' ? afterTag : body.indexOf('>', afterTag);
+    if (gt === -1) {
+      break;
+    }
+    const nextLt = body.indexOf('<', gt + 1);
+    const textEnd = nextLt === -1 ? body.length : nextLt;
+    out +=
+      body.slice(copied, lt) + replace(tag, body.slice(afterTag, gt), body.slice(gt + 1, textEnd));
+    copied = textEnd;
+    lt = nextLt;
+  }
+  return out + body.slice(copied);
+}
 
 /** ` attr="value"` / ` attr='value'` — the attribute pass. */
 const XML_ATTRIBUTE = /(\s)([A-Za-z_][\w.:-]*)(\s*=\s*)(?:"([^"]*)"|'([^']*)')/g;
@@ -293,9 +322,7 @@ function redactXml(body: string): string | undefined {
   // output instead would destroy every tag in the document.
   const marker = REDACTED.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   let changed = false;
-  // `_match` is the whole-match placeholder every `String.replace` callback receives first; the capture
-  // groups after it are what this rebuilds from.
-  const out = body.replace(XML_ELEMENT, (_match, tag: string, attrs: string, text: string) => {
+  const out = replaceXmlElements(body, (tag: string, attrs: string, text: string) => {
     const scrubbed = attrs.replace(
       XML_ATTRIBUTE,
       // `_sq` is named but unread: which quote style to re-emit is decided by whether the DOUBLE-quoted
@@ -334,6 +361,14 @@ function partName(headers: string): string | undefined {
   return m === null ? undefined : (m[1] ?? m[2] ?? m[3]);
 }
 
+/**
+ * Redact sensitive parts of a `multipart/form-data` body, or undefined when it is not multipart.
+ *
+ * Nothing else could reach these: a part's value sits alone after a blank line carrying no `=` and no `:`,
+ * and the part header's own key (`Content-Disposition`) is not sensitive — so a file-upload login form
+ * shipped its password verbatim through every textual pass. Split on the boundary rather than matched with
+ * a regex, so a large body cannot backtrack.
+ */
 function redactMultipart(body: string, contentType: string | undefined): string | undefined {
   const declared = /boundary=(?:"([^"]+)"|([^;\s]+))/i.exec(contentType ?? '');
   // The Content-Type is the authority, but a captured body sometimes arrives without one; the first line of

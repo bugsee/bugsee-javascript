@@ -127,7 +127,10 @@ const server = createServer(async (req, res) => {
         return json(res, 200, { big });
       }
       if (which === 'slow') {
-        const ms = Number(url.searchParams.get('ms') ?? '3000');
+        // Capped: a delay taken straight from the query string would let one request hold a timer (and
+        // the connection) open for as long as it asks.
+        const requested = Number(url.searchParams.get('ms') ?? '3000');
+        const ms = requested > 0 ? (requested > 30_000 ? 30_000 : requested) : 0;
         await new Promise((resolve) => setTimeout(resolve, ms));
         return json(res, 200, { slept: ms });
       }
@@ -225,7 +228,8 @@ const server = createServer(async (req, res) => {
 
     json(res, 404, { error: 'not_found', path: url.pathname });
   } catch (error) {
-    json(res, 500, { error: 'server_error', message: String(error?.message ?? error) });
+    // Only an Error's message reaches the client - never the thrown value itself, which can carry a stack.
+    json(res, 500, { error: 'server_error', message: error instanceof Error ? error.message : 'unexpected error' });
   }
 });
 

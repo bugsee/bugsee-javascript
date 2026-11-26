@@ -59,6 +59,95 @@ describe('sanitizeDetectorUrl (Android DetectorUrlSanitizer parity)', () => {
   it('preserves empty segments (double slashes / trailing slash)', () => {
     expect(sanitizeDetectorUrl('https://a.test//users/7/')).toBe('https://a.test//users/{id}/');
   });
+
+  it('strips userinfo when there is no path, and keeps an empty userinfo out too', () => {
+    expect(sanitizeDetectorUrl('https://user:hunter2@a.test')).toBe('https://a.test');
+    expect(sanitizeDetectorUrl('https://@a.test/x')).toBe('https://a.test/x');
+    expect(sanitizeDetectorUrl('ftp+ssh.v2-x://u@h/')).toBe('ftp+ssh.v2-x://h/');
+  });
+
+  it('reads an `@` AFTER the first slash as path, not userinfo', () => {
+    expect(sanitizeDetectorUrl('https://a.test/x@y/z')).toBe('https://a.test/x@y/z');
+  });
+
+  it('only treats a leading `scheme://` as an authority', () => {
+    // Not a scheme: starts with a digit, carries a character outside the scheme class, or lacks `//`.
+    expect(sanitizeDetectorUrl('1http://u@h/x')).toBe('1http://u@h/x');
+    expect(sanitizeDetectorUrl('ht_tp://u@h/x')).toBe('ht_tp://u@h/x');
+    expect(sanitizeDetectorUrl('mailto:u@h')).toBe(templatePathSegment('mailto:u@h'));
+    expect(sanitizeDetectorUrl('x/https://u@h/y')).toBe('x/https://u@h/y');
+    expect(sanitizeDetectorUrl('HTTPS://User@A.test/x')).toBe('HTTPS://A.test/x');
+  });
+
+  it('strips userinfo even when the path carries a line break', () => {
+    // The old single regex ended in `(.*)$`, and `.` does not cross a line terminator, so a line break
+    // anywhere in the path failed the WHOLE match and the URL fell through as a bare path: the
+    // authority was templated as a path segment (`{email}`) and the host was lost. The authority is now
+    // split off without regard to what the path holds.
+    for (const lineBreak of ['\n', '\r', '\u2028', '\u2029']) {
+      expect(sanitizeDetectorUrl(`https://user:hunter2@a.test/x${lineBreak}y/42`)).toBe(
+        `https://a.test/x${lineBreak}y/{id}`,
+      );
+    }
+  });
+
+  it('agrees with the former single-regex split on generated URLs without line breaks', () => {
+    // The ORACLE is the regex this replaced (CodeQL js/polynomial-redos: `(?:[^/]*@)?([^/]*)(.*)$` tried
+    // every split of the authority/path boundary when the tail could not match). Away from line breaks
+    // (see the test above for the one deliberate difference) the two must agree on everything.
+    const oracle = (raw: string): string => {
+      if (raw === '') {
+        return '';
+      }
+      const noQuery = raw.split(/[?#]/)[0] ?? '';
+      const m = /^([a-z][a-z0-9+.-]*:\/\/)(?:[^/]*@)?([^/]*)(.*)$/i.exec(noQuery);
+      const prefix = m === null ? '' : `${m[1]}${m[2]}`;
+      const path = m === null ? noQuery : (m[3] ?? '');
+      return prefix + path.split('/').map(templatePathSegment).join('/');
+    };
+    const parts = [
+      'https',
+      'H',
+      '1',
+      '+',
+      '.',
+      '-',
+      '_',
+      ':',
+      '/',
+      '//',
+      '://',
+      '@',
+      'u:p@',
+      'a.test',
+      '42',
+      '?',
+      '#',
+      'x',
+    ];
+    let seed = 0x2545f491;
+    const random = (): number => {
+      seed = (seed + 0x6d2b79f5) | 0;
+      let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+    let withAuthority = 0;
+    for (let i = 0; i < 20_000; i += 1) {
+      let url = random() < 0.5 ? 'https://' : '';
+      const length = 1 + Math.floor(random() * 10);
+      for (let j = 0; j < length; j += 1) {
+        url += parts[Math.floor(random() * parts.length)];
+      }
+      if (/^[a-z][a-z0-9+.-]*:\/\//i.test(url)) {
+        withAuthority += 1;
+      }
+      expect(sanitizeDetectorUrl(url), JSON.stringify(url)).toBe(oracle(url));
+    }
+    // Both kinds have to be well represented, or agreement proves nothing.
+    expect(withAuthority).toBeGreaterThan(1_000);
+    expect(withAuthority).toBeLessThan(19_000);
+  });
 });
 
 describe('templatePathSegment', () => {
@@ -225,6 +314,17 @@ describe('no ReDoS: adversarial 1,000,000-character inputs finish in bounded tim
     sanitizeDetectorUrl(`${'a'.repeat(BIG)}://x`);
     sanitizeDetectorUrl(`/${'1/'.repeat(BIG / 2)}`);
     expect(Date.now() - started).toBeLessThan(6000);
+  });
+
+  it('an authority run followed by a path the old `(.*)$` tail could not match (CodeQL ReDoS shape)', () => {
+    // `a://` + many `.` + `/\n`: the line break failed the old regex's tail, and it then retried every
+    // authority/path split, each rescanning the path — quadratic (~16 s here at this size). Linear is a
+    // few ms; the bound only has to separate the two.
+    const started = Date.now();
+    expect(sanitizeDetectorUrl(`a://${'.'.repeat(200_000)}/\n`)).toBe(
+      `a://${'.'.repeat(200_000)}/\n`,
+    );
+    expect(Date.now() - started).toBeLessThan(2000);
   });
 
   it('a segment past any plausible identifier length is never echoed into a summary', () => {

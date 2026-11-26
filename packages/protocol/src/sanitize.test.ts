@@ -8,6 +8,7 @@ import {
   sanitizeParams,
 } from './index';
 import { expectLinearIn, LINEARITY_TEST_TIMEOUT_MS } from './linear-time.test-helper';
+import { replaceXmlElements } from './sanitize';
 import type { NetworkEvent } from './wire';
 
 // The linearity guard lives in `./linear-time.test-helper` — see its header for why it asserts a
@@ -520,6 +521,79 @@ describe('sanitizeBody — XML', () => {
     );
   });
 
+  it('the element scan agrees with the single regex it replaced, match for match', () => {
+    // The ORACLE is the former `XML_ELEMENT` regex, which CodeQL flagged as quadratic. The scan has to
+    // hand the callback exactly the (tag, attrs, text) triples `String.replace` did, in the same order,
+    // and leave everything between matches untouched.
+    const ORACLE = /<([A-Za-z_][\w.:-]*)((?:[\s/][^>]*)?)>([^<]*)/g;
+    const render = (tag: string, attrs: string, text: string): string =>
+      `[${tag}|${attrs}|${text}]`;
+    const parts = [
+      '<',
+      '>',
+      '</',
+      '/>',
+      'a',
+      'Z',
+      '_',
+      '1',
+      '.',
+      ':',
+      '-',
+      ' ',
+      '\t',
+      '\n',
+      '\u00a0',
+      '/',
+      '=',
+      '"',
+      'x',
+      '<pw ',
+      '<a>',
+    ];
+    let seed = 0x1b873593;
+    const random = (): number => {
+      seed = (seed + 0x6d2b79f5) | 0;
+      let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+    let matched = 0;
+    for (let i = 0; i < 20_000; i += 1) {
+      let body = '';
+      const length = 1 + Math.floor(random() * 14);
+      for (let j = 0; j < length; j += 1) {
+        body += parts[Math.floor(random() * parts.length)];
+      }
+      const expected = body.replace(ORACLE, (_m, tag: string, attrs: string, text: string) =>
+        render(tag, attrs, text),
+      );
+      if (expected !== body) {
+        matched += 1;
+      }
+      expect(replaceXmlElements(body, render), JSON.stringify(body)).toBe(expected);
+    }
+    // The corpus has to exercise both outcomes, or agreement proves nothing.
+    expect(matched).toBeGreaterThan(1_000);
+    expect(matched).toBeLessThan(19_000);
+  });
+
+  it('the element scan reads attributes, `/` and whitespace boundaries and an unterminated tail', () => {
+    const seen: string[] = [];
+    const record = (tag: string, attrs: string, text: string): string => {
+      seen.push(`${tag}|${attrs}|${text}`);
+      return '#';
+    };
+    expect(replaceXmlElements('pre<a x="1">t<b/>u<c\u00a0>v<1>w<d<e <f>g<h i', record)).toBe(
+      'pre###<1>w<d#<h i',
+    );
+    // `<1` and `<d<` are not opens; `<e` swallows `<f` as attribute text up to the first `>`, as
+    // `[^>]*` did; `<h i` never reaches a `>`, so nothing after it can match.
+    expect(seen).toEqual(['a| x="1"|t', 'b|/|u', 'c|\u00a0|v', 'e| <f|g']);
+    expect(replaceXmlElements('', record)).toBe('');
+    expect(replaceXmlElements('no markup', record)).toBe('no markup');
+  });
+
   it('does not read HTML prose as XML fields', () => {
     // The pass is keyed on the TAG NAME being sensitive, so ordinary markup is untouched.
     const html = '<p>Enter your password below</p><div class="pin">3</div>';
@@ -536,6 +610,9 @@ describe('sanitizeBody — XML', () => {
         [(n: number): string => `<${'a'.repeat(n)}`, 200_000], // an unterminated tag
         [(n: number): string => '<a>'.repeat(n), 80_000], // many opens, never closed
         [(n: number): string => `<a ${'b="c" '.repeat(n)}>`, 60_000], // one tag, very many attributes
+        // Many opens that each START an attribute list and never reach a `>` (CodeQL js/polynomial-redos):
+        // the single regex scanned to end-of-string from every `<`.
+        [(n: number): string => '<A\t'.repeat(n), 60_000],
       ] as const) {
         expectLinearIn(
           build,

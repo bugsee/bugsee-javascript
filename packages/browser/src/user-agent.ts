@@ -75,6 +75,35 @@ export function normalizeUaDataPlatform(platform: string): string | undefined {
   return UA_DATA_PLATFORMS[platform.trim().toLowerCase()];
 }
 
+const IOS_DEVICE = /iPhone|iPad|iPod/;
+const IOS_VERSION = /CPU (?:iPhone )?OS (\d+(?:[._]\d+)*)/;
+/** The characters a regex `.` does not match. */
+const LINE_TERMINATORS = /[\n\r\u2028\u2029]/;
+
+/**
+ * The raw iOS version token (`17_1`) when a device token (`iPhone`/`iPad`/`iPod`) is followed, on
+ * the same line, by `CPU [iPhone ]OS <version>`; else undefined.
+ *
+ * This was one regex, `/(?:iPhone|iPad|iPod).*?CPU (?:iPhone )?OS (…)/`. Unanchored, it re-scanned
+ * to the end of the string from EVERY device token, so a long run of `iPad` with no `CPU` token cost
+ * quadratic time on a string the page controls (CodeQL js/polynomial-redos). Same result, one pass:
+ * only the FIRST device token on a line matters (any later one sees a subset of what follows it),
+ * and the first CPU token after it is the one the lazy `.*?` stopped at. A line at a time because
+ * `.` never crossed a line terminator.
+ */
+export function iosVersionFrom(userAgent: string): string | undefined {
+  for (const line of userAgent.split(LINE_TERMINATORS)) {
+    const device = IOS_DEVICE.exec(line);
+    if (device !== null) {
+      const version = IOS_VERSION.exec(line.slice(device.index + device[0].length))?.[1];
+      if (version !== undefined) {
+        return version;
+      }
+    }
+  }
+  return undefined;
+}
+
 /**
  * The OS a user-agent string describes.
  *
@@ -84,9 +113,9 @@ export function normalizeUaDataPlatform(platform: string): string | undefined {
  */
 export function parseOsFromUserAgent(userAgent: string): Identity {
   // iOS first: iPhone/iPad UAs claim `like Mac OS X`. iPadOS reports `CPU OS`, iPhone `CPU iPhone OS`.
-  const ios = /(?:iPhone|iPad|iPod).*?CPU (?:iPhone )?OS (\d+(?:[._]\d+)*)/.exec(userAgent);
-  if (ios?.[1] !== undefined) {
-    return { type: 'ios', version: ios[1].replace(/_/g, '.') };
+  const ios = iosVersionFrom(userAgent);
+  if (ios !== undefined) {
+    return { type: 'ios', version: ios.replace(/_/g, '.') };
   }
   // Android before Linux: the token is literally `Linux; Android <v>`.
   const android = /Android (\d+(?:\.\d+)*)/.exec(userAgent);

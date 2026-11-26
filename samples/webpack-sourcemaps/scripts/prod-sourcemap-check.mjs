@@ -7,6 +7,17 @@
 // `pnpm preview` (serves dist/ on :5322 + the local API on :5346) running in another terminal.
 import { chromium } from 'playwright';
 
+/** Is `url` on `domain` or one of its subdomains? Parsed, never substring-matched: `includes('bugsee.com')`
+ *  also matches `https://bugsee.com.evil.test/` or `https://x.test/?bugsee.com`. */
+const isOnHost = (url, domain) => {
+  try {
+    const { hostname } = new URL(url);
+    return hostname === domain || hostname.endsWith(`.${domain}`);
+  } catch {
+    return false;
+  }
+};
+
 const BASE = 'http://localhost:5322';
 
 async function main() {
@@ -15,7 +26,7 @@ async function main() {
 
   const bugseeCalls = [];
   page.on('response', (res) => {
-    if (res.url().includes('bugsee.com')) bugseeCalls.push({ url: res.url(), status: res.status() });
+    if (isOnHost(res.url(), 'bugsee.com')) bugseeCalls.push({ url: res.url(), status: res.status() });
   });
 
   await page.goto(`${BASE}/#/scenarios`, { waitUntil: 'networkidle' });

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   detectBrowser,
   detectOs,
+  iosVersionFrom,
   normalizeUaDataPlatform,
   parseBrowserFromUserAgent,
   parseOsFromUserAgent,
@@ -255,5 +256,102 @@ describe('detectOs — UA-CH preferred for the NAME, user agent for the version'
 describe('detectBrowser', () => {
   it('reads the browser identity from the user agent', () => {
     expect(detectBrowser(UA.chromeMac)).toEqual({ type: 'Chrome', version: '119.0.0.0' });
+  });
+});
+
+describe('iosVersionFrom — the iOS rule, scanned in linear time', () => {
+  /** The rule as one regex: the shape CodeQL flagged as quadratic (js/polynomial-redos), kept here
+   *  only as the ORACLE the linear scan has to agree with. */
+  const ORACLE = /(?:iPhone|iPad|iPod).*?CPU (?:iPhone )?OS (\d+(?:[._]\d+)*)/;
+
+  it('reads the version from real iPhone, iPad and iPod agents', () => {
+    expect(iosVersionFrom(UA.safariIphone)).toBe('17_1');
+    expect(iosVersionFrom(UA.safariIpad)).toBe('16_6');
+    expect(iosVersionFrom('Mozilla/5.0 (iPod touch; CPU iPhone OS 12_5_7 like Mac OS X)')).toBe(
+      '12_5_7',
+    );
+  });
+
+  it('needs the device token BEFORE the CPU token', () => {
+    expect(iosVersionFrom('CPU OS 16_6 like Mac OS X; iPad')).toBeUndefined();
+    expect(iosVersionFrom('CPU OS 1_1 iPad CPU OS 2_2')).toBe('2_2');
+    expect(iosVersionFrom('Mozilla/5.0 (Windows NT 10.0) CPU OS 9')).toBeUndefined();
+  });
+
+  it('takes the FIRST CPU token after the first device token', () => {
+    expect(iosVersionFrom('iPhone; CPU OS 3 x CPU iPhone OS 4')).toBe('3');
+    expect(iosVersionFrom('iPhone iPad; CPU iPhone OS 5_0')).toBe('5_0');
+  });
+
+  it('keeps the device and CPU tokens on one line, as the regex `.` did', () => {
+    expect(iosVersionFrom('iPad\nCPU OS 9')).toBeUndefined();
+    expect(iosVersionFrom('iPad\rCPU OS 9')).toBeUndefined();
+    expect(iosVersionFrom('iPad\u2028CPU OS 9')).toBeUndefined();
+    expect(iosVersionFrom('iPad\u2029CPU OS 9')).toBeUndefined();
+    // ...but a later line still matches on its own.
+    expect(iosVersionFrom('iPad\nx iPod CPU OS 7_2')).toBe('7_2');
+    expect(iosVersionFrom('iPad CPU OS\nCPU OS 8')).toBeUndefined();
+  });
+
+  it('needs a version number after `OS `', () => {
+    expect(iosVersionFrom('iPhone; CPU OS like Mac OS X')).toBeUndefined();
+    expect(iosVersionFrom('iPhone; CPU OS x CPU OS 6')).toBe('6');
+  });
+
+  it('agrees with the single-regex rule on generated agents', () => {
+    // A seeded generator over the fragments the rule reacts to, so order, line breaks and version
+    // shape vary together and every branch of the scan meets both outcomes.
+    const parts = [
+      'iPhone',
+      'iPad',
+      'iPod',
+      'CPU ',
+      'iPhone ',
+      'OS ',
+      '1',
+      '_',
+      '.',
+      ' ',
+      'x',
+      '\n',
+      '\r',
+      '\u2028',
+      '\u2029',
+      'CPU OS 1',
+      'CPU iPhone OS 2_3',
+    ];
+    let seed = 0x9e3779b9;
+    const random = (): number => {
+      seed = (seed + 0x6d2b79f5) | 0;
+      let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+    let matched = 0;
+    for (let i = 0; i < 20_000; i += 1) {
+      let ua = '';
+      const length = 1 + Math.floor(random() * 12);
+      for (let j = 0; j < length; j += 1) {
+        ua += parts[Math.floor(random() * parts.length)];
+      }
+      const expected = ORACLE.exec(ua)?.[1];
+      if (expected !== undefined) {
+        matched += 1;
+      }
+      expect(iosVersionFrom(ua), JSON.stringify(ua)).toBe(expected);
+    }
+    // The corpus has to exercise BOTH outcomes, or agreement proves nothing.
+    expect(matched).toBeGreaterThan(1_000);
+    expect(matched).toBeLessThan(19_000);
+  });
+
+  it('stays linear on a long run of device tokens with no CPU token (the ReDoS shape)', () => {
+    // 200,000 repetitions: the single regex re-scans to the end from every token (tens of seconds);
+    // a linear scan takes a few ms. The bound is generous: it only has to separate those two.
+    const hostile = 'iPad'.repeat(200_000);
+    const started = performance.now();
+    expect(iosVersionFrom(hostile)).toBeUndefined();
+    expect(parseOsFromUserAgent(hostile)).toEqual({ type: '', version: '' });
+    expect(performance.now() - started).toBeLessThan(2_000);
   });
 });

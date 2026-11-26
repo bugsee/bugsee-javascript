@@ -478,7 +478,10 @@ export function buildScenariosPlugin() {
       const marker = markerOf(req);
       const query = req.query as Record<string, unknown>;
       const idx = query.idx as string;
-      const delayMs = Number(query.delayMs ?? 0);
+      // Capped: a delay taken straight from the query string would let one request hold a timer open
+      // for as long as it asks. verify.ts staggers these by at most 39 ms.
+      const requested = Number(query.delayMs ?? 0);
+      const delayMs = requested > 0 ? (requested > 5_000 ? 5_000 : requested) : 0;
       const c = client();
       const store = requestContextStoreOf(c);
       store?.setAttribute('scenario.req_index', idx);

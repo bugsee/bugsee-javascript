@@ -593,7 +593,8 @@ const server = createServer((req, res) => {
       void client
         .logException(error, { labels: ['route-handler-error'] })
         .catch(() => {});
-      json(res, 500, { error: (error as Error).message ?? String(error) });
+      // Only an Error's message reaches the client - never the thrown value itself, which can carry a stack.
+      json(res, 500, { error: error instanceof Error ? error.message : 'unexpected error' });
     }
   })();
 });

@@ -90,7 +90,10 @@ export function buildOptions(profileName: string): { options: BugseeNodeLaunchOp
   const token = process.env.BUGSEE_APP_TOKEN;
   if (!token) throw new Error('BUGSEE_APP_TOKEN is not set (see .env.example)');
   const endpoint = process.env.BUGSEE_ENDPOINT ?? 'https://apidev.bugsee.com';
-  if (endpoint.includes('api.bugsee.com') && !endpoint.includes('apidev')) {
+  // Compare the parsed host, not a substring: `includes('api.bugsee.com')` let a query string or a
+  // look-alike host trip (or dodge) the guard. A trailing dot is the same host to DNS.
+  // An unparseable endpoint is left for the SDK to reject, as before.
+  if (URL.canParse(endpoint) && new URL(endpoint).hostname.replace(/\.$/, '') === 'api.bugsee.com') {
     throw new Error('refusing to launch against production api.bugsee.com — use staging');
   }
 
