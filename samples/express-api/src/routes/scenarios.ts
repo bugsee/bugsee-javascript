@@ -204,7 +204,7 @@ export function buildScenariosRouter(): Router {
   router.post('/s6/console', (req: Request, res: Response) => {
     const marker = markerOf(req);
     // eslint-disable-next-line no-console
-    console.log(`s6-log-${marker}`, 'multi-arg', 3, { nested: true });
+    console.log(`s6-log-${marker.replace(/%/g, '%%')}`, 'multi-arg', 3, { nested: true });
     // eslint-disable-next-line no-console
     console.info(`s6-info-${marker}`);
     // eslint-disable-next-line no-console
