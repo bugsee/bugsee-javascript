@@ -34,6 +34,7 @@ import { listOutputMaps } from './stamp-files';
 const ID_A = '11111111-1111-4111-8111-111111111111';
 const ID_B = '22222222-2222-4222-8222-222222222222';
 const ID_C = '33333333-3333-4333-8333-333333333333';
+const ID_D = '44444444-4444-4444-8444-444444444444';
 
 let root: string;
 let dist: string;
@@ -287,7 +288,8 @@ describe('reads', () => {
       put('maps/b/main.js.map', mapJson({ file: 'main.js', debugId: ID_B }));
       const report = await run();
       expect(lostStamp(report)).toHaveLength(0);
-      expect(report.findings.some((f) => f.message.includes('no map on disk'))).toBe(true);
+      expect(find(report, 'map.ambiguous')?.severity).toBe('warning');
+      expect(report.findings.some((f) => f.message.includes('no map on disk'))).toBe(false);
     });
 
     it('an ambiguous debugId match is not resolved by `file`: nothing is guessed', async () => {
@@ -377,13 +379,108 @@ describe('reads', () => {
       expect(moved / sibling).toBeLessThan(3);
     }, 300000);
 
-    it('a map is paired with one bundle only', async () => {
+    it('a map at the bundle path but naming another file is not its map', async () => {
+      put('cjs/index.js', `a${stamp(ID_A)}`);
+      put('maps/cjs/index.js.map', mapJson({ file: 'other.js', debugId: ID_C }));
+      expect(find(await run(), 'stamp.map-id-mismatch')).toBeUndefined();
+    });
+
+    it('a map at the bundle path carrying another stamped bundle id is not taken', async () => {
+      put('cjs/index.js', `a${stamp(ID_A)}`);
+      put('q.js', `q${stamp(ID_B)}`);
+      put('maps/cjs/index.js.map', mapJson({ file: 'index.js', debugId: ID_B }));
+      put('maps/q.map', mapJson({ file: 'q.js', debugId: ID_B }));
+      expect(find(await run(), 'stamp.map-id-mismatch')).toBeUndefined();
+    });
+
+    it('an ambiguous debugId is reported, not silent', async () => {
+      put('r.js', `r${stamp(ID_A)}`);
+      put('maps/x.map', mapJson({ file: 'x.js', debugId: ID_A }));
+      put('maps/y.map', mapJson({ file: 'y.js', debugId: ID_A }));
+      expect(find(await run(), 'map.ambiguous')?.message).toContain('r.js');
+    });
+
+    it('a long list of ambiguous bundles is capped', async () => {
+      for (let i = 0; i < 12; i++) {
+        put(`d${String(i).padStart(2, '0')}/main.js`, 'a');
+      }
+      put('maps/a/main.js.map', mapJson({ file: 'main.js', debugId: ID_A }));
+      put('maps/b/main.js.map', mapJson({ file: 'main.js', debugId: ID_B }));
+      const message = find(await run(), 'map.ambiguous')?.message ?? '';
+      expect(message).toContain('12 bundle(s)');
+      expect(message).toContain('…');
+      expect(message).toContain('d00/main.js');
+      expect(message).not.toContain('d11/main.js');
+    });
+
+    it('a map two bundles could take pairs with neither and is reported', async () => {
       put('a/main.js', 'a');
       put('b/main.js', 'b');
       put('maps/main.js.map', mapJson({ file: 'main.js', debugId: ID_A }));
       const report = await run();
-      expect(lostStamp(report)).toHaveLength(1);
-      expect(report.findings.some((f) => f.message.includes('no map on disk'))).toBe(true);
+      expect(lostStamp(report)).toHaveLength(0);
+      expect(find(report, 'map.ambiguous')?.message).toContain('2 bundle(s)');
+    });
+
+    for (const [cjs, esm] of [
+      ['cjs', 'esm'],
+      ['esm', 'cjs'],
+    ] as const) {
+      it(`several broken maps are still checked: stale ids (${cjs} before ${esm})`, async () => {
+        put(`${cjs}/index.js`, `a${stamp(ID_A)}`);
+        put(`${esm}/index.js`, `b${stamp(ID_B)}`);
+        put(`maps/${cjs}/index.js.map`, mapJson({ file: 'index.js', debugId: ID_C }));
+        put(`maps/${esm}/index.js.map`, mapJson({ file: 'index.js', debugId: ID_D }));
+        const report = await run();
+        expect(
+          report.findings
+            .filter((f) => f.id === 'stamp.map-id-mismatch')
+            .map((f) => f.file)
+            .sort(),
+        ).toEqual([`maps/cjs/index.js.map`, `maps/esm/index.js.map`]);
+      });
+
+      it(`several broken maps are still checked: no debugId at all (${cjs} before ${esm})`, async () => {
+        put(`${cjs}/index.js`, `a${stamp(ID_A)}`);
+        put(`${esm}/index.js`, `b${stamp(ID_B)}`);
+        put(`maps/${cjs}/index.js.map`, mapJson({ file: 'index.js' }));
+        put(`maps/${esm}/index.js.map`, mapJson({ file: 'index.js' }));
+        const report = await run();
+        expect(report.findings.filter((f) => f.id === 'stamp.map-no-debug-id')).toHaveLength(2);
+      });
+
+      it(`several unstamped bundles with moved maps are an error each (${cjs} before ${esm})`, async () => {
+        put(`${cjs}/index.js`, 'a');
+        put(`${esm}/index.js`, 'b');
+        put(`maps/${cjs}/index.js.map`, mapJson({ file: 'index.js', debugId: ID_A }));
+        put(`maps/${esm}/index.js.map`, mapJson({ file: 'index.js', debugId: ID_B }));
+        const report = await run();
+        expect(lostStamp(report)).toHaveLength(2);
+        expect(report.findings.some((f) => f.message.includes('no map on disk'))).toBe(false);
+      });
+
+      it(`an unstamped copy never takes a stamped bundle's map, even one with no id (${cjs} before ${esm})`, async () => {
+        put(`${cjs}/index.js`, 'vendor');
+        put(`${esm}/index.js`, `b${stamp(ID_B)}`);
+        put(`maps/${esm}/index.js.map`, mapJson({ file: 'index.js' }));
+        const report = await run({ ignore: ['stamp.missing-debug-id'] });
+        expect(find(report, 'stamp.map-no-debug-id')?.file).toBe(`maps/${esm}/index.js.map`);
+      });
+    }
+
+    it('a top-level bundle does not take the map of a nested one with the same name', async () => {
+      put('index.js', `a${stamp(ID_A)}`);
+      put('cjs/index.js', `b${stamp(ID_B)}`);
+      put('maps/index.js.map', mapJson({ file: 'index.js', debugId: ID_C }));
+      put('maps/cjs/index.js.map', mapJson({ file: 'index.js', debugId: ID_D }));
+      const report = await run();
+      expect(
+        report.findings
+          .filter((f) => f.id === 'stamp.map-id-mismatch')
+          .map((f) => f.file)
+          .sort(),
+      ).toEqual(['maps/cjs/index.js.map', 'maps/index.js.map']);
+      expect(find(report, 'map.ambiguous')).toBeUndefined();
     });
 
     it('an empty hidden map of a bundle with real code is an error, not a facade note', async () => {

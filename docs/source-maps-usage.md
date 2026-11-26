@@ -244,6 +244,7 @@ Typical findings and what to do:
 |---|---|
 | `stamp.missing-debug-id` / `stamp.missing-registration` | A bundle is not stamped (or only has the comment, not the runtime registration). Add the plugin, or run `bugsee-cli sourcemaps inject <dir>` after the build. |
 | `stamp.map-id-mismatch` / `stamp.map-no-debug-id` | The map's `debugId` is not the bundle's. A step ran after stamping; stamp last. |
+| `map.ambiguous` | A bundle with no `sourceMappingURL` and no sibling `<bundle>.map` (a hidden map the bundler wrote elsewhere, e.g. `maps/[file].map`) could not be paired with exactly one map: several maps fit, or two bundles could take the same one. Its debug ID was not checked. Point the bundle at its map or keep one map per bundle name under the map directory. |
 | `map.pointer-dangling` | The bundle's `sourceMappingURL` points at a map that is not on disk. A note when no `.map` is left and every bundle is stamped (maps removed after upload); otherwise a warning. Use hidden maps to avoid the 404. |
 | `map.inline` | The map is a `data:` URL inside the bundle: nothing to upload, and it ships to every visitor. |
 | `map.sources-unresolvable` | No `sourcesContent` and the sources are not on disk: frames will have no source lines. |
