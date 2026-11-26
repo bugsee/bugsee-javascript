@@ -64,3 +64,9 @@ updates:
       # (webpack/vite) and the SDK supports Node >= 18. Nothing we use needs v3; revisit when the Node floor moves.
       - dependency-name: 'unplugin'
         update-types: ['version-update:semver-major']
+      # `@bugsee/opentelemetry` and `@bugsee/nextjs` support OpenTelemetry 1.x/2.x (`sdk-trace-base`) AND 3.x
+      # (`sdk-trace`), and their own dev copies stay on 2.x so their tests keep covering that line. 3.x is
+      # tested by `dev-packages/otel3-compat` (a separate package: sdk-trace@3 and sdk-trace-base@2 peer
+      # incompatible `@opentelemetry/api` ranges). A major bump of the 2.x dev copies would drop that coverage.
+      - dependency-name: '@opentelemetry/sdk-trace'
+        update-types: ['version-update:semver-major']
