@@ -125,7 +125,9 @@ async function walkStampable(dir: string, fenced: boolean, depth = 0): Promise<s
     const full = join(dir, entry.name);
     if (entry.isDirectory()) {
       if (!fenced || (!NEVER_WALK.has(entry.name) && !entry.name.startsWith('.'))) {
-        found.push(...(await walkStampable(full, fenced, depth + 1)));
+        for (const file of await walkStampable(full, fenced, depth + 1)) {
+          found.push(file);
+        }
       }
     } else if (entry.isFile() && STAMPABLE.test(entry.name)) {
       found.push(full);

@@ -11,6 +11,18 @@ export {
 } from './app-identity';
 export { deriveBuildUuid } from './build-id';
 export {
+  DOCTOR_CHECK_IDS,
+  DOCTOR_SCHEMA_VERSION,
+  type DoctorCheckId,
+  type DoctorFinding,
+  type DoctorOptions,
+  type DoctorReport,
+  type DoctorSeverity,
+  diagnoseBuildOutput,
+  doctorExitCode,
+  formatDoctorReport,
+} from './doctor';
+export {
   BUILD_PLUGIN_ENV_FILE,
   type EnvFileResult,
   loadBuildPluginEnv,

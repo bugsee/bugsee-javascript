@@ -1,0 +1,653 @@
+import { createHash } from 'node:crypto';
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import {
+  DOCTOR_CHECK_IDS,
+  DOCTOR_SCHEMA_VERSION,
+  type DoctorReport,
+  diagnoseBuildOutput,
+  doctorExitCode,
+  formatDoctorReport,
+} from './doctor';
+
+const ID_A = '11111111-1111-4111-8111-111111111111';
+const ID_B = '22222222-2222-4222-8222-222222222222';
+const ID_L = 'abcdef12-3456-4abc-8def-abcdefabcdef';
+
+let root: string;
+let dist: string;
+beforeEach(() => {
+  root = mkdtempSync(join(tmpdir(), 'bugsee-doctor-'));
+  dist = join(root, 'dist');
+  mkdirSync(dist);
+  writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'app', version: '1.0.0' }));
+});
+afterEach(() => rmSync(root, { recursive: true, force: true }));
+
+const put = (rel: string, content: string | Buffer): string => {
+  const path = join(dist, rel);
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, content);
+  return path;
+};
+
+const stamp = (id: string): string =>
+  `\n!function(){var g=globalThis;g._bugseeDebugIds=g._bugseeDebugIds||{};g._bugseeDebugIds["x"]="${id}"}();\n//# debugId=${id}\n`;
+
+const mapJson = (extra: Record<string, unknown> = {}): string =>
+  JSON.stringify({
+    version: 3,
+    sources: ['a.ts'],
+    sourcesContent: ['export const a = 1;'],
+    names: [],
+    mappings: 'AAAA',
+    ...extra,
+  });
+
+/** A fully stamped bundle + matching hidden map. */
+const goodPair = (name = 'app.js', id = ID_A): void => {
+  put(name, `console.log(1);${stamp(id)}`);
+  put(`${name}.map`, mapJson({ debugId: id }));
+};
+
+const ENV = { BUGSEE_APP_TOKEN: 'secret-token-value', BUGSEE_APP_BUILD: 'abc' };
+const run = (options: Parameters<typeof diagnoseBuildOutput>[1] = {}): Promise<DoctorReport> =>
+  diagnoseBuildOutput(dist, { env: ENV, projectRoot: root, ...options });
+const ids = (report: DoctorReport): string[] => report.findings.map((f) => f.id);
+const sev = (report: DoctorReport, id: string): string | undefined =>
+  report.findings.find((f) => f.id === id)?.severity;
+
+describe('diagnoseBuildOutput', () => {
+  it('a stamped bundle with a matching hidden map has no warnings, only notes (even under --strict)', async () => {
+    goodPair();
+    const report = await run();
+    expect(report.schemaVersion).toBe(DOCTOR_SCHEMA_VERSION);
+    expect(report.tool).toBe('bugsee-sourcemaps-doctor');
+    expect(report.summary).toMatchObject({ errors: 0, warnings: 0, bundles: 1, maps: 1 });
+    expect(ids(report).sort()).toEqual([
+      'env.token-source',
+      'map.hidden',
+      'map.public-leftover',
+      'map.sources-content',
+    ]);
+    expect(sev(report, 'map.public-leftover')).toBe('info');
+    expect(doctorExitCode(report, true)).toBe(0);
+    expect(report.passed).toContain('stamp.missing-debug-id');
+    expect(report.passed).not.toContain('map.public-leftover');
+    // info-only facts are not "passed" checks
+    expect(report.passed).not.toContain('map.hidden');
+    expect(report.passed).not.toContain('env.token-source');
+  });
+
+  it('map.public-leftover is a warning when the directory is deployed', async () => {
+    goodPair();
+    const report = await run({ deployed: true });
+    expect(sev(report, 'map.public-leftover')).toBe('warning');
+    expect(report.findings.find((f) => f.id === 'map.public-leftover')?.fix).toContain(
+      '--deployed',
+    );
+    expect(doctorExitCode(report, true)).toBe(1);
+  });
+
+  it('ignore drops the listed IDs from findings and passed, and reports what it dropped', async () => {
+    goodPair();
+    const report = await run({
+      deployed: true,
+      ignore: ['map.public-leftover', 'stamp.mixed', 'env.token-source'],
+    });
+    expect(ids(report)).not.toContain('map.public-leftover');
+    expect(report.summary.warnings).toBe(0);
+    expect(report.ignored).toEqual(['map.public-leftover', 'env.token-source']);
+    expect(report.passed).not.toContain('stamp.mixed');
+    expect((await run()).ignored).toBeUndefined();
+  });
+
+  it('after deleteMaps (bundle stamped, no maps) nothing is wrong', async () => {
+    put('app.js', `console.log(1);${stamp(ID_A)}`);
+    const report = await run();
+    expect(report.summary).toMatchObject({ errors: 0, warnings: 0 });
+    expect(ids(report)).toEqual(['env.token-source']);
+    expect(doctorExitCode(report)).toBe(0);
+    expect(doctorExitCode(report, true)).toBe(0);
+  });
+
+  it('output.dir-missing: a path that is not a directory', async () => {
+    const report = await diagnoseBuildOutput(join(root, 'nope'), { env: ENV });
+    expect(ids(report)).toEqual(['output.dir-missing']);
+    expect(report.passed).toEqual([]);
+    expect(doctorExitCode(report)).toBe(2);
+    const asFile = await diagnoseBuildOutput(join(root, 'package.json'), { env: ENV });
+    expect(ids(asFile)).toEqual(['output.dir-missing']);
+  });
+
+  it('output.no-js: a directory with no scripts; node_modules and .git are never searched', async () => {
+    put('index.html', '<html></html>');
+    put('node_modules/x/y.js', 'x');
+    put('.git/z.js', 'x');
+    const report = await run();
+    expect(ids(report)).toContain('output.no-js');
+    expect(sev(report, 'output.no-js')).toBe('error');
+    expect(report.summary.bundles).toBe(0);
+  });
+
+  it('preserveModules-style layouts (dist/src/a.js, dist/test/b.js, dot-dirs) are walked, not dropped', async () => {
+    put('src/a.js', `a${stamp(ID_A)}`);
+    put('test/b.js', `b${stamp(ID_B)}`);
+    put('.hidden/c.js', 'c');
+    const report = await run();
+    expect(report.summary.bundles).toBe(3);
+    expect(ids(report)).not.toContain('output.no-js');
+  });
+
+  it('stamp.missing-debug-id: an unstamped bundle WITH a map is an error', async () => {
+    put('app.js', 'console.log(1);\n//# sourceMappingURL=app.js.map');
+    put('app.js.map', mapJson());
+    const report = await run();
+    const finding = report.findings.find((f) => f.id === 'stamp.missing-debug-id');
+    expect(finding).toMatchObject({ severity: 'error', file: 'app.js' });
+    expect(finding?.fix).toContain('sourcemaps inject');
+    expect(doctorExitCode(report)).toBe(2);
+  });
+
+  it('stamp.missing-debug-id: an unstamped bundle with NO map is only a warning', async () => {
+    put('vendor.js', 'console.log(1);');
+    const report = await run();
+    expect(report.findings.find((f) => f.id === 'stamp.missing-debug-id')).toMatchObject({
+      severity: 'warning',
+      details: { files: ['vendor.js'] },
+    });
+    expect(doctorExitCode(report)).toBe(0);
+    expect(doctorExitCode(report, true)).toBe(1);
+  });
+
+  it('stamp.missing-debug-id: a bundle that lost its stamp while its map kept the id', async () => {
+    put('app.js', 'console.log(1);');
+    put('app.js.map', mapJson({ debugId: ID_A }));
+    const report = await run();
+    const found = report.findings.filter((f) => f.id === 'stamp.missing-debug-id');
+    expect(found).toHaveLength(1);
+    expect(found[0]).toMatchObject({ severity: 'error', details: { mapDebugId: ID_A } });
+  });
+
+  it('stamp.missing-registration: a comment alone is not a stamp', async () => {
+    put('app.js', `console.log(1);\n//# debugId=${ID_A}\n`);
+    const report = await run();
+    expect(sev(report, 'stamp.missing-registration')).toBe('error');
+    expect(report.findings.find((f) => f.id === 'stamp.missing-registration')?.details).toEqual({
+      files: ['app.js'],
+    });
+  });
+
+  it('stamp.map-id-mismatch / stamp.map-no-debug-id', async () => {
+    put('a.js', `a${stamp(ID_A)}`);
+    put('a.js.map', mapJson({ debugId: ID_B }));
+    put('b.js', `b${stamp(ID_B)}`);
+    put('b.js.map', mapJson());
+    const report = await run();
+    expect(report.findings.find((f) => f.id === 'stamp.map-id-mismatch')).toMatchObject({
+      severity: 'error',
+      file: 'a.js.map',
+      details: { bundleDebugId: ID_A, mapDebugId: ID_B },
+    });
+    expect(report.findings.find((f) => f.id === 'stamp.map-no-debug-id')).toMatchObject({
+      severity: 'error',
+      file: 'b.js.map',
+    });
+  });
+
+  it('accepts the snake_case debug_id spelling in the map and compares case-insensitively', async () => {
+    put('a.js', `a${stamp(ID_L)}`);
+    put('a.js.map', mapJson({ debug_id: ID_L.toUpperCase() }));
+    const report = await run();
+    expect(ID_L.toUpperCase()).not.toBe(ID_L);
+    expect(ids(report)).not.toContain('stamp.map-id-mismatch');
+    expect(ids(report)).not.toContain('stamp.map-no-debug-id');
+  });
+
+  it('stamp.mixed: some bundles stamped, some not', async () => {
+    goodPair('a.js', ID_A);
+    put('b.js', 'b\n//# sourceMappingURL=b.js.map');
+    put('b.js.map', mapJson());
+    const report = await run();
+    expect(report.findings.find((f) => f.id === 'stamp.mixed')).toMatchObject({
+      severity: 'warning',
+      details: { stamped: 1, unstamped: 1 },
+    });
+  });
+
+  it('stamp.duplicate-debug-id: same id, different contents; identical copies are fine', async () => {
+    put('a.js', `a${stamp(ID_A)}`);
+    put('b.js', `different${stamp(ID_A)}`);
+    put('c.js', `same${stamp(ID_B)}`);
+    put('d.js', `same${stamp(ID_B)}`);
+    const report = await run();
+    const dup = report.findings.filter((f) => f.id === 'stamp.duplicate-debug-id');
+    expect(dup).toHaveLength(1);
+    expect(dup[0]).toMatchObject({
+      severity: 'error',
+      details: { debugId: ID_A, files: ['a.js', 'b.js'] },
+    });
+  });
+
+  it('map.pointer-dangling: a note when the maps were removed on purpose; a warning otherwise', async () => {
+    put('a.js', `a\n//# sourceMappingURL=a.js.map${stamp(ID_A)}`);
+    put('b.js', `b\n//# sourceMappingURL=https://cdn.example/b.js.map${stamp(ID_B)}`);
+    const note = await run();
+    const found = note.findings.find((f) => f.id === 'map.pointer-dangling');
+    expect(found).toMatchObject({ severity: 'info', details: { pointers: ['a.js -> a.js.map'] } });
+    expect(doctorExitCode(note, true)).toBe(0);
+    // a map file elsewhere in the output: the removal was not complete / deliberate
+    put('other.css.map', mapJson());
+    expect(sev(await run(), 'map.pointer-dangling')).toBe('warning');
+    rmSync(join(dist, 'other.css.map'));
+    // an unstamped bundle: nothing says the removal was deliberate
+    put('c.js', 'c');
+    expect(sev(await run(), 'map.pointer-dangling')).toBe('warning');
+  });
+
+  it('a pointer to a map in another directory resolves relative to the bundle', async () => {
+    put('js/a.js', `a\n//# sourceMappingURL=../maps/a.js.map${stamp(ID_A)}`);
+    put('maps/a.js.map', mapJson({ debugId: ID_B }));
+    const report = await run();
+    expect(report.findings.find((f) => f.id === 'stamp.map-id-mismatch')?.file).toBe(
+      'maps/a.js.map',
+    );
+    expect(ids(report)).not.toContain('map.pointer-dangling');
+  });
+
+  it('a root-absolute or malformed pointer pairs nothing and is not reported dangling (the stamp rule)', async () => {
+    put('a.js', `a\n//# sourceMappingURL=/a.js.map${stamp(ID_A)}`);
+    put('b.js', `b\n//# sourceMappingURL=%E0%A4%A.map${stamp(ID_B)}`);
+    const report = await run();
+    expect(ids(report)).not.toContain('map.pointer-dangling');
+    expect(report.summary.bundles).toBe(2);
+  });
+
+  it('a pointer with an unencoded space or percent-escape resolves like the stamp does', async () => {
+    put('a b.js', `a\n//# sourceMappingURL=a b.js.map${stamp(ID_A)}`);
+    put('a b.js.map', mapJson({ debugId: ID_B }));
+    const report = await run();
+    expect(report.findings.find((f) => f.id === 'stamp.map-id-mismatch')?.file).toBe('a b.js.map');
+  });
+
+  it('map.inline: a data: map has nothing to upload', async () => {
+    put('a.js', `a\n//# sourceMappingURL=data:application/json;base64,e30=${stamp(ID_A)}`);
+    put('b.js', 'b\n//# sourceMappingURL=data:application/json;base64,e30=');
+    const report = await run();
+    expect(report.findings.find((f) => f.id === 'map.inline')).toMatchObject({
+      severity: 'error',
+      details: { files: ['a.js', 'b.js'] },
+    });
+    // the unstamped inline bundle is an error even though it has no .map file
+    expect(report.findings.find((f) => f.id === 'stamp.missing-debug-id')).toMatchObject({
+      severity: 'error',
+      file: 'b.js',
+    });
+  });
+
+  it('map.invalid: not JSON, not an object, wrong version; also for a map nothing points at', async () => {
+    put('a.js', `a${stamp(ID_A)}`);
+    put('a.js.map', '{not json');
+    put('b.js', `b${stamp(ID_B)}`);
+    put('b.js.map', '[]');
+    put('c.js', 'c');
+    put('c.js.map', mapJson({ version: 2 }));
+    put('style.css.map', 'nope');
+    put('other.css.map', mapJson({ version: 2 }));
+    const report = await run();
+    const invalid = report.findings.filter((f) => f.id === 'map.invalid');
+    expect(invalid.map((f) => f.file).sort()).toEqual([
+      'a.js.map',
+      'b.js.map',
+      'c.js.map',
+      'other.css.map',
+      'style.css.map',
+    ]);
+    expect(invalid.find((f) => f.file === 'a.js.map')?.message).toContain('not valid JSON');
+    expect(invalid.find((f) => f.file === 'b.js.map')?.message).toContain('not a JSON object');
+    expect(invalid.find((f) => f.file === 'c.js.map')?.message).toContain('version is 2');
+  });
+
+  it('map.no-sources: missing or empty `sources`', async () => {
+    put('a.js', `a${stamp(ID_A)}`);
+    put('a.js.map', mapJson({ debugId: ID_A, sources: [] }));
+    put('b.js', `export{b}from'./m.js';${stamp(ID_B)}`); // a facade: no code of its own
+    put('b.js.map', JSON.stringify({ version: 3, debugId: ID_B, mappings: '' }));
+    const report = await run();
+    const found = report.findings.filter((f) => f.id === 'map.no-sources');
+    expect(found.map((f) => [f.file, f.severity])).toEqual([
+      ['a.js.map', 'error'], // generated segments but no sources: a stripped map
+      ['b.js.map', 'info'], // no sources AND no mappings: an empty chunk, nothing to map
+    ]);
+  });
+
+  it('map.sources-content: embedded is a fact; absent AND unresolvable is a warning; absent but on disk is a fact', async () => {
+    put('a.js', `a${stamp(ID_A)}`);
+    put(
+      'a.js.map',
+      mapJson({
+        debugId: ID_A,
+        sourcesContent: undefined,
+        sources: ['../src/gone.ts', 'webpack/runtime/x'],
+      }),
+    );
+    put('b.js', `b${stamp(ID_B)}`);
+    mkdirSync(join(root, 'src'), { recursive: true });
+    writeFileSync(join(root, 'src', 'here.ts'), 'x');
+    put(
+      'b.js.map',
+      mapJson({ debugId: ID_B, sourcesContent: [null], sources: ['../src/here.ts'] }),
+    );
+    const report = await run();
+    const a = report.findings.find((f) => f.id === 'map.sources-unresolvable');
+    expect(a).toMatchObject({
+      severity: 'warning',
+      file: 'a.js.map',
+      details: { unresolved: 1, total: 2 },
+    });
+    expect(a?.message).toContain('../src/gone.ts');
+    const b = report.findings.find((f) => f.id === 'map.sources-content' && f.file === 'b.js.map');
+    expect(b).toMatchObject({ severity: 'info', details: { embedded: 0, total: 1 } });
+  });
+
+  it('sources resolve through sourceRoot, file:// and bundler-scheme prefixes', async () => {
+    mkdirSync(join(root, 'src'), { recursive: true });
+    writeFileSync(join(root, 'src', 'a.ts'), 'x');
+    writeFileSync(join(root, 'src', 'b.ts'), 'x');
+    writeFileSync(join(root, 'src', 'c.ts'), 'x');
+    put('a.js', `a${stamp(ID_A)}`);
+    put(
+      'a.js.map',
+      mapJson({
+        debugId: ID_A,
+        sourcesContent: undefined,
+        sourceRoot: '../src/',
+        sources: ['a.ts'],
+      }),
+    );
+    put('b.js', `b${stamp(ID_B)}`);
+    put(
+      'b.js.map',
+      mapJson({
+        debugId: ID_B,
+        sourcesContent: undefined,
+        sources: [`file://${join(root, 'src', 'b.ts')}`],
+      }),
+    );
+    put('c.js', 'c');
+    put(
+      'c.js.map',
+      mapJson({
+        debugId: ID_A,
+        sourcesContent: undefined,
+        sourceRoot: '..',
+        sources: ['webpack://app/src/c.ts', '\0virtual', '<anonymous>'],
+      }),
+    );
+    const report = await run();
+    expect(ids(report)).not.toContain('map.sources-unresolvable');
+  });
+
+  it('map.too-large: warns above the threshold', async () => {
+    goodPair();
+    const report = await run({ maxMapBytes: 10 });
+    expect(report.findings.find((f) => f.id === 'map.too-large')).toMatchObject({
+      severity: 'warning',
+      file: 'app.js.map',
+    });
+    expect((await run()).findings.map((f) => f.id)).not.toContain('map.too-large');
+  });
+
+  it('build.dev-bundle: webpack eval-style output', async () => {
+    put('main.js', `eval("x\\n//# sourceURL=webpack-internal:///./src/a.ts");`);
+    const report = await run();
+    expect(report.findings.find((f) => f.id === 'build.dev-bundle')).toMatchObject({
+      severity: 'warning',
+      details: { files: ['main.js'] },
+    });
+  });
+
+  describe('SRI', () => {
+    const sri = (bytes: string | Buffer): string =>
+      `sha384-${createHash('sha384').update(bytes).digest('base64')}`;
+
+    it('sri.unstamped-hazard: a pinned script that would be broken by stamping', async () => {
+      const js = 'console.log(1);';
+      put('app.js', js);
+      put('index.html', `<script src="app.js" integrity="${sri(js)}"></script>`);
+      const report = await run();
+      expect(report.findings.find((f) => f.id === 'sri.unstamped-hazard')).toMatchObject({
+        severity: 'warning',
+        details: { scripts: ['app.js'] },
+      });
+      expect(ids(report)).not.toContain('sri.mismatch');
+    });
+
+    it('a pin to a script that is not on disk is ignored', async () => {
+      put('app.js', `c${stamp(ID_A)}`);
+      put('index.html', `<script src="gone.js" integrity="${sri('x')}"></script>`);
+      const report = await run();
+      expect(ids(report)).not.toContain('sri.unstamped-hazard');
+      expect(ids(report)).not.toContain('doctor.internal-error');
+      expect(report.summary.errors).toBe(0);
+    });
+
+    it('a stamped script whose pin matches its bytes is fine', async () => {
+      const js = `console.log(1);${stamp(ID_A)}`;
+      put('app.js', js);
+      put('index.html', `<script src="app.js" integrity="${sri(js)}"></script>`);
+      const report = await run();
+      expect(ids(report)).not.toContain('sri.unstamped-hazard');
+      expect(ids(report)).not.toContain('sri.mismatch');
+      expect(report.passed).toContain('sri.mismatch');
+    });
+
+    it('sri.mismatch: stamped AFTER the page was hashed', async () => {
+      put('app.js', `console.log(1);${stamp(ID_A)}`);
+      put('index.html', `<script src="app.js" integrity="${sri('console.log(1);')}"></script>`);
+      const report = await run();
+      expect(report.findings.find((f) => f.id === 'sri.mismatch')).toMatchObject({
+        severity: 'error',
+        details: { scripts: ['app.js'] },
+      });
+      expect(report.findings.find((f) => f.id === 'sri.mismatch')?.message).toContain('refuses');
+    });
+
+    it('sri.manifest-hashes: a manifest in the directory pins hashes; the parent directory is never read', async () => {
+      put('app.js', `c${stamp(ID_A)}`);
+      put('asset-manifest.json', JSON.stringify({ 'app.js': { integrity: sri('x') } }));
+      put('plain-manifest.json', '{}');
+      put('readme.txt', 'integrity');
+      // a page and a manifest in the PARENT (e.g. a CDN script with integrity) are not this build's business
+      writeFileSync(
+        join(root, 'index.html'),
+        `<script src="https://cdn/x.js" integrity="${sri('x')}"></script>`,
+      );
+      writeFileSync(join(root, 'pins-manifest.json'), `{"h":"${sri('y')}"}`);
+      const report = await run();
+      const found = report.findings.find((f) => f.id === 'sri.manifest-hashes');
+      expect(found?.severity).toBe('warning');
+      expect(found?.details?.files).toEqual(['asset-manifest.json']);
+    });
+
+    it('a FIFO or oversized file named like a manifest is skipped, never opened', async () => {
+      put('app.js', `c${stamp(ID_A)}`);
+      const { spawnSync } = await import('node:child_process');
+      if (spawnSync('mkfifo', [join(dist, 'x-manifest.json')]).status !== 0) {
+        return;
+      }
+      put('big-manifest.json', `{"integrity":"${'x'.repeat(100)}"}`);
+      const report = await run({ maxMapBytes: 50 });
+      expect(ids(report)).not.toContain('sri.manifest-hashes');
+    });
+  });
+
+  describe('environment', () => {
+    it('env.token-missing is a warning; the token value is never printed, only where it came from', async () => {
+      goodPair();
+      const report = await run({ env: {} });
+      expect(report.findings.find((f) => f.id === 'env.token-missing')?.severity).toBe('warning');
+      expect(ids(report)).not.toContain('env.token-source');
+      const withToken = await run({ appToken: 'super-secret' });
+      expect(JSON.stringify(withToken)).not.toContain('super-secret');
+      expect(JSON.stringify(withToken)).not.toContain('secret-token-value');
+      expect(ids(withToken)).not.toContain('env.token-missing');
+      expect(withToken.findings.find((f) => f.id === 'env.token-source')).toMatchObject({
+        severity: 'info',
+        details: { source: 'option' },
+      });
+      const fromEnv = await run();
+      expect(fromEnv.findings.find((f) => f.id === 'env.token-source')?.details).toEqual({
+        source: 'env',
+      });
+      expect(JSON.stringify(fromEnv)).not.toContain('secret-token-value');
+      // whitespace-only counts as unset
+      expect(ids(await run({ env: { BUGSEE_APP_TOKEN: '  ' } }))).toContain('env.token-missing');
+      expect(ids(await run({ env: {}, appToken: '  ' }))).toContain('env.token-missing');
+    });
+
+    it('env.version-unresolved / env.build-unresolved', async () => {
+      goodPair();
+      const lonely = mkdtempSync(join(tmpdir(), 'bugsee-doctor-lonely-'));
+      try {
+        const report = await run({ env: { BUGSEE_APP_TOKEN: 't' }, projectRoot: lonely });
+        expect(sev(report, 'env.version-unresolved')).toBe('warning');
+        expect(sev(report, 'env.build-unresolved')).toBe('info');
+        const explicit = await run({
+          env: { BUGSEE_APP_TOKEN: 't' },
+          projectRoot: lonely,
+          appVersion: '9.9.9',
+          appBuild: '7',
+        });
+        expect(ids(explicit)).not.toContain('env.version-unresolved');
+        expect(ids(explicit)).not.toContain('env.build-unresolved');
+      } finally {
+        rmSync(lonely, { recursive: true, force: true });
+      }
+    });
+
+    it('env.node-env-development', async () => {
+      goodPair();
+      expect(
+        sev(await run({ env: { ...ENV, NODE_ENV: 'development' } }), 'env.node-env-development'),
+      ).toBe('warning');
+      expect(ids(await run({ env: { ...ENV, NODE_ENV: 'production' } }))).not.toContain(
+        'env.node-env-development',
+      );
+    });
+
+    it('skipEnv drops every env.* check', async () => {
+      goodPair();
+      const report = await run({ env: {}, skipEnv: true });
+      expect(ids(report).filter((id) => id.startsWith('env.'))).toEqual([]);
+      expect(report.passed.filter((id) => id.startsWith('env.'))).toEqual([]);
+    });
+  });
+
+  it('an output directory is walked at any depth', async () => {
+    put('a/b/c/d/e/f/g/h/deep.js', 'x');
+    put('a/b/c/d/e/f/ok.js', 'x');
+    const report = await run();
+    expect(report.summary.bundles).toBe(2);
+  });
+
+  it('only a project directory that is (or contains) the working directory is fenced and depth-capped', async () => {
+    put('a/b/c/d/e/f/g/h/deep.js', 'x');
+    put('a/ok.js', 'x');
+    put('src/s.js', 'x');
+    put('.cache/c.js', 'x');
+    put('package.json', '{"name":"p"}'); // a directory that IS a project; see doctor.hardening.test.ts
+    const here = process.cwd();
+    process.chdir(dist);
+    try {
+      const report = await run({ skipEnv: true });
+      expect(report.summary.bundles).toBe(1);
+    } finally {
+      process.chdir(here);
+    }
+  });
+
+  it('a map pointer that resolves to a directory is skipped, not a crash', async () => {
+    put('a.js', `a\n//# sourceMappingURL=a.js.map${stamp(ID_A)}`);
+    mkdirSync(join(dist, 'a.js.map'));
+    const report = await run();
+    expect(report.summary.bundles).toBe(1);
+    expect(ids(report)).not.toContain('map.invalid');
+  });
+
+  const describePerm = process.getuid?.() === 0 ? describe.skip : describe;
+  describePerm('unreadable paths', () => {
+    it('an unreadable sub-directory contributes nothing (and is reported, see doctor.hardening.test.ts); an unreadable parent is harmless', async () => {
+      put('a.js', `a${stamp(ID_A)}`);
+      mkdirSync(join(dist, 'locked'));
+      writeFileSync(join(dist, 'locked', 'x.js'), 'x');
+      chmodSync(join(dist, 'locked'), 0o000);
+      chmodSync(root, 0o300);
+      try {
+        const report = await run({ skipEnv: true });
+        expect(report.summary.bundles).toBe(1);
+        expect(ids(report)).not.toContain('sri.manifest-hashes');
+      } finally {
+        chmodSync(root, 0o700);
+        chmodSync(join(dist, 'locked'), 0o700);
+      }
+    });
+
+    it('an unreadable manifest is ignored', async () => {
+      put('a.js', `a${stamp(ID_A)}`);
+      const manifest = put('asset-manifest.json', '{"integrity":1}');
+      chmodSync(manifest, 0o000);
+      try {
+        expect(ids(await run({ skipEnv: true }))).not.toContain('sri.manifest-hashes');
+      } finally {
+        chmodSync(manifest, 0o600);
+      }
+    });
+  });
+
+  it('every check ID is unique and namespaced', () => {
+    expect(new Set(DOCTOR_CHECK_IDS).size).toBe(DOCTOR_CHECK_IDS.length);
+    for (const id of DOCTOR_CHECK_IDS) {
+      expect(id).toMatch(/^(output|stamp|map|sri|build|env|doctor)\.[a-z-]+$/);
+    }
+  });
+});
+
+describe('doctorExitCode / formatDoctorReport', () => {
+  const report = (errors: number, warnings: number): DoctorReport => ({
+    schemaVersion: 1,
+    tool: 'bugsee-sourcemaps-doctor',
+    dir: '/d',
+    summary: { errors, warnings, infos: 0, bundles: 0, maps: 0 },
+    passed: [],
+    findings: [],
+  });
+
+  it('exit codes: 2 on errors, 1 on warnings only under strict, else 0', () => {
+    expect(doctorExitCode(report(1, 1), true)).toBe(2);
+    expect(doctorExitCode(report(0, 1), true)).toBe(1);
+    expect(doctorExitCode(report(0, 1))).toBe(0);
+    expect(doctorExitCode(report(0, 0), true)).toBe(0);
+  });
+
+  it('renders errors before warnings before notes, with fix hints', async () => {
+    put('vendor.js', 'x');
+    put('app.js', `c${stamp(ID_A)}`);
+    put('app.js.map', mapJson({ debugId: ID_B }));
+    const text = formatDoctorReport(await run());
+    const error = text.indexOf('ERROR  [stamp.map-id-mismatch]');
+    const warn = text.indexOf('WARN   [stamp.missing-debug-id]');
+    const info = text.indexOf('info   [map.sources-content]');
+    expect(error).toBeGreaterThan(-1);
+    expect(warn).toBeGreaterThan(error);
+    expect(info).toBeGreaterThan(warn);
+    expect(text).toContain('        fix: ');
+    expect(text).toContain('2 bundle(s), 1 map(s): 1 error(s)');
+  });
+
+  it('says so when there is nothing to report', () => {
+    expect(formatDoctorReport(report(0, 0))).toContain('No problems found.');
+  });
+});

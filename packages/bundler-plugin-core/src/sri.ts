@@ -16,8 +16,12 @@
 // every dynamic import.
 import { createHash } from 'node:crypto';
 import { createReadStream, type Dirent } from 'node:fs';
-import { access, readdir, readFile, writeFile } from 'node:fs/promises';
+import { access, readdir, readFile, realpath, stat, writeFile } from 'node:fs/promises';
 import { dirname, isAbsolute, join, normalize, relative, resolve, sep } from 'node:path';
+import { readRegularFile } from './safe-read';
+
+/** A page larger than this is not scanned (a real page is a few KB): the scan must stay bounded on hostile input. */
+export const MAX_HTML_BYTES = 8 * 1024 * 1024;
 
 /** One `<script>` whose `integrity` pins a file in the build output. */
 export interface SriProtectedScript {
@@ -36,49 +40,61 @@ const NEVER_WALK = new Set(['node_modules', '.git', 'test', 'tests', '__tests__'
 const MAX_DEPTH = 6;
 
 /**
- * Every `<script>` tag, captured with its attributes. Deliberately a regex and not a parser: this is
- * a guard, and the shapes that matter are the ones bundlers emit (minified, attributes in any order,
- * quoted or bare). A tag we fail to parse is a tag we do not flag, which is the pre-existing
- * behaviour — this can only ever be MORE cautious than shipping the page blind.
+ * Every `<script>` tag, captured with its attributes. Deliberately not a parser: this is a guard, and the shapes
+ * that matter are the ones bundlers emit (minified, attributes in any order, quoted or bare). A tag we fail to
+ * parse is a tag we do not flag, which is the pre-existing behaviour: this can only ever be MORE cautious than
+ * shipping the page blind. Found by {@link findTags}, a LINEAR scan (the regex `/<script\b[^>]*>/gi` it replaces
+ * was quadratic on a page that is thousands of unterminated `<script `).
  */
-const SCRIPT_TAG = /<script\b[^>]*>/gi;
 // A `<link rel=modulepreload integrity>` pins a chunk just as hard: the preload fails the integrity
 // check, poisons the module map, and the later `import()` of that chunk fails with it. Angular's
 // builder and the Vite SRI plugins emit these alongside the entry `<script>`.
-const PRELOAD_TAG = /<link\b[^>]*>/gi;
 const PRELOADS_SCRIPT = /\brel\s*=\s*("|')?(modulepreload|preload)\1?/i;
-// HTML comments are not markup. `<!-- <script src=app.js integrity=…> -->` used to refuse the build.
-const HTML_COMMENT = /<!--[\s\S]*?-->/g;
+
+/** `<name ...>` tags of `markup` (case-insensitive name, then a word boundary, up to the first `>`). Linear. */
+export function findTags(markup: string, name: string): string[] {
+  const tags: string[] = [];
+  let from = 0;
+  for (let open = markup.indexOf('<', from); open !== -1; open = markup.indexOf('<', from)) {
+    from = open + 1;
+    if (markup.slice(open + 1, open + 1 + name.length).toLowerCase() !== name) {
+      continue;
+    }
+    if (/\w/.test(markup.charAt(open + 1 + name.length))) {
+      continue; // `<scripts>`, `<linkage>`: the name must end at a word boundary
+    }
+    const close = markup.indexOf('>', open);
+    if (close === -1) {
+      break; // no `>` anywhere after this point: no later tag can be closed either
+    }
+    tags.push(markup.slice(open, close + 1));
+    from = close + 1;
+  }
+  return tags;
+}
+
+/**
+ * `source` without its HTML comments (`<!-- ... -->` is not markup: `<!-- <script src=app.js integrity=...> -->`
+ * used to refuse the build). An unterminated `<!--` is left as it is. Linear: once no `-->` follows, none ever will.
+ */
+export function stripComments(source: string): string {
+  let out = '';
+  let at = 0;
+  for (let open = source.indexOf('<!--', at); open !== -1; open = source.indexOf('<!--', at)) {
+    const close = source.indexOf('-->', open + 4);
+    if (close === -1) {
+      break; // no `-->` anywhere after this point: no later comment can be closed either
+    }
+    out += source.slice(at, open);
+    at = close + 3;
+  }
+  return out + source.slice(at);
+}
 // `[\s"'<]` and not `\b`: `\bintegrity` also matches `data-integrity`, and `\bsrc` matches
 // `data-src` — attributes a framework uses for its own bookkeeping, which pin nothing.
 const INTEGRITY_ATTR = /[\s"'<]integrity\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/i;
 const SRC_ATTR = /[\s"'<]src\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/i;
 const HREF_ATTR = /[\s"'<]href\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/i;
-
-// An import map's `integrity` table pins modules by URL — how Angular's esbuild builder (v21+) pins its lazy
-// chunks, which no tag mentions. The browser enforces it exactly like a tag's attribute.
-const IMPORT_MAP = /<script\b[^>]*?\stype\s*=\s*("|')?importmap\1?[^>]*>([\s\S]*?)<\/script\s*>/gi;
-
-/** `{ integrity, url }` for every entry of every import map's `integrity` table in `markup`. */
-function importMapPins(markup: string): { integrity: string; url: string }[] {
-  const pins: { integrity: string; url: string }[] = [];
-  for (const [, , body = ''] of markup.matchAll(IMPORT_MAP)) {
-    let table: unknown;
-    try {
-      table = (JSON.parse(body) as { integrity?: unknown }).integrity;
-    } catch {
-      continue; // not JSON: the browser ignores such a map too
-    }
-    if (typeof table === 'object' && table !== null) {
-      for (const [url, integrity] of Object.entries(table)) {
-        if (typeof integrity === 'string') {
-          pins.push({ integrity, url });
-        }
-      }
-    }
-  }
-  return pins;
-}
 
 const unquote = (value: string): string =>
   (value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))
@@ -108,7 +124,41 @@ const resolveLocalScript = (outDir: string, htmlDir: string, src: string): strin
   return normalize(full).startsWith(rooted) ? full : undefined;
 };
 
-const HTML_FILE = /\.x?html?$/i;
+/** `{ integrity, url }` for every entry of every import map's `integrity` table in `markup`. */
+function importMapPins(markup: string): { integrity: string; url: string }[] {
+  // An import map's `integrity` table pins modules by URL: how Angular's esbuild builder (v21+) pins its lazy chunks,
+  // which no tag mentions. The browser enforces it exactly like a tag's attribute. Linear: tags come from `findTags`,
+  // and each body is the text up to the next `</script`, searched from where the tag ended.
+  const pins: { integrity: string; url: string }[] = [];
+  const lower = markup.toLowerCase();
+  let cursor = 0;
+  for (const tag of findTags(markup, 'script')) {
+    const at = markup.indexOf(tag, cursor);
+    cursor = at + tag.length;
+    if (!/\stype\s*=\s*("|')?importmap\1?/i.test(tag)) {
+      continue;
+    }
+    const end = lower.indexOf('</script', cursor);
+    let table: unknown;
+    try {
+      table = (
+        JSON.parse(markup.slice(cursor, end === -1 ? markup.length : end)) as {
+          integrity?: unknown;
+        }
+      ).integrity;
+    } catch {
+      continue; // not JSON: the browser ignores such a map too
+    }
+    if (typeof table === 'object' && table !== null) {
+      for (const [url, integrity] of Object.entries(table)) {
+        if (typeof integrity === 'string') {
+          pins.push({ integrity, url });
+        }
+      }
+    }
+  }
+  return pins;
+}
 
 const fileExists = async (file: string): Promise<boolean> => {
   try {
@@ -125,6 +175,7 @@ const isUnder = (root: string, dir: string): boolean => {
   return rel === '' || (!rel.startsWith(`..${sep}`) && rel !== '..' && !isAbsolute(rel));
 };
 
+/** Files under `dir` whose NAME matches `wanted`: for the re-seal, which rewrites real files only (no symlinks followed). */
 const walkFiles = async (dir: string, wanted: RegExp, depth = 0): Promise<string[]> => {
   if (depth > MAX_DEPTH) {
     return [];
@@ -152,6 +203,88 @@ const walkFiles = async (dir: string, wanted: RegExp, depth = 0): Promise<string
   return found;
 };
 
+interface HtmlWalk {
+  fenced: boolean;
+  /** Symlinked pages found (read through their real path, see the scan). */
+  links: Set<string>;
+  unreadableDirs: string[];
+  realRoot: string;
+  /** Real directories already walked: a link to one is not walked twice (loops, aliases). */
+  visited: Set<string>;
+  /** Links to directories inside the output: followed only after every REAL directory was walked (real paths win). */
+  deferred: Array<{ dir: string; real: string; depth: number }>;
+}
+
+const walkHtml = async (
+  dir: string,
+  real: string,
+  walk: HtmlWalk,
+  depth = 0,
+): Promise<string[]> => {
+  if (walk.fenced && depth > MAX_DEPTH) {
+    return [];
+  }
+  // Marked when WALKED (not when met): a real directory beyond the cap must not stop a shallower link to it.
+  if (walk.visited.has(real)) {
+    return [];
+  }
+  walk.visited.add(real);
+  let entries: Dirent[];
+  try {
+    entries = await readdir(dir, { withFileTypes: true });
+  } catch {
+    // Handed back so the doctor can say the pages in it were NOT scanned (a missing output directory is the CLI's
+    // error to raise: it reports it properly, and throwing here would replace that with a worse one).
+    walk.unreadableDirs.push(dir);
+    return [];
+  }
+  const found: string[] = [];
+  for (const entry of entries) {
+    const full = join(dir, entry.name);
+    // What a symlink POINTS AT decides how it is treated (a link named `pages.html` may be a directory): the real
+    // path of the directory it names, or undefined for a link to a file or a dangling one.
+    let dirLink: string | undefined;
+    if (entry.isSymbolicLink()) {
+      const target = await realpath(full).catch(() => undefined);
+      const isDirectory =
+        target !== undefined &&
+        (await stat(target).then(
+          (info) => info.isDirectory(),
+          /* v8 ignore start -- the link vanished between realpath and stat: a race that cannot be reproduced deterministically */
+          () => false,
+          /* v8 ignore stop */
+        ));
+      dirLink = isDirectory ? target : undefined;
+    }
+    if (entry.isDirectory() || dirLink !== undefined) {
+      // Unfenced (an output directory the doctor audits in full) still never enters node_modules or .git.
+      const skip = walk.fenced
+        ? NEVER_WALK.has(entry.name) || entry.name.startsWith('.')
+        : entry.name === 'node_modules' || entry.name === '.git';
+      if (skip) {
+        continue;
+      }
+      if (dirLink === undefined) {
+        for (const page of await walkHtml(full, join(real, entry.name), walk, depth + 1)) {
+          found.push(page);
+        }
+      } else if (dirLink === walk.realRoot || dirLink.startsWith(walk.realRoot + sep)) {
+        // Followed only after every REAL directory was walked (real paths win over aliases).
+        walk.deferred.push({ dir: full, real: dirLink, depth: depth + 1 });
+      } else {
+        // A directory whose pages were NOT scanned: it leaves the output directory.
+        walk.unreadableDirs.push(full);
+      }
+    } else if (/\.x?html?$/i.test(entry.name) && (entry.isFile() || entry.isSymbolicLink())) {
+      found.push(full);
+      if (entry.isSymbolicLink()) {
+        walk.links.add(full);
+      }
+    }
+  }
+  return found;
+};
+
 /**
  * Scripts in `outDir`'s HTML whose `integrity` attribute pins a file we would stamp.
  *
@@ -159,26 +292,89 @@ const walkFiles = async (dir: string, wanted: RegExp, depth = 0): Promise<string
  * to report.
  */
 export async function findSriProtectedScripts(outDirInput: string): Promise<SriProtectedScript[]> {
+  // No page cap here: this is the guard stamping relies on, and a pin it cannot see is a script stamping would
+  // break. Only the diagnostic (which must stay bounded on hostile input) passes a cap.
+  const scripts = (await findSriProtectedScriptsDetailed(outDirInput, Number.POSITIVE_INFINITY))
+    .scripts;
+  // One entry per script (the first pin found): stamping asks "is this script pinned at all", the doctor wants every pin.
+  const seen = new Set<string>();
+  return scripts.filter((pin) => !seen.has(pin.script) && seen.add(pin.script));
+}
+
+/** What {@link findSriProtectedScripts} found, and the pages it did not scan because they are larger than {@link MAX_HTML_BYTES}. */
+export interface SriScan {
+  scripts: SriProtectedScript[];
+  skippedPages: Array<{ html: string; size: number }>;
+  /** Pages that exist but could not be read (permissions, a race): their pins were NOT checked. */
+  unreadablePages: string[];
+  /** Directories that exist but could not be listed: the pages in them were NOT scanned. */
+  unreadableDirs: string[];
+}
+
+export async function findSriProtectedScriptsDetailed(
+  outDirInput: string,
+  maxHtmlBytes: number = MAX_HTML_BYTES,
+  /** Skip `test`/dot-directories and stop below depth 6 (the stamp guard's default; the doctor passes its own fence). */
+  fenced = true,
+  /** A page for which this returns true is not read at all (the doctor's `--exclude`). */
+  skipPage?: (html: string) => boolean,
+): Promise<SriScan> {
   // Resolved FIRST: a bundler hands us whatever the user configured, and Rollup passes `output.dir`
   // through verbatim (`'dist'`) while `output.file: 'bundle.js'` resolves to `'.'`. Comparing an
   // absolute resolved script path against a relative root made every `src="main.js"` look like it
   // was outside the output directory, so the guard was silently inert for exactly those builds.
   const outDir = resolve(outDirInput);
-  const pages = await walkFiles(outDir, HTML_FILE);
+  const realOutDir = await realpath(outDir).catch(() => outDir);
+  const walk: HtmlWalk = {
+    fenced,
+    links: new Set<string>(),
+    unreadableDirs: [],
+    realRoot: realOutDir,
+    visited: new Set<string>(),
+    deferred: [],
+  };
+  const pages = await walkHtml(outDir, realOutDir, walk);
+  // (`deferred` can grow while it is processed: a followed link's tree may hold more links.)
+  for (let i = 0; i < walk.deferred.length; i++) {
+    const link = walk.deferred[i] as HtmlWalk['deferred'][number];
+    for (const page of await walkHtml(link.dir, link.real, walk, link.depth)) {
+      pages.push(page);
+    }
+  }
+  const { links, unreadableDirs } = walk;
   const seen = new Set<string>();
   const found: SriProtectedScript[] = [];
+  const skippedPages: SriScan['skippedPages'] = [];
+  const unreadablePages: string[] = [];
   for (const html of pages.sort()) {
-    let source: string;
-    try {
-      source = await readFile(html, 'utf8');
-    } catch {
+    if (skipPage?.(html) === true) {
+      continue;
+    }
+    // A symlinked page is read through its REAL path, and only if that stays inside the output directory (the
+    // same rule as every other symlinked artifact); one that leads out, or dangles, is a page that was not checked.
+    let readPath = html;
+    if (links.has(html)) {
+      const real = await realpath(html).catch(() => undefined);
+      if (real === undefined || !(real === realOutDir || real.startsWith(realOutDir + sep))) {
+        unreadablePages.push(html);
+        continue;
+      }
+      readPath = real;
+    }
+    const read = await readRegularFile(readPath, maxHtmlBytes);
+    if (!read.ok) {
+      if (read.tooLarge !== undefined) {
+        skippedPages.push({ html, size: read.tooLarge.size });
+      } else {
+        unreadablePages.push(html); // any other failure: the page's pins were NOT checked, and that is said
+      }
       continue;
     }
     const htmlDir = join(html, '..');
-    const markup = source.replace(HTML_COMMENT, '');
+    const markup = stripComments(read.bytes.toString('utf8'));
     const tags = [
-      ...(markup.match(SCRIPT_TAG) ?? []).map((tag) => ({ tag, url: SRC_ATTR.exec(tag)?.[1] })),
-      ...(markup.match(PRELOAD_TAG) ?? [])
+      ...findTags(markup, 'script').map((tag) => ({ tag, url: SRC_ATTR.exec(tag)?.[1] })),
+      ...findTags(markup, 'link')
         .filter((tag) => PRELOADS_SCRIPT.test(tag))
         .map((tag) => ({ tag, url: HREF_ATTR.exec(tag)?.[1] })),
     ].map(({ tag, url }) => {
@@ -206,22 +402,27 @@ export async function findSriProtectedScripts(outDirInput: string): Promise<SriP
         }
       }
       // Only a JS file we emit can be broken by inject; a `.mjs`/`.cjs` counts, a `.wasm` does not.
-      if (script === undefined || !/\.[cm]?js$/i.test(script) || seen.has(script)) {
+      const pin = integrity.trim();
+      if (script === undefined || !/\.[cm]?js$/i.test(script) || seen.has(`${script}\0${pin}`)) {
         continue;
       }
-      seen.add(script);
-      found.push({ html, script, integrity: integrity.trim() });
+      seen.add(`${script}\0${pin}`);
+      found.push({ html, script, integrity: pin });
     }
   }
-  return found;
+  return { scripts: found, skippedPages, unreadablePages, unreadableDirs };
 }
 
 /** SRI's hash algorithms, weakest to strongest — the order the spec compares them in. */
 const SRI_ALGORITHMS = ['sha256', 'sha384', 'sha512'] as const;
 type SriAlgorithm = (typeof SRI_ALGORITHMS)[number];
 
-/** The digests of `integrity` the browser can evaluate, grouped by algorithm. Unknown algorithms are dropped. */
-function digestsByAlgorithm(integrity: string): Map<SriAlgorithm, string[]> {
+/**
+ * Whether `bytes` would pass `integrity`, by the browser's rule (SRI): unknown algorithms are
+ * ignored; of what remains only the STRONGEST algorithm is compared; any one digest of it matching is
+ * enough. A value with no algorithm the browser knows means no check at all.
+ */
+export function passesIntegrity(integrity: string, bytes: Buffer): boolean {
   const byAlgorithm = new Map<SriAlgorithm, string[]>();
   for (const token of integrity.split(/\s+/)) {
     // `alg-base64[?options]` — the options suffix is allowed by the grammar and has no effect here.
@@ -232,16 +433,6 @@ function digestsByAlgorithm(integrity: string): Map<SriAlgorithm, string[]> {
       byAlgorithm.set(alg, [...(byAlgorithm.get(alg) ?? []), spec.slice(dash + 1)]);
     }
   }
-  return byAlgorithm;
-}
-
-/**
- * Whether `bytes` would pass `integrity`, by the browser's rule (SRI): unknown algorithms are
- * ignored; of what remains only the STRONGEST algorithm is compared; any one digest of it matching is
- * enough. A value with no algorithm the browser knows means no check at all.
- */
-function passesIntegrity(integrity: string, bytes: Buffer): boolean {
-  const byAlgorithm = digestsByAlgorithm(integrity);
   const strongest = [...SRI_ALGORITHMS].reverse().find((alg) => byAlgorithm.has(alg));
   if (strongest === undefined) {
     return true;
