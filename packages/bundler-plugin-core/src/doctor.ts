@@ -776,6 +776,7 @@ async function diagnose(dirInput: string, options: DoctorOptions): Promise<Docto
   let stamped = 0;
   const unstamped = new Set<string>();
   const unstampedWithoutMap: string[] = [];
+  const unpaired: Array<{ bundle: string; name: string; id: string | undefined }> = [];
   const noRegistration: string[] = [];
   const dangling: string[] = [];
   const outsideDir: string[] = [];
@@ -876,9 +877,6 @@ async function diagnose(dirInput: string, options: DoctorOptions): Promise<Docto
 
     if (id === undefined) {
       unstamped.add(name);
-      if (mapPath === undefined && !inline.has(name)) {
-        unstampedWithoutMap.push(name);
-      }
     } else {
       stamped++;
       const list = stampedIds.get(id) ?? [];
@@ -889,13 +887,32 @@ async function diagnose(dirInput: string, options: DoctorOptions): Promise<Docto
       }
     }
 
+    if (mapPath === undefined && (pointer === undefined || pointer === '')) {
+      // No pointer and no sibling: a hidden map the bundler wrote elsewhere (`maps/[file].map`, `sourcemapFileNames`)
+      // is paired below, from the maps nothing else claimed.
+      unpaired.push({ bundle, name, id });
+    } else if (mapPath === undefined && id === undefined && !inline.has(name)) {
+      unstampedWithoutMap.push(name);
+    }
+
     if (mapPath !== undefined) {
+      await pairMap(mapPath, name, code, id);
+    }
+  }
+
+  async function pairMap(
+    mapPath: string,
+    name: string,
+    code: string | null,
+    id: string | undefined,
+  ): Promise<void> {
+    {
       claimedMaps.add(mapPath);
       const mapName = rel(dir, mapPath);
       const mapRead = await loadMap(mapPath);
       if (!mapRead.ok) {
         reportUnreadableMap(mapName, mapRead);
-        continue;
+        return;
       }
       const parsed = mapRead.parsed;
       if (!parsed.ok) {
@@ -908,7 +925,7 @@ async function diagnose(dirInput: string, options: DoctorOptions): Promise<Docto
             fix: 'Check the build is not truncating or post-processing the map; rebuild.',
           });
         }
-        continue;
+        return;
       }
       if (id !== undefined && parsed.debugId === undefined) {
         add({
@@ -940,7 +957,45 @@ async function diagnose(dirInput: string, options: DoctorOptions): Promise<Docto
         // Counted once as unstamped above; do not double report below.
         unstamped.delete(name);
       }
-      validateMap(mapPath, mapName, parsed.json, mapRead.real, code);
+      validateMap(mapPath, mapName, parsed.json, mapRead.real, code === null ? null : code);
+    }
+  }
+
+  // Bundles with no pointer and no sibling map: pair each with a map nothing claimed, by the debugId it carries, else
+  // by a `file` field that names it (only when exactly one map does).
+  if (unpaired.length > 0) {
+    const index = new Map<string, { debugId?: string; file?: string }>();
+    for (const map of maps) {
+      if (!claimedMaps.has(map)) {
+        const read = await loadMap(map);
+        if (read.ok && read.parsed.ok) {
+          const file = read.parsed.json.file;
+          index.set(map, {
+            debugId: read.parsed.debugId,
+            file: typeof file === 'string' ? nodePath.basename(file) : undefined,
+          });
+        }
+      }
+    }
+    for (const entry of unpaired) {
+      const free = [...index].filter(([map]) => !claimedMaps.has(map));
+      const byId =
+        entry.id === undefined ? [] : free.filter(([, info]) => info.debugId === entry.id);
+      const byFile = free.filter(([, info]) => info.file === nodePath.basename(entry.bundle));
+      const match =
+        byId.length === 1 ? byId : byId.length === 0 && byFile.length === 1 ? byFile : [];
+      if (match.length === 1) {
+        const reread = await readInside(entry.bundle, maxBundleBytes, realDir);
+        await pairMap(
+          (match[0] as [string, unknown])[0],
+          entry.name,
+          /* v8 ignore next -- the bundle was read a moment ago; failing now means it changed under us (a race), and null keeps it from being judged a facade */
+          reread.ok ? reread.bytes.toString('utf8') : null,
+          entry.id,
+        );
+      } else if (entry.id === undefined) {
+        unstampedWithoutMap.push(entry.name);
+      }
     }
   }
 

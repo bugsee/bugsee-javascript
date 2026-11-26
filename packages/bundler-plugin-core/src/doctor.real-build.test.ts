@@ -238,6 +238,74 @@ describeReal('doctor on real, stamped build output', () => {
   });
 });
 
+describeReal('doctor on hidden maps the bundler wrote to another path', () => {
+  const rspackBuild = async (name: string, stamped: boolean) => {
+    const app = makeApp(name);
+    await new Promise<void>((resolve, reject) => {
+      const compiler = rspack({
+        context: app.dir,
+        mode: 'production',
+        entry: join(app.dir, 'index.js'),
+        devtool: 'hidden-source-map',
+        output: { path: app.out, sourceMapFilename: 'maps/[file].map' },
+        plugins: stamped ? [bugseeRspackPlugin(pluginOptions())] : [],
+      });
+      compiler.run((err) => compiler.close(() => (err ? reject(err) : resolve())));
+    });
+    return app;
+  };
+  const rollupBuild = async (name: string, stamped: boolean) => {
+    const app = makeApp(name);
+    const bundle = await rollup({
+      input: join(app.dir, 'index.js'),
+      plugins: stamped ? [bugseeRollupPlugin(pluginOptions())] : [],
+    });
+    await bundle.write({
+      dir: app.out,
+      sourcemap: 'hidden',
+      sourcemapFileNames: 'maps/[name].map',
+    });
+    await bundle.close();
+    return app;
+  };
+  const mapsOf = (out: string): string[] =>
+    readdirSync(join(out, 'maps')).map((file) => join(out, 'maps', file));
+  const breakIds = (out: string): void => {
+    for (const map of mapsOf(out)) {
+      const json = JSON.parse(readFileSync(map, 'utf8')) as { debugId?: string };
+      json.debugId = '00000000-0000-4000-8000-000000000000';
+      writeFileSync(map, JSON.stringify(json));
+    }
+  };
+
+  for (const [label, build] of [
+    ['Rspack sourceMapFilename maps/[file].map', rspackBuild],
+    ['Rollup sourcemapFileNames maps/[name].map', rollupBuild],
+  ] as const) {
+    it(`${label}: a stamped build pairs its maps and is healthy`, async () => {
+      const app = await build(`moved-ok-${label.slice(0, 3)}`, true);
+      const report = await doctor(app.out);
+      expect(idsOf(report, 'error')).toEqual([]);
+      expect(report.passed).toEqual(expect.arrayContaining(['stamp.map-id-mismatch']));
+    });
+
+    it(`${label}: a map whose debugId differs from its bundle's is an error`, async () => {
+      const app = await build(`moved-bad-${label.slice(0, 3)}`, true);
+      breakIds(app.out);
+      const report = await doctor(app.out);
+      expect(idsOf(report, 'error')).toContain('stamp.map-id-mismatch');
+      expect(doctorExitCode(report, true)).toBe(2);
+    });
+
+    it(`${label}: an unstamped build is an error, not a "no map on disk" warning`, async () => {
+      const app = await build(`moved-raw-${label.slice(0, 3)}`, false);
+      const report = await doctor(app.out);
+      expect(idsOf(report, 'error')).toContain('stamp.missing-debug-id');
+      expect(report.findings.some((f) => f.message.includes('no map on disk'))).toBe(false);
+    });
+  }
+});
+
 describeReal('doctor on Vite worker builds (stamped by the upload catch-up)', () => {
   const workerApp = (name: string, form: 'url' | 'query'): { dir: string; out: string } => {
     const app = makeApp(name);

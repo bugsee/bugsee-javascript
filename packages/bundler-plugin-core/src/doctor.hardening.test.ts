@@ -236,6 +236,104 @@ describe('reads', () => {
     }
   });
 
+  // the per-bundle error (its map carries an id the bundle lost), not the aggregate "not stamped" warning
+  const lostStamp = (report: DoctorReport) =>
+    report.findings.filter(
+      (f) => f.id === 'stamp.missing-debug-id' && f.message.includes('lost its stamp'),
+    );
+  describe('round 23: a hidden map written to another path is paired', () => {
+    it('a stamped bundle is matched by debugId and a mismatch is an error', async () => {
+      put('main.js', `a${stamp(ID_A)}`);
+      put('maps/main.js.map', mapJson({ file: 'main.js', debugId: ID_B }));
+      const report = await run();
+      expect(find(report, 'stamp.map-id-mismatch')?.file).toBe('maps/main.js.map');
+      expect(report.summary.errors).toBeGreaterThan(0);
+    });
+
+    it('a stamped bundle is matched by debugId alone, whatever `file` says', async () => {
+      put('main.js', `a${stamp(ID_A)}`);
+      put('maps/other.map', mapJson({ file: 'zzz.js', debugId: ID_A }));
+      const report = await run();
+      expect(ids(report)).not.toContain('stamp.map-id-mismatch');
+      expect(ids(report)).not.toContain('map.orphan');
+      expect(find(report, 'stamp.map-no-debug-id')).toBeUndefined();
+    });
+
+    it('a stamped bundle whose map has no debugId is an error', async () => {
+      put('main.js', `a${stamp(ID_A)}`);
+      put('maps/main.js.map', mapJson({ file: 'main.js' }));
+      expect(find(await run(), 'stamp.map-no-debug-id')?.file).toBe('maps/main.js.map');
+    });
+
+    it('an unstamped bundle is matched by `file`: a lost stamp is an error, not "no map on disk"', async () => {
+      put('main.js', 'a');
+      put('maps/main.js.map', mapJson({ file: 'main.js', debugId: ID_A }));
+      const report = await run();
+      expect(find(report, 'stamp.missing-debug-id')?.severity).toBe('error');
+      expect(find(report, 'stamp.missing-debug-id')?.message).not.toContain('no map on disk');
+    });
+
+    it('an unstamped bundle with a `file` match but no debugId is not reported as having no map', async () => {
+      put('main.js', 'a');
+      put('maps/main.js.map', mapJson({ file: 'main.js' }));
+      const report = await run();
+      expect(report.findings.some((f) => f.message.includes('no map on disk'))).toBe(false);
+    });
+
+    it('an ambiguous `file` match pairs nothing', async () => {
+      put('main.js', 'a');
+      put('maps/a/main.js.map', mapJson({ file: 'main.js', debugId: ID_A }));
+      put('maps/b/main.js.map', mapJson({ file: 'main.js', debugId: ID_B }));
+      const report = await run();
+      expect(lostStamp(report)).toHaveLength(0);
+      expect(report.findings.some((f) => f.message.includes('no map on disk'))).toBe(true);
+    });
+
+    it('an ambiguous debugId match is not resolved by `file`: nothing is guessed', async () => {
+      put('main.js', `a${stamp(ID_A)}`);
+      put('maps/x.map', mapJson({ file: 'x.js', debugId: ID_A }));
+      put('maps/y.map', mapJson({ file: 'y.js', debugId: ID_A }));
+      put('maps/main.js.map', mapJson({ file: 'main.js', debugId: ID_B }));
+      expect(find(await run(), 'stamp.map-id-mismatch')).toBeUndefined();
+    });
+
+    it('a map is paired with one bundle only', async () => {
+      put('a/main.js', 'a');
+      put('b/main.js', 'b');
+      put('maps/main.js.map', mapJson({ file: 'main.js', debugId: ID_A }));
+      const report = await run();
+      expect(lostStamp(report)).toHaveLength(1);
+      expect(report.findings.some((f) => f.message.includes('no map on disk'))).toBe(true);
+    });
+
+    it('an empty hidden map of a bundle with real code is an error, not a facade note', async () => {
+      put('main.js', 'console.log(1)');
+      put(
+        'maps/main.js.map',
+        JSON.stringify({ version: 3, file: 'main.js', sources: [], names: [], mappings: '' }),
+      );
+      expect(find(await run(), 'map.no-sources')?.severity).toBe('error');
+    });
+
+    it('an inline-map bundle is never paired', async () => {
+      put('main.js', 'a\n//# sourceMappingURL=data:application/json;base64,e30=');
+      put('maps/main.js.map', mapJson({ file: 'main.js', debugId: ID_A }));
+      expect(lostStamp(await run())).toHaveLength(0);
+    });
+
+    it('a remote pointer is not a hidden map: nothing is paired', async () => {
+      put('main.js', 'a\n//# sourceMappingURL=https://cdn.example/main.js.map');
+      put('maps/main.js.map', mapJson({ file: 'main.js', debugId: ID_A }));
+      expect(lostStamp(await run())).toHaveLength(0);
+    });
+
+    it('an unreadable orphan map and an invalid one are skipped by the pairing', async () => {
+      put('main.js', 'a');
+      put('maps/bad.map', '{not json');
+      expect(find(await run(), 'map.invalid')).toBeDefined();
+    });
+  });
+
   it('round 23: a SystemJS factory parameter or prelude variable shadows an outer helper', () => {
     const helper = 'function n(e){return e&&e.__esModule?e:{default:e}}\n';
     expect(
