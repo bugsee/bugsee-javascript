@@ -243,7 +243,7 @@ export function buildScenariosPlugin() {
     fastify.post('/s6/console', async (req: FastifyRequest, reply: FastifyReply) => {
       const marker = markerOf(req);
       // eslint-disable-next-line no-console
-      console.log(`s6-log-${marker}`, 'multi-arg', 3, { nested: true });
+      console.log('%s', `s6-log-${marker}`, 'multi-arg', 3, { nested: true });
       // eslint-disable-next-line no-console
       console.info(`s6-info-${marker}`);
       // eslint-disable-next-line no-console
