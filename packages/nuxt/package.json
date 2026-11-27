@@ -112,7 +112,7 @@
   },
   "devDependencies": {
     "@nuxt/kit": "^3.21.11",
-    "nitropack": "^2.13.6",
-    "nuxt": "^4.6.4"
+    "nitropack": "^2.14.0",
+    "nuxt": "^4.7.0"
   }
 }
