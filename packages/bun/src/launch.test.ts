@@ -110,6 +110,33 @@ const track = <T extends { stop: (t?: number) => Promise<boolean> }>(c: T): T =>
   return c;
 };
 
+describe('@bugsee/bun logException of a failed import', () => {
+  it("names the failed module for Bun's stackless ResolveMessage, not an empty stack", async () => {
+    const transport = uploadTransport();
+    const client = track(launch('tok', base({ transport })));
+    // Recorded from bun 1.4.5: a missing relative module rejects with a ResolveMessage whose stack is only its header line.
+    const error = new Error("Cannot find module './nope.mjs' imported from /app/main.mjs");
+    error.name = 'ResolveMessage';
+    error.stack = `ResolveMessage: ${error.message}`;
+    Object.assign(error, {
+      code: 'ERR_MODULE_NOT_FOUND',
+      specifier: './nope.mjs',
+      referrer: '/app/main.mjs',
+      importKind: 'import-statement',
+    });
+    await client.logException(error);
+    const put = transport.mock.calls.find(([u]) => u === 'https://s3.test/put');
+    const crash = JSON.parse(
+      strFromU8(
+        unzipSync((put?.[1] as HttpRequestOptions).body as Uint8Array)['crash.json'] as Uint8Array,
+      ),
+    ) as { exception: { frames: { trace: string }[] } };
+    expect(crash.exception.frames).toHaveLength(1);
+    expect(crash.exception.frames[0]?.trace).toContain('import()');
+    expect(crash.exception.frames[0]?.trace).toContain('nope.mjs');
+  });
+});
+
 describe('@bugsee/bun launch', () => {
   it('injects the node trace producers (not a legacy sampler) and they feed traces.system', async () => {
     vi.mocked(createNodeSystemTraceProducers).mockClear();

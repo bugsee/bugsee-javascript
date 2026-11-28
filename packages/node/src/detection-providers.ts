@@ -2,7 +2,6 @@ import process from 'node:process';
 import type { CrashJson, DetectionProvider } from '@bugsee/core';
 import {
   buildCrashJson,
-  composeFrameEnrichers,
   DetectionProviderBase,
   describeThrown,
   type FrameEnricher,
@@ -10,7 +9,7 @@ import {
   parseV8Stack,
 } from '@bugsee/core';
 import { BugseeOption } from '@bugsee/protocol';
-import { describeModuleLoadFailure, moduleLoadFrameEnricher } from './module-load-failure';
+import { describeModuleLoadFailure, withModuleLoadFrames } from './module-load-failure';
 import { markOwnHandler } from './process-policy';
 
 // Node crash/error detection providers (the globalErrorInterceptor equivalent on Node).
@@ -52,15 +51,10 @@ function describeError(value: unknown): { summary: string; description?: string 
  * could not see it: they drive `logException`, which does go through the client.
  */
 function crashOf(value: unknown, enrichFrames?: FrameEnricher): CrashJson | undefined {
-  // The failed module goes in last, after the locals enricher has seen the runtime's own frames.
-  const enrich = composeFrameEnrichers([
-    ...(enrichFrames !== undefined ? [enrichFrames] : []),
-    moduleLoadFrameEnricher,
-  ]);
   return buildCrashJson(value, {
     parseStack: parseV8Stack,
     handled: false,
-    ...(enrich !== undefined ? { enrichFrames: enrich } : {}),
+    enrichFrames: withModuleLoadFrames(enrichFrames),
   });
 }
 

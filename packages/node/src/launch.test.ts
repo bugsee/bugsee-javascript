@@ -1604,6 +1604,51 @@ function seedPriorGeneration(
   }
 }
 
+describe('logException of a failed module load', () => {
+  const crashFramesOf = async (error: unknown) => {
+    const transport = uploadTransport();
+    const client = launchTracked('tok', baseOptions({ transport, captureStore: memStore() }));
+    await client.logException(error);
+    const put = transport.mock.calls.find(([u]) => u === 'https://s3.test/put');
+    const crash = JSON.parse(
+      strFromU8(
+        unzipSync((put?.[1] as HttpRequestOptions).body as Uint8Array)['crash.json'] as Uint8Array,
+      ),
+    ) as { exception: { frames: { function?: string; trace: string }[] } };
+    return crash.exception.frames;
+  };
+
+  it('names the failed module first for a Bun ResolveMessage, which has no stack frames', async () => {
+    const error = new Error("Cannot find module './nope.mjs' imported from /app/main.mjs");
+    error.name = 'ResolveMessage';
+    error.stack = `ResolveMessage: ${error.message}`;
+    Object.assign(error, {
+      code: 'ERR_MODULE_NOT_FOUND',
+      specifier: './nope.mjs',
+      referrer: '/app/main.mjs',
+      importKind: 'import-statement',
+    });
+    const frames = await crashFramesOf(error);
+    expect(frames).toHaveLength(1);
+    expect(frames[0]?.trace).toContain('import()');
+    expect(frames[0]?.trace).toContain('nope.mjs');
+  });
+
+  it('puts the failed module ahead of the loader internals Node gives for ERR_MODULE_NOT_FOUND', async () => {
+    const error = new Error("Cannot find module '/app/nope.mjs' imported from /app/main.mjs");
+    error.stack = `Error [ERR_MODULE_NOT_FOUND]: ${error.message}\n    at finalizeResolution (node:internal/modules/esm/resolve:241:11)`;
+    Object.assign(error, { code: 'ERR_MODULE_NOT_FOUND', url: 'file:///app/nope.mjs' });
+    const frames = await crashFramesOf(error);
+    expect(frames[0]?.trace).toContain('nope.mjs');
+    expect(frames.some((f) => f.trace.includes('finalizeResolution'))).toBe(true);
+  });
+
+  it('leaves an ordinary error alone', async () => {
+    const frames = await crashFramesOf(new Error('ordinary'));
+    expect(frames.some((f) => f.trace.includes('import()'))).toBe(false);
+  });
+});
+
 describe('launch — system trace producers', () => {
   it('the default producers go through the per-process ProcessTracker registry accessor', async () => {
     const fs = fakeScheduler();

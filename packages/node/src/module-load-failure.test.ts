@@ -5,6 +5,7 @@ import {
   IMPORT_FRAME_FUNCTION,
   moduleLoadFrameEnricher,
   REQUIRE_FRAME_FUNCTION,
+  withModuleLoadFrames,
 } from './module-load-failure';
 
 // Shapes copied from what node 26 and bun 1.4 really produce (see the module's header).
@@ -518,5 +519,33 @@ describe('probed Node message shapes (v26)', () => {
       ),
     );
     expect(failure?.module).toBe('/r/foo/a in b/c');
+  });
+});
+
+describe('withModuleLoadFrames', () => {
+  const missing = () => bunResolve();
+  const mark = (file: string) =>
+    ({ file, line: 1, column: 1 }) as import('@bugsee/core').StackFrame;
+
+  it('adds the failed module when no other enricher is configured', () => {
+    const out = withModuleLoadFrames()(missing(), [], { depth: 0 });
+    expect(out).toHaveLength(1);
+    expect(out[0]?.file).toContain('nope-dep.mjs');
+  });
+
+  it('runs the configured enrichers first, so the failed module ends up ahead of what they produced', () => {
+    const seen: number[] = [];
+    const configured = (_e: unknown, frames: import('@bugsee/core').StackFrame[]) => {
+      seen.push(frames.length);
+      return [...frames, mark('locals.js')];
+    };
+    const out = withModuleLoadFrames(configured)(missing(), [], { depth: 0 });
+    expect(seen).toEqual([0]); // the configured enricher saw the runtime's frames, before the failed module was added
+    expect(out.map((f) => f.file)).toEqual([expect.stringContaining('nope-dep.mjs'), 'locals.js']);
+  });
+
+  it('leaves an unrelated error as the configured enrichers left it', () => {
+    const frames = [mark('app.js')];
+    expect(withModuleLoadFrames()(new Error('x'), frames, { depth: 0 })).toBe(frames);
   });
 });

@@ -129,6 +129,7 @@ import {
   createLocalVariablesCapture,
   type LocalVariablesOptions,
 } from './local-variables';
+import { withModuleLoadFrames } from './module-load-failure';
 import {
   NODE_PRIVACY_OPTION_DEFINITIONS,
   NODE_TRACE_OPTION_DEFINITIONS,
@@ -1011,7 +1012,9 @@ function buildLaunch(appToken: string, options: BugseeLaunchOptions = {}): Launc
       ? { lifecycleEventsListener: options.lifecycleEventsListener }
       : {}),
     isEnabled: resolved.isEnabled,
-    ...(enrichFrames !== undefined ? { enrichFrames } : {}),
+    // The client's own path (logException) needs the failed module too; the providers below add it themselves, so it is not
+    // part of the shared `enrichFrames` they receive.
+    enrichFrames: withModuleLoadFrames(enrichFrames),
     // Called at the boundary of logException, while the caller's catch block is still on the stack —
     // the one instant at which the scope the report was made FROM can still be read.
     ...(localVariables !== undefined
