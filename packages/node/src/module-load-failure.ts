@@ -288,6 +288,20 @@ export const moduleLoadFrameEnricher: FrameEnricher = (error, frames) => {
   return [added, ...frames];
 };
 
+/**
+ * Any frame enrichers the platform configured (locals, source context), then the failed module LAST so it sees the runtime's own
+ * frames. The one definition of that order: the uncaught-error providers and the client (`logException`, so every framework
+ * adapter's error boundary) both build their enricher with it, so neither path can forget the failed module.
+ */
+export function withModuleLoadFrames(enrichFrames?: FrameEnricher): FrameEnricher {
+  return (error, frames, info) =>
+    moduleLoadFrameEnricher(
+      error,
+      enrichFrames === undefined ? frames : enrichFrames(error, frames, info),
+      info,
+    );
+}
+
 /** Description lines for a module-load error, or undefined when `value` is not one. */
 export function describeModuleLoadFailure(value: unknown): string | undefined {
   const failure = detectModuleLoadFailure(value);
