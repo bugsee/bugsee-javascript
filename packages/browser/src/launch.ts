@@ -41,7 +41,6 @@ import {
   type Clock,
   COMMON_OPTION_DEFINITIONS,
   clearCarrierClient,
-  composeFrameEnrichers,
   createBugseeApi,
   createBundleUploader,
   createClient,
@@ -60,7 +59,6 @@ import {
   FAIL_CLOSED_BOOLEAN_OR_BAG_OPTION,
   FAIL_ON_BOOLEAN_OPTION,
   type FileStreamEncoder,
-  type FrameEnricher,
   getCarrierClient,
   getCarrierPendingLaunch,
   getCarrierStatus,
@@ -113,7 +111,7 @@ import {
   type SeverityName,
 } from './report-dialog';
 import { parseStack } from './stack';
-import { createStacklessFrameEnricher } from './stackless-error-context';
+import { createBrowserFrameEnricher } from './stackless-error-context';
 import { createBrowserSystemEventsSource } from './system-events';
 import { browserTraceEnvFrom, createBrowserSystemTraceProducers } from './trace-producers';
 import { createUiBreadcrumbProvider, createUiBreadcrumbSource } from './ui-breadcrumb-source';
@@ -1072,13 +1070,9 @@ async function buildLaunch(
     // The browser's multi-engine (V8/SpiderMonkey/JavaScriptCore) stack parser → so logException's crash.json
     // parses non-V8 stacks too (the detection providers already use it directly).
     stackParser: parseStack,
-    // The same enrichers the detection providers compose (detection-providers.ts crashOf): async-origin call site first, then
-    // the stackless context (a failed dynamic import) for what is still empty. Without the second, a handled report of a
-    // module-load failure (logException, so every framework adapter's error boundary) shipped an empty stack.
-    enrichFrames: composeFrameEnrichers([
-      ...(originReporting !== undefined ? [originReporting.enrichFrames] : []),
-      createStacklessFrameEnricher(),
-    ]) as FrameEnricher,
+    // The same enricher the detection providers use: without it a handled report of a failed dynamic import (logException, so
+    // every framework adapter's error boundary) shipped an empty stack.
+    enrichFrames: createBrowserFrameEnricher(originReporting?.enrichFrames),
     // logException (so every framework adapter) gets the same Target line the detection providers do.
     ...(originReporting !== undefined ? { describeTarget: originReporting.describeTarget } : {}),
     ...(fileEncoders !== undefined ? { fileEncoders } : {}),

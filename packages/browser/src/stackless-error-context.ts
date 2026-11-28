@@ -1,5 +1,5 @@
 import type { FrameEnricher, StackFrame } from '@bugsee/core';
-import { parseLocation } from '@bugsee/core';
+import { composeFrameEnrichers, parseLocation } from '@bugsee/core';
 import { sanitizeLocationUrl } from '@bugsee/protocol';
 
 // Context for an error the browser reports WITHOUT a stack, so the report is more than "TypeError at Unknown location".
@@ -238,6 +238,20 @@ export function createStacklessFrameEnricher(env?: StacklessEnv): FrameEnricher 
     const added = stacklessFrames(error, env);
     return added.length > 0 ? added : frames;
   };
+}
+
+/**
+ * THE frame enricher for every browser-engine client (browser, webview, web/service worker, Electron renderer): the async-origin
+ * enricher first when the platform records one (a platform rejection's call site), then the stackless context for what is still
+ * empty (a failed dynamic import). One definition of the order, so a client that builds its own `createClient` cannot forget the
+ * second half and ship `frames: []` for a failed `import()` reported through `logException`.
+ */
+export function createBrowserFrameEnricher(asyncOrigin?: FrameEnricher): FrameEnricher {
+  // Never empty (the stackless enricher is always present), so the compose helper's `undefined` case cannot occur.
+  return composeFrameEnrichers([
+    ...(asyncOrigin !== undefined ? [asyncOrigin] : []),
+    createStacklessFrameEnricher(),
+  ]) as FrameEnricher;
 }
 
 /** Report-description lines for a failed import: which module, where the page was, what had just loaded, connectivity. */

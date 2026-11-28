@@ -3,7 +3,6 @@ import type { CrashJson, DetectionProvider, StackFrame } from '@bugsee/core';
 import {
   applyDebugIds,
   buildCrashJson,
-  composeFrameEnrichers,
   DetectionProviderBase,
   describeThrown,
   formatStack,
@@ -13,7 +12,7 @@ import {
 import { BugseeOption } from '@bugsee/protocol';
 import { parseStack } from './stack';
 import {
-  createStacklessFrameEnricher,
+  createBrowserFrameEnricher,
   describeStacklessContext,
   stacklessFrames,
 } from './stackless-error-context';
@@ -94,14 +93,10 @@ function describeOrigin(value: object, origins?: AsyncOriginReporting): string |
  *  synthetic exception rather than nothing. Uses the browser's multi-engine stack parser. */
 function crashOf(value: unknown, origins?: AsyncOriginReporting): CrashJson {
   // The async-origin enricher first (a platform rejection's call site), then the stackless context for what is still empty.
-  const enrichFrames = composeFrameEnrichers([
-    ...(origins !== undefined ? [origins.enrichFrames] : []),
-    createStacklessFrameEnricher(),
-  ]);
   return buildCrashJson(value, {
     parseStack,
     handled: false,
-    ...(enrichFrames !== undefined ? { enrichFrames } : {}),
+    enrichFrames: createBrowserFrameEnricher(origins?.enrichFrames),
   });
 }
 

@@ -99,6 +99,7 @@ export {
   type ReportDialogStrings,
 } from './report-dialog';
 export { parseStack } from './stack';
+export { createBrowserFrameEnricher } from './stackless-error-context';
 export { type BrowserSystemEventsEnv, createBrowserSystemEventsSource } from './system-events';
 export { chargingToWire } from './system-trace-values';
 export {
