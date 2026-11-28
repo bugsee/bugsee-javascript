@@ -2974,6 +2974,43 @@ describe('launch', () => {
     });
   });
 
+  describe('logException of a failed dynamic import (stackless module-load failure)', () => {
+    // Chrome ships only the header line as the stack: no frames.
+    const importFailure = () => {
+      const message =
+        'Failed to fetch dynamically imported module: https://app.example.com/chunk-ABC123.js';
+      const error = new TypeError(message);
+      error.stack = `TypeError: ${message}`;
+      return error;
+    };
+    const crashOf = async (options: BugseeLaunchOptions) => {
+      const transport = uploadTransport();
+      const client = await launchTracked(
+        'tok',
+        baseOptions({ transport, captureStore: memStore(), ...options }),
+      );
+      await client.logException(importFailure());
+      const put = transport.mock.calls.find(([url]) => url === 'https://s3.test/put');
+      const files = unzipSync((put?.[1] as HttpRequestOptions).body as Uint8Array);
+      return JSON.parse(strFromU8(files['crash.json'] as Uint8Array)) as {
+        handled: boolean;
+        exception: { frames: { trace: string }[] };
+      };
+    };
+
+    it('names the failed module in a frame, not an empty stack', async () => {
+      const crash = await crashOf({});
+      expect(crash.handled).toBe(true);
+      expect(crash.exception.frames.length).toBe(1);
+      expect(crash.exception.frames[0]?.trace).toContain('chunk-ABC123.js');
+    });
+
+    it('does so even with async-origin capture off', async () => {
+      const crash = await crashOf({ captureAsyncOrigins: false });
+      expect(crash.exception.frames[0]?.trace).toContain('chunk-ABC123.js');
+    });
+  });
+
   it('removes the detection listeners on stop', async () => {
     const w = fakeWindow();
     const client = await launch('tok', baseOptions({ window: w.win, captureStore: memStore() }));
