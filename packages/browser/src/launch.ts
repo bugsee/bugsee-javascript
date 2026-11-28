@@ -111,6 +111,7 @@ import {
   type SeverityName,
 } from './report-dialog';
 import { parseStack } from './stack';
+import { createBrowserFrameEnricher } from './stackless-error-context';
 import { createBrowserSystemEventsSource } from './system-events';
 import { browserTraceEnvFrom, createBrowserSystemTraceProducers } from './trace-producers';
 import { createUiBreadcrumbProvider, createUiBreadcrumbSource } from './ui-breadcrumb-source';
@@ -1069,13 +1070,11 @@ async function buildLaunch(
     // The browser's multi-engine (V8/SpiderMonkey/JavaScriptCore) stack parser → so logException's crash.json
     // parses non-V8 stacks too (the detection providers already use it directly).
     stackParser: parseStack,
-    ...(originReporting !== undefined
-      ? {
-          enrichFrames: originReporting.enrichFrames,
-          // logException (so every framework adapter) gets the same Target line the detection providers do.
-          describeTarget: originReporting.describeTarget,
-        }
-      : {}),
+    // The same enricher the detection providers use: without it a handled report of a failed dynamic import (logException, so
+    // every framework adapter's error boundary) shipped an empty stack.
+    enrichFrames: createBrowserFrameEnricher(originReporting?.enrichFrames),
+    // logException (so every framework adapter) gets the same Target line the detection providers do.
+    ...(originReporting !== undefined ? { describeTarget: originReporting.describeTarget } : {}),
     ...(fileEncoders !== undefined ? { fileEncoders } : {}),
     ...(streamEncoders !== undefined ? { streamEncoders } : {}),
     ...(reportSnapshots !== undefined ? { reportSnapshots } : {}),

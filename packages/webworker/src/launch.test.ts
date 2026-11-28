@@ -295,6 +295,24 @@ describe('launch — capture recovery (persist the rolling buffer)', () => {
     expect(crash.exception.frames).toHaveLength(2);
   });
 
+  it('names the failed module in the crash frames of a logException of a failed dynamic import', async () => {
+    const transport = uploadTransport();
+    const client = track('tok', baseOptions({ transport }));
+    // Chrome ships only the header line as the stack: no frames.
+    const message =
+      'Failed to fetch dynamically imported module: https://app.example.com/chunk-ABC123.js';
+    const error = new TypeError(message);
+    error.stack = `TypeError: ${message}`;
+    await client.logException(error);
+    await vi.waitFor(() => expect(findPut(transport)).toBeDefined());
+    const files = unzipSync((findPut(transport)?.[1] as HttpRequestOptions).body as Uint8Array);
+    const crash = JSON.parse(strFromU8(files['crash.json'] as Uint8Array)) as {
+      exception: { frames: { trace: string }[] };
+    };
+    expect(crash.exception.frames).toHaveLength(1);
+    expect(crash.exception.frames[0]?.trace).toContain('chunk-ABC123.js');
+  });
+
   it('persist ON (service-worker) registers the report-marker store', () => {
     const client = track(
       'tok',

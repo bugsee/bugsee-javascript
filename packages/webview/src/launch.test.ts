@@ -1912,6 +1912,25 @@ describe('launch (webview)', () => {
     expect(frames).toHaveLength(2);
   });
 
+  it('names the failed module in the crash frames of a logException of a failed dynamic import', async () => {
+    const fake = fakeGlobal();
+    const client = track('tok', baseOptions({ global: fake.global, reportTrigger: true }));
+    // Chrome/Android WebView ships only the header line as the stack: no frames.
+    const message =
+      'Failed to fetch dynamically imported module: https://app.example.com/chunk-ABC123.js';
+    const error = new TypeError(message);
+    error.stack = `TypeError: ${message}`;
+    await client.logException(error);
+    const report = fake.msgs().find((m): m is ReportMessage => m.k === 'report');
+    const frames = (
+      report?.p as unknown as {
+        report: { crash: { exception: { frames: { trace: string }[] } } };
+      }
+    ).report.crash.exception.frames;
+    expect(frames).toHaveLength(1);
+    expect(frames[0]?.trace).toContain('chunk-ABC123.js');
+  });
+
   it('ALSO emits a report trigger (crash, carrying the incident) for a logException when on', async () => {
     const fake = fakeGlobal();
     const client = track('tok', baseOptions({ global: fake.global, reportTrigger: true }));

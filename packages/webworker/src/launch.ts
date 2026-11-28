@@ -1,4 +1,5 @@
 import {
+  createBrowserFrameEnricher,
   createUnhandledRejectionProvider,
   createWindowErrorProvider,
   parseStack,
@@ -356,6 +357,9 @@ export function launch(appToken: string, options: BugseeWorkerLaunchOptions = {}
     // The browser's multi-engine parser: core's default is V8-only, so a Safari/Firefox worker stack would
     // ship `frames: []` in crash.json.
     stackParser: parseStack,
+    // A failed dynamic import has no stack frames in any browser engine: the shared enricher names the module instead of
+    // shipping `frames: []` (the detection providers imported above already use it; this is the logException path).
+    enrichFrames: createBrowserFrameEnricher(),
     ...(options.lifecycleEventsListener !== undefined
       ? { lifecycleEventsListener: options.lifecycleEventsListener }
       : {}),
